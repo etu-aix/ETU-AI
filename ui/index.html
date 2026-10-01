@@ -8,7 +8,280 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
 </head>
 <body>
-  <div id="app-container">
+
+  <!-- ======================================================================= -->
+  <!-- WIZARD D'INSTALLATION ET DE CONFIGURATION INITIALE                     -->
+  <!-- ======================================================================= -->
+  <!-- ======================================================================= -->
+  <!-- WIZARD D'INSTALLATION ET DE CONFIGURATION INITIALE                     -->
+  <!-- ======================================================================= -->
+  <div id="wizard-container" class="wizard-screen active">
+    <!-- Toile interactive d'ondulations de particules et de réactivité lumineuse -->
+    <canvas id="wizard-particles-canvas"></canvas>
+
+    <div class="wizard-card">
+      <div class="wizard-header">
+        <div class="brand">
+          <div class="thinking-orb-mini" id="wizard-header-orb" title="ETU-AI Neural Core">
+            <div class="orb-glow"></div>
+            <div class="orb-ring ring-1"></div>
+            <div class="orb-ring ring-2"></div>
+            <div class="orb-core"></div>
+          </div>
+          <div class="brand-text">
+            <h1>ETU-AI <span class="ai-chip-badge">Setup Neural</span></h1>
+            <p class="wizard-subtitle">Configuration autonome et optimisation matérielle locale</p>
+          </div>
+        </div>
+        <div class="wizard-orb-mood-indicator" id="wizard-orb-mood">
+          <span class="mood-dot"></span>
+          <span class="mood-text" id="wizard-mood-text">Prêt pour l'initialisation</span>
+        </div>
+      </div>
+
+      <!-- Étape 1 : Présentation & Matériel -->
+      <div id="wizard-step-1" class="wizard-step active">
+        <div class="wizard-content">
+          <div class="step-hero">
+            <div class="step-hero-text">
+              <h3>Bienvenue sur ETU-AI</h3>
+              <p class="etu-text">
+                Votre assistant universitaire souverain <strong>100% privé, local et gratuit</strong>,
+                interconnecté avec votre plateforme étudiante <strong>etu-aix.alwaysdata.net</strong>.
+              </p>
+            </div>
+            <!-- Orbe Scanner Diagnostic -->
+            <div class="diag-orb-preview" id="diag-orb-preview">
+              <div class="scanner-rings"></div>
+              <div class="diag-core-orb"></div>
+              <div class="diag-radar-sweep"></div>
+              <span class="diag-status-label" id="diag-scanner-label">Scan Matériel</span>
+            </div>
+          </div>
+
+          <div class="etu-card hw-card hw-card-interactive">
+            <div class="etu-card-header">
+              <span class="etu-badge etu-badge-info" id="hw-backend-badge">Détection...</span>
+              <h4>Diagnostic Matériel & Accélération Détectée</h4>
+            </div>
+            <div class="etu-card-body">
+              <div class="hw-grid">
+                <div class="hw-item" data-tech="cpu">
+                  <span class="hw-label">Processeur (CPU) :</span>
+                  <strong id="hw-cpu">Détection...</strong>
+                </div>
+                <div class="hw-item" data-tech="ram">
+                  <span class="hw-label">Mémoire Vive (RAM) :</span>
+                  <strong id="hw-ram">Détection...</strong>
+                </div>
+                <div class="hw-item" data-tech="gpu">
+                  <span class="hw-label">Accélération Graphique (GPU) :</span>
+                  <strong id="hw-gpu">Détection...</strong>
+                </div>
+                <div class="hw-item" id="hw-npu-box" data-tech="npu">
+                  <span class="hw-label">Accélération IA (NPU) :</span>
+                  <strong id="hw-npu">Détection...</strong>
+                </div>
+                <div class="hw-item" data-tech="backend">
+                  <span class="hw-label">Moteur recommandé :</span>
+                  <strong id="hw-rec-backend">Détection...</strong>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="wizard-features">
+            <div class="feat-box" data-mood="emerald">
+              <span class="feat-icon">🔒</span>
+              <strong>100% Confidentiel</strong>
+              <p>Vos cours, devoirs et conversations ne quittent jamais votre PC.</p>
+            </div>
+            <div class="feat-box" data-mood="cyan">
+              <span class="feat-icon">⚡</span>
+              <strong>TurboQuant & GGUF</strong>
+              <p>Inférence temps réel optimisée pour CPU, GPU dédié et NPU.</p>
+            </div>
+            <div class="feat-box" data-mood="purple">
+              <span class="feat-icon">🤝</span>
+              <strong>Interconnecté etu-aix</strong>
+              <p>Accédez à votre emploi du temps, gérez votre agenda et vos amis.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="wizard-actions">
+          <div></div>
+          <button id="btn-wizard-to-step2" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
+            Choisir mes modèles de départ &rarr;
+          </button>
+        </div>
+      </div>
+
+      <!-- Étape 2 : Sélection des modèles -->
+      <div id="wizard-step-2" class="wizard-step">
+        <div class="wizard-content">
+          <div class="step-heading-row">
+            <div>
+              <h3>Sélectionnez vos modèles de départ</h3>
+              <p class="etu-text">
+                Explorez l'API publique Hugging Face sans identifiant et sélectionnez les modèles 100% adaptés à votre PC.
+              </p>
+            </div>
+            <div class="model-selection-counter" id="model-selection-counter">
+              <span class="count-badge" id="selected-models-count">1</span> modèle(s) sélectionné(s)
+            </div>
+          </div>
+
+          <!-- Barre d'outils Hugging Face & Auto-Sélection -->
+          <div class="wizard-hf-toolbar">
+            <div class="wizard-hf-search-box">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+              <input type="text" id="wizard-hf-search-input" placeholder="Rechercher sur Hugging Face (ex: Qwen, Gemma, Llama, Mistral, Code, DeepSeek)...">
+            </div>
+            <div class="wizard-hf-actions">
+              <label class="hf-compat-toggle" title="Masquer les modèles qui dépassent la mémoire du PC">
+                <input type="checkbox" id="wizard-filter-compatible" checked>
+                <span>IA compatibles uniquement</span>
+              </label>
+              <button type="button" id="btn-wizard-autoselect" class="etu-btn etu-btn-secondary" title="Sélectionne automatiquement les meilleurs modèles pour votre CPU/RAM/GPU/NPU">
+                ⚡ Auto-Sélection Config PC
+              </button>
+            </div>
+          </div>
+
+          <!-- Filtres de Catégories d'IA -->
+          <div class="wizard-category-tabs" id="wizard-category-tabs">
+            <button type="button" class="category-pill active" data-cat="all">Toutes les IA (<span id="cat-count-all">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="npu">⚡ NPU & Ultra-Léger (<span id="cat-count-npu">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="code">💻 Code & Dev (<span id="cat-count-code">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="reasoning">🧠 Raisonnement (<span id="cat-count-reasoning">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="7b">🚀 7B-8B (<span id="cat-count-7b">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="installed">✓ Déjà Installés (<span id="cat-count-installed">0</span>)</button>
+          </div>
+
+          <div id="wizard-npu-banner" class="npu-banner" style="display: none;">
+            <span class="npu-banner-icon">⚡</span>
+            <div class="npu-banner-body">
+              <strong id="npu-banner-title">Puce NPU Détectée</strong>
+              <p id="npu-banner-text">Votre processeur intègre une puce d'accélération neurale (NPU). Les modèles marqués ⚡ Compatible NPU sont optimisés pour une réactivité instantanée et une très faible consommation énergétique.</p>
+            </div>
+          </div>
+
+          <div id="wizard-model-selection-list" class="model-selection-grid">
+            <!-- Rempli dynamiquement par app.js -->
+          </div>
+        </div>
+
+        <div class="wizard-actions">
+          <button id="btn-wizard-back-step1" class="etu-btn etu-btn-secondary">
+            &larr; Retour
+          </button>
+          <button id="btn-wizard-start-install" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
+            Lancer l'installation 🚀
+          </button>
+        </div>
+      </div>
+
+      <!-- Étape 3 : Progression de l'installation avec Master Thinking Orb -->
+      <div id="wizard-step-3" class="wizard-step">
+        <div class="wizard-content">
+          <!-- MASTER THINKING ORB VISUALIZER -->
+          <div class="master-orb-container">
+            <div class="thinking-orb-master" id="wizard-master-orb">
+              <div class="orb-halo-outer"></div>
+              <div class="orb-plasma"></div>
+              <div class="orb-core"></div>
+              <div class="orb-orbit ring-alpha"></div>
+              <div class="orb-orbit ring-beta"></div>
+              <div class="orb-orbit ring-gamma"></div>
+              <div class="orb-ripples" id="orb-ripples-container">
+                <span class="ripple r-1"></span>
+                <span class="ripple r-2"></span>
+                <span class="ripple r-3"></span>
+              </div>
+              <div class="orb-sparkles" id="orb-sparkles"></div>
+            </div>
+            <div class="master-orb-caption">
+              <h3 id="install-title">Initialisation de l'IA locale...</h3>
+              <p class="etu-text" id="install-subtitle">
+                Préparation du moteur et synchronisation des modules haute vitesse.
+              </p>
+            </div>
+          </div>
+
+          <!-- Stepper visuel réactif -->
+          <div class="stepper-container" id="wizard-stepper">
+            <div class="step-item" id="step-item-0">
+              <div class="step-circle"><span class="step-icon">1</span></div>
+              <div class="step-text">
+                <strong>Moteur llama-server</strong>
+                <span>Validation du binaire et accélération</span>
+              </div>
+            </div>
+            <div class="step-item" id="step-item-1">
+              <div class="step-circle"><span class="step-icon">2</span></div>
+              <div class="step-text">
+                <strong>Superviseur MAIA-Beacon</strong>
+                <span>Environnement virtuel et dépendances</span>
+              </div>
+            </div>
+            <div class="step-item" id="step-item-2">
+              <div class="step-circle"><span class="step-icon">3</span></div>
+              <div class="step-text">
+                <strong>Modèles sélectionnés</strong>
+                <span>Téléchargement et vérification des GGUF</span>
+              </div>
+            </div>
+            <div class="step-item" id="step-item-3">
+              <div class="step-circle"><span class="step-icon">4</span></div>
+              <div class="step-text">
+                <strong>Démarrage du service (port 11343)</strong>
+                <span>Validation de l'inférence en direct</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Jauge de progression générale néon -->
+          <div class="progress-bar-container neon-progress">
+            <div id="wizard-progress-bar" class="progress-bar-fill" style="width: 5%;">
+              <div class="progress-bar-glow"></div>
+            </div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
+            <span id="wizard-progress-status">Démarrage...</span>
+            <strong id="wizard-progress-percent" style="color: var(--accent-hover);">5%</strong>
+          </div>
+
+          <!-- Terminal de logs live stylisé avec scanlines -->
+          <div class="terminal-log-container">
+            <div class="terminal-header">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span class="status-dot"></span>
+                <span>Terminal de configuration en direct</span>
+              </div>
+              <span class="terminal-badge">LIVE STREAM</span>
+            </div>
+            <div class="terminal-body" id="wizard-logs-box">
+              <div class="terminal-line">[i] Initialisation du Setup Wizard ETU-AI...</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="wizard-actions">
+          <div></div>
+          <button id="btn-wizard-finish" class="etu-btn etu-btn-primary btn-large btn-glow-interactive pulse-finish" style="display: none;">
+            Accéder à l'interface de discussion &rarr;
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ======================================================================= -->
+  <!-- APPLICATION PRINCIPALE : CHAT ET INTERACTION                           -->
+  <!-- ======================================================================= -->
+  <div id="app-container" style="display: none;">
     <!-- Sidebar -->
     <aside id="sidebar">
       <div class="brand">
@@ -34,6 +307,10 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
           Appairage etu-aix
         </button>
+        <button id="btn-reopen-wizard" class="nav-btn" style="color: var(--accent-color);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          Assistant de configuration
+        </button>
       </div>
     </aside>
 
@@ -45,12 +322,42 @@
             <span class="status-dot"></span>
             <span id="backend-text">Moteur : Détection...</span>
           </div>
+          <div class="status-badge" id="beacon-badge">
+            <span class="status-dot" id="beacon-dot"></span>
+            <span id="beacon-text">Beacon (11343) : Vérification...</span>
+          </div>
           <div class="status-badge" id="pairing-badge">
             <span id="pairing-text">etu-aix : Mode Local</span>
           </div>
         </div>
         <div class="header-actions">
-          <span id="active-model-name" class="etu-badge etu-badge-info">Modèle : Chargement...</span>
+          <div class="model-selector-wrapper" id="model-selector-wrapper">
+            <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d'IA" type="button">
+              <span class="model-badge-icon" id="model-badge-icon">🧠</span>
+              <div class="model-selector-info">
+                <span class="model-selector-label">Modèle IA</span>
+                <span id="active-model-name" class="model-selector-name">Chargement...</span>
+              </div>
+              <span class="model-status-indicator" id="model-status-indicator" title="Prêt"></span>
+              <svg class="model-dropdown-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+
+            <div class="model-dropdown-menu" id="model-dropdown-menu">
+              <div class="model-dropdown-header">
+                <span>Modèles Installés</span>
+                <span class="model-count-badge" id="model-count-badge">0 disponible</span>
+              </div>
+              <div class="model-dropdown-list" id="model-dropdown-list">
+                <!-- Rempli dynamiquement -->
+              </div>
+              <div class="model-dropdown-footer">
+                <button type="button" id="btn-dropdown-open-models" class="dropdown-manage-btn">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+                  Gérer & Télécharger des modèles...
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -61,12 +368,12 @@
           <div class="message-bubble">
             <div class="etu-card">
               <div class="etu-card-header">
-                <span class="etu-badge etu-badge-info">Bienvenue</span>
-                <h4>ETU-AI est prêt</h4>
+                <span class="etu-badge etu-badge-info">Prêt</span>
+                <h4>ETU-AI est opérationnel</h4>
               </div>
               <div class="etu-card-body">
                 <p class="etu-text">Bonjour ! Je suis votre assistant étudiant autonome connecté à vos cours et à la plateforme <strong>etu-aix.alwaysdata.net</strong>.</p>
-                <p class="etu-text">Vous pouvez me demander :</p>
+                <p class="etu-text">Que souhaitez-vous faire ?</p>
                 <ul class="etu-list">
                   <li>« Quel est mon emploi du temps aujourd'hui ? »</li>
                   <li>« Ajoute une révision d'algorithmique à mon agenda demain à 14h. »</li>
@@ -80,6 +387,19 @@
       </div>
 
       <div id="chat-input-container">
+        <div class="chat-input-toolbar">
+          <div class="quick-model-wrapper">
+            <span class="toolbar-label">Modèle actif :</span>
+            <button type="button" id="btn-quick-model-select" class="quick-model-pill" title="Changer de modèle rapidement">
+              <span class="quick-icon" id="quick-model-icon">⚡</span>
+              <span id="quick-model-name">Chargement...</span>
+              <span class="quick-caret">▾</span>
+            </button>
+          </div>
+          <div class="chat-shortcuts-hint">
+            <span>Tapez <kbd>/model</kbd> ou utilisez le sélecteur pour basculer instantanément</span>
+          </div>
+        </div>
         <form id="chat-form" class="input-box">
           <textarea id="chat-input" placeholder="Posez une question ou demandez une action..." rows="1" required></textarea>
           <button type="submit" id="btn-send" class="send-btn" title="Envoyer">
@@ -90,34 +410,87 @@
     </main>
   </div>
 
+  <!-- Conteneur Toast Notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
   <!-- Modale Gestionnaire de Modèles -->
   <div id="modal-models" class="modal-overlay">
-    <div class="modal-content">
+    <div class="modal-content modal-large">
       <div class="modal-header">
-        <h3>Catalogue de Modèles & Hugging Face</h3>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <h3>Catalogue de Modèles & Hugging Face</h3>
+          <span class="etu-badge etu-badge-cyan">API Public Sans Credential</span>
+        </div>
         <button class="modal-close" data-target="modal-models">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="etu-text">Téléchargez et activez des modèles GGUF optimisés pour votre machine.</p>
-
-        <!-- Téléchargement personnalisé HF -->
-        <div class="etu-card">
-          <h4>Téléchargement direct Hugging Face</h4>
-          <form id="form-custom-download" style="display: flex; gap: 8px; margin-top: 10px;">
-            <input type="text" id="hf-repo" placeholder="ex: bartowski/Llama-3.2-3B-Instruct-GGUF" style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
-            <input type="text" id="hf-filename" placeholder="ex: Llama-3.2-3B-Instruct-Q4_K_M.gguf" style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
-            <button type="submit" class="etu-btn etu-btn-primary" style="margin: 0;">Télécharger</button>
-          </form>
+        <!-- Onglets du Gestionnaire de Modèles -->
+        <div class="modal-tabs">
+          <button type="button" class="modal-tab-btn active" data-tab="tab-catalog">Catalogue Local & Recommandé</button>
+          <button type="button" class="modal-tab-btn" data-tab="tab-hf-explorer">Explorer Hugging Face Hub</button>
+          <button type="button" class="modal-tab-btn" data-tab="tab-hf-custom">Téléchargement Direct</button>
         </div>
 
-        <!-- Tâches actives de téléchargement -->
-        <div id="active-tasks-container"></div>
-
-        <!-- Liste du catalogue -->
-        <h4>Catalogue Recommandé</h4>
-        <div id="catalog-list" style="display: flex; flex-direction: column; gap: 10px;">
-          <!-- Injecté dynamiquement -->
+        <!-- Onglet 1 : Catalogue Local & Recommandé -->
+        <div id="tab-catalog" class="modal-tab-content active">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <p class="etu-text" style="margin: 0;">Modèles optimisés pour votre processeur, RAM et cartes d'accélération (GPU/NPU).</p>
+            <button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary" style="margin: 0;">
+              ⚡ Auto-Sélection Config PC
+            </button>
+          </div>
+          <div id="catalog-list" style="display: flex; flex-direction: column; gap: 10px;">
+            <!-- Injecté dynamiquement -->
+          </div>
         </div>
+
+        <!-- Onglet 2 : Explorer Hugging Face (Public sans credential) -->
+        <div id="tab-hf-explorer" class="modal-tab-content">
+          <p class="etu-text">
+            Recherche en direct sur <strong>Hugging Face Hub</strong> via l'API publique sans compte ni token requis.
+            Chaque modèle est automatiquement testé contre la RAM et les puces graphiques/neurales de votre PC.
+          </p>
+
+          <div class="hf-search-container">
+            <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+              <input type="text" id="modal-hf-search-input" placeholder="Rechercher sur Hugging Face (ex: Qwen, Gemma, Llama, Mistral, DeepSeek)..." style="flex: 1; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;">
+              <button type="button" id="btn-modal-hf-search" class="etu-btn etu-btn-primary" style="margin: 0;">Rechercher</button>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+              <label class="hf-compat-toggle">
+                <input type="checkbox" id="modal-hf-filter-compatible" checked>
+                <span>Afficher uniquement les IA compatibles avec ma config</span>
+              </label>
+              <span id="hf-search-count" style="font-size: 0.85rem; color: var(--text-muted);">Prêt pour la recherche</span>
+            </div>
+          </div>
+
+          <div id="hf-search-results" style="display: flex; flex-direction: column; gap: 10px; min-height: 120px;">
+            <!-- Injecté dynamiquement par app.js -->
+          </div>
+        </div>
+
+        <!-- Onglet 3 : Téléchargement direct HF -->
+        <div id="tab-hf-custom" class="modal-tab-content">
+          <p class="etu-text">Téléchargez n'importe quel fichier GGUF depuis Hugging Face en spécifiant son dépôt et son nom de fichier.</p>
+          <div class="etu-card">
+            <h4>Téléchargement direct Hugging Face</h4>
+            <form id="form-custom-download" style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
+              <div>
+                <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Dépôt Hugging Face (Repo ID)</label>
+                <input type="text" id="hf-repo" placeholder="ex: bartowski/Llama-3.2-3B-Instruct-GGUF" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+              </div>
+              <div>
+                <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Nom du fichier GGUF (Filename)</label>
+                <input type="text" id="hf-filename" placeholder="ex: Llama-3.2-3B-Instruct-Q4_K_M.gguf" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+              </div>
+              <button type="submit" class="etu-btn etu-btn-primary" style="align-self: flex-start; margin-top: 4px;">Lancer le Téléchargement</button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Tâches actives de téléchargement (partagé entre onglets) -->
+        <div id="active-tasks-container" style="margin-top: 16px;"></div>
       </div>
     </div>
   </div>

@@ -4,3 +4,9 @@ models/
 state.json
 __pycache__/
 *.db
+deps/
+log/
+logs/
+*.log
+*.lock
+*state*.json

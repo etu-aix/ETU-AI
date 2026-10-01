@@ -7,7 +7,8 @@
 # Lancer le serveur et ouvrir automatiquement l'interface dans le navigateur :
 python run_launcher.py
 ```
-L'interface s'ouvre directement sur `http://127.0.0.1:11343`.
+L'interface s'ouvre directement sur `http://127.0.0.1:8900`.
+Le serveur d'inférence MAIA-Beacon écoute quant à lui sur `http://127.0.0.1:11343`.
 
 
 ## Commandes

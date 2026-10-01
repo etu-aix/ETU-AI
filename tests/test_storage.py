@@ -76,5 +76,39 @@ class TestStorageManager(unittest.TestCase):
         self.assertEqual(cached[0]["filename"], "model.gguf")
 
 
+class TestStateManager(unittest.TestCase):
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.state_file = Path(self.temp_dir.name) / "test_app_state.json"
+        from storage.state_manager import StateManager
+        # Reset singleton instance for isolated test
+        StateManager._instance = None
+        self.sm = StateManager(file_path=self.state_file)
+
+    def tearDown(self):
+        from storage.state_manager import StateManager
+        StateManager._instance = None
+        self.temp_dir.cleanup()
+
+    def test_state_lifecycle(self):
+        self.assertFalse(self.sm.is_setup_completed())
+        state = self.sm.get_state()
+        self.assertIn("setup", state)
+        self.assertIn("installed_components", state)
+
+        self.sm.record_installed_model("test.gguf", "repo/test", size_bytes=2048)
+        self.sm.mark_setup_completed(primary_model="test.gguf")
+
+        self.assertTrue(self.sm.is_setup_completed())
+        updated_state = self.sm.get_state()
+        self.assertTrue(updated_state["setup"]["completed"])
+        self.assertEqual(updated_state["active_model"], "test.gguf")
+        self.assertEqual(len(updated_state["installed_models"]), 1)
+
+        self.sm.reset_setup()
+        self.assertFalse(self.sm.is_setup_completed())
+
+
 if __name__ == "__main__":
     unittest.main()

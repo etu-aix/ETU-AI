@@ -14,7 +14,7 @@ import urllib.request
 import webbrowser
 
 ROOT_DIR = Path(__file__).resolve().parent
-SERVER_URL = "http://127.0.0.1:11343"
+SERVER_URL = "http://127.0.0.1:8900"
 
 
 def check_server_ready(url: str, timeout: int = 15) -> bool:
@@ -36,7 +36,7 @@ def start_server() -> subprocess.Popen:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
-    # Lancement d'Uvicorn hébergeant api_server:app
+    # Lancement d'Uvicorn hébergeant api_server:app sur le port 8900
     cmd = [
         sys.executable,
         "-m",
@@ -45,12 +45,12 @@ def start_server() -> subprocess.Popen:
         "--host",
         "127.0.0.1",
         "--port",
-        "11343",
+        "8900",
         "--log-level",
         "info",
     ]
 
-    print("[+] Lancement du serveur ETU-AI sur http://127.0.0.1:11343...")
+    print("[+] Lancement du serveur ETU-AI sur http://127.0.0.1:8900...")
     process = subprocess.Popen(
         cmd,
         cwd=str(ROOT_DIR),

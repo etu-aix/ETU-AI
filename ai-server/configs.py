@@ -259,24 +259,24 @@ def init_file_logger(script_name: str = "ai-server.log") -> None:
     """
     try:
         log_files: list[TextIO] = []
-        log_dir = SCRIPT_DIR / "logs"
+        log_dir = ROOT_DIR / "log"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file_name = Path(script_name).stem + ".log"
         log_files.append(open(log_dir / log_file_name, "a", encoding="utf-8", errors="replace"))
-
-        # Mirror logs to local log.txt
-        log_files.append(open(SCRIPT_DIR / "log.txt", "a", encoding="utf-8", errors="replace"))
 
         # Optional mirrored log path via environment variable or drive E: if available
         mirror_env = os.environ.get("FRUGAL_MIRROR_LOG_PATH")
         if mirror_env:
             try:
-                log_files.append(open(mirror_env, "a", encoding="utf-8", errors="replace"))
+                mirror_path = Path(mirror_env)
+                if mirror_path.suffix == ".txt":
+                    mirror_path = mirror_path.with_suffix(".log")
+                log_files.append(open(mirror_path, "a", encoding="utf-8", errors="replace"))
             except Exception:
                 pass
         elif os.name == "nt" and Path("E:/").exists():
             try:
-                log_files.append(open("E:/log.txt", "a", encoding="utf-8", errors="replace"))
+                log_files.append(open("E:/log.log", "a", encoding="utf-8", errors="replace"))
             except Exception:
                 pass
 
