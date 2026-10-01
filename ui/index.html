@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ETU-AI | Assistant Étudiant Autonome</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
+</head>
+<body>
+  <div id="app-container">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="brand">
+        <div class="brand-icon">🎓</div>
+        <h1>ETU-AI <span>Local</span></h1>
+      </div>
+
+      <button id="btn-new-chat" class="btn-new-chat">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        Nouvelle discussion
+      </button>
+
+      <div class="conv-list" id="conv-list">
+        <!-- Rempli dynamiquement -->
+      </div>
+
+      <div class="sidebar-footer">
+        <button id="btn-open-models" class="nav-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+          Gestionnaire de Modèles
+        </button>
+        <button id="btn-open-pairing" class="nav-btn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+          Appairage etu-aix
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Chat Area -->
+    <main id="chat-main">
+      <header>
+        <div class="header-status">
+          <div class="status-badge" id="backend-badge">
+            <span class="status-dot"></span>
+            <span id="backend-text">Moteur : Détection...</span>
+          </div>
+          <div class="status-badge" id="pairing-badge">
+            <span id="pairing-text">etu-aix : Mode Local</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="active-model-name" class="etu-badge etu-badge-info">Modèle : Chargement...</span>
+        </div>
+      </header>
+
+      <div id="chat-messages">
+        <!-- Message de bienvenue -->
+        <div class="message assistant">
+          <div class="avatar ai-avatar">AI</div>
+          <div class="message-bubble">
+            <div class="etu-card">
+              <div class="etu-card-header">
+                <span class="etu-badge etu-badge-info">Bienvenue</span>
+                <h4>ETU-AI est prêt</h4>
+              </div>
+              <div class="etu-card-body">
+                <p class="etu-text">Bonjour ! Je suis votre assistant étudiant autonome connecté à vos cours et à la plateforme <strong>etu-aix.alwaysdata.net</strong>.</p>
+                <p class="etu-text">Vous pouvez me demander :</p>
+                <ul class="etu-list">
+                  <li>« Quel est mon emploi du temps aujourd'hui ? »</li>
+                  <li>« Ajoute une révision d'algorithmique à mon agenda demain à 14h. »</li>
+                  <li>« Envoie une demande d'ami à Thomas sur etu-aix. »</li>
+                  <li>« Corrige et structure mon devoir de synthèse. »</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="chat-input-container">
+        <form id="chat-form" class="input-box">
+          <textarea id="chat-input" placeholder="Posez une question ou demandez une action..." rows="1" required></textarea>
+          <button type="submit" id="btn-send" class="send-btn" title="Envoyer">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modale Gestionnaire de Modèles -->
+  <div id="modal-models" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Catalogue de Modèles & Hugging Face</h3>
+        <button class="modal-close" data-target="modal-models">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="etu-text">Téléchargez et activez des modèles GGUF optimisés pour votre machine.</p>
+
+        <!-- Téléchargement personnalisé HF -->
+        <div class="etu-card">
+          <h4>Téléchargement direct Hugging Face</h4>
+          <form id="form-custom-download" style="display: flex; gap: 8px; margin-top: 10px;">
+            <input type="text" id="hf-repo" placeholder="ex: bartowski/Llama-3.2-3B-Instruct-GGUF" style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+            <input type="text" id="hf-filename" placeholder="ex: Llama-3.2-3B-Instruct-Q4_K_M.gguf" style="flex: 2; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+            <button type="submit" class="etu-btn etu-btn-primary" style="margin: 0;">Télécharger</button>
+          </form>
+        </div>
+
+        <!-- Tâches actives de téléchargement -->
+        <div id="active-tasks-container"></div>
+
+        <!-- Liste du catalogue -->
+        <h4>Catalogue Recommandé</h4>
+        <div id="catalog-list" style="display: flex; flex-direction: column; gap: 10px;">
+          <!-- Injecté dynamiquement -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modale Appairage etu-aix -->
+  <div id="modal-pairing" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Appairage etu-aix.alwaysdata.net</h3>
+        <button class="modal-close" data-target="modal-pairing">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="etu-text">Connectez ce serveur local à votre compte sur <strong>etu-aix.alwaysdata.net</strong> pour synchroniser vos devoirs, emplois du temps et interactions sociales.</p>
+        <div class="etu-card">
+          <form id="form-pairing" style="display: flex; flex-direction: column; gap: 12px;">
+            <div>
+              <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Jeton d'appairage étudiant (Pairing Token)</label>
+              <input type="text" id="pairing-token-input" placeholder="Collez votre jeton généré sur etu-aix..." style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+            </div>
+            <div>
+              <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Identifiant étudiant (Optionnel)</label>
+              <input type="text" id="student-id-input" placeholder="ex: etu_12345" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;">
+            </div>
+            <button type="submit" class="etu-btn etu-btn-primary" style="align-self: flex-start;">Valider l'appairage</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

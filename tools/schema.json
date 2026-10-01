@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_timetable",
+        "description": "Récupère l'emploi du temps de l'étudiant pour une date ou une semaine donnée depuis etu-aix.alwaysdata.net",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "target_date": {
+              "type": "string",
+              "description": "Date au format YYYY-MM-DD ou mot-clé comme 'today', 'tomorrow', 'next_week'"
+            },
+            "view": {
+              "type": "string",
+              "enum": ["day", "week"],
+              "default": "day",
+              "description": "Vue demandée : journée ou semaine entière"
+            }
+          },
+          "required": ["target_date"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "create_calendar_event",
+        "description": "Ajoute un cours, un rappel ou un événement dans l'agenda étudiant sur etu-aix.alwaysdata.net",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Titre de l'événement ou nom du cours / devoir"
+            },
+            "start_time": {
+              "type": "string",
+              "description": "Date et heure de début au format ISO (ex: 2026-10-01T09:00:00)"
+            },
+            "end_time": {
+              "type": "string",
+              "description": "Date et heure de fin au format ISO (ex: 2026-10-01T11:00:00)"
+            },
+            "location": {
+              "type": "string",
+              "description": "Salle de cours ou lieu (ex: Bâtiment A, Amphi 2)"
+            },
+            "description": {
+              "type": "string",
+              "description": "Détails complémentaires ou notes sur l'événement"
+            }
+          },
+          "required": ["title", "start_time"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "send_friend_request",
+        "description": "Envoie une demande d'ami à un autre étudiant sur le réseau social etu-aix",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "student_query": {
+              "type": "string",
+              "description": "Nom, prénom, pseudo ou adresse email étudiante de la personne à ajouter"
+            },
+            "message": {
+              "type": "string",
+              "description": "Message optionnel d'accompagnement de la demande d'ami"
+            }
+          },
+          "required": ["student_query"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "review_document",
+        "description": "Soumet ou analyse un devoir/texte étudiant pour correction orthographique, syntaxique ou résumé critique",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "document_text": {
+              "type": "string",
+              "description": "Le contenu textuel du document à relire ou corriger"
+            },
+            "document_title": {
+              "type": "string",
+              "description": "Titre du devoir ou du document"
+            },
+            "correction_type": {
+              "type": "string",
+              "enum": ["orthographe", "style", "synthese", "complet"],
+              "default": "complet",
+              "description": "Niveau de correction ou type d'analyse demandé"
+            }
+          },
+          "required": ["document_text"]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "translate_text",
+        "description": "Traduit un texte étudiant ou un extrait de cours vers une langue cible",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "Le texte source à traduire"
+            },
+            "target_language": {
+              "type": "string",
+              "description": "La langue cible (ex: 'anglais', 'espagnol', 'allemand', 'français')"
+            }
+          },
+          "required": ["text", "target_language"]
+        }
+      }
+    }
+  ]
+}
