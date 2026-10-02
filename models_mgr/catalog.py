@@ -19,7 +19,7 @@ RECOMMENDED_CATALOG = [
         "filename": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
         "size_gib": 2.1,
         "required_ram_gib": 6.0,
-        "description": "Modèle officiel par défaut. Ultra-rapide, excellent en français, parfait pour PC portables et puces NPU.",
+        "description": "Modèle officiel par défaut, compact et adapté au français. L'accélération dépend du backend disponible.",
         "category": "Ultra-Léger",
         "quant": "Q4_K_M",
         "npu_compatible": True,
@@ -32,7 +32,7 @@ RECOMMENDED_CATALOG = [
         "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
         "size_gib": 1.1,
         "required_ram_gib": 4.0,
-        "description": "Poids plume absolu. Fonctionne à pleine vitesse sur tout NPU ou PC portable même sans carte graphique.",
+        "description": "Modèle très léger pour PC portables. Fonctionne sur CPU ou GPU selon le moteur disponible.",
         "category": "Poids Plume",
         "quant": "Q4_K_M",
         "npu_compatible": True,
@@ -45,7 +45,7 @@ RECOMMENDED_CATALOG = [
         "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
         "size_gib": 2.4,
         "required_ram_gib": 6.0,
-        "description": "Modèle compact de Microsoft hautement optimisé pour l'inférence edge et NPU. Raisonnement et code précis.",
+        "description": "Modèle compact pour le raisonnement et le code. Un backend NPU dédié est nécessaire pour utiliser un NPU.",
         "category": "Optimisé NPU",
         "quant": "Q4_K_M",
         "npu_compatible": True,
@@ -58,7 +58,7 @@ RECOMMENDED_CATALOG = [
         "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "size_gib": 2.0,
         "required_ram_gib": 6.0,
-        "description": "Modèle léger de Meta. Très réactif pour les résumés et questions, parfaitement dimensionné pour les puces NPU.",
+        "description": "Modèle léger de Meta pour les résumés et les questions ; fonctionne sur CPU ou GPU avec le moteur actuel.",
         "category": "Polyvalent",
         "quant": "Q4_K_M",
         "npu_compatible": True,
@@ -143,20 +143,10 @@ def assess_compatibility(
         color = "warning"
         recommendation = f"Nécessite ~{req_ram} Go de RAM alors que votre système dispose de {total_ram} Go."
         score = 20
-    elif has_npu and is_npu_comp:
-        npu_name = npus[0].get("name", "NPU")
-        if has_gpu:
-            badge = "Compatible NPU & GPU"
-            recommendation = f"Accélération disponible via GPU et NPU ({npu_name}) avec haute efficacité énergétique."
-        else:
-            badge = "Compatible NPU"
-            recommendation = f"Exécution accélérée et économe en batterie sur votre puce NPU ({npu_name})."
-        color = "cyan"
-        score = 95
     elif has_gpu:
-        badge = "Compatible GPU"
+        badge = "GPU possible"
         color = "success"
-        recommendation = "Excellentes performances attendues avec accélération matérielle graphique."
+        recommendation = "Accélération graphique possible ; le backend réellement utilisé sera indiqué après chargement."
         score = 90
     elif req_ram <= 6.0 or req_ram <= (total_ram * 0.75):
         badge = "Compatible CPU"
@@ -175,8 +165,9 @@ def assess_compatibility(
         "recommendation": recommendation,
         "score": score,
         "has_gpu_acceleration": has_gpu,
-        "has_npu_acceleration": bool(has_npu and is_npu_comp),
-        "npu_supported": is_npu_comp,
+        "has_npu_acceleration": False,
+        "npu_candidate": bool(has_npu and is_npu_comp),
+        "npu_supported": False,
         "required_ram_gib": req_ram,
     }
 
@@ -212,6 +203,8 @@ def get_catalog_with_status(
         if is_installed and fn in local_model_map:
             entry["local_size_gib"] = local_model_map[fn]["size_gib"]
         entry["compatibility"] = assess_compatibility(entry, hardware_info)
+        entry["npu_candidate"] = entry.get("npu_compatible", False)
+        entry["npu_compatible"] = False
         enriched.append(entry)
 
     # 2. Détection des modèles locaux tiers (fichiers GGUF hors catalogue officiel)
@@ -229,8 +222,9 @@ def get_catalog_with_status(
                 "description": f"Modèle GGUF détecté directement dans ai-server/models. Prêt instantanément sans téléchargement.",
                 "category": "Modèle Local",
                 "quant": "GGUF",
-                "npu_compatible": loc["size_gib"] <= 4.0,
-                "npu_recommended": loc["size_gib"] <= 4.0,
+                "npu_candidate": loc["size_gib"] <= 4.0,
+                "npu_compatible": False,
+                "npu_recommended": False,
                 "is_installed": True,
                 "is_custom_local": True,
             }

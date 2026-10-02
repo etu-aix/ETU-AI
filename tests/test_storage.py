@@ -75,6 +75,31 @@ class TestStorageManager(unittest.TestCase):
         self.assertEqual(len(cached), 1)
         self.assertEqual(cached[0]["filename"], "model.gguf")
 
+    def test_profiles_are_persisted_and_conversations_keep_identity(self):
+        profile = self.storage.save_profile("Tuteur Python", "🐍", "Explique pas à pas")
+        conversation_id = self.storage.create_conversation("Cours", profile_id=profile["id"])
+        reopened = StorageManager(db_path=self.db_path)
+        self.assertEqual(reopened.get_conversation(conversation_id)["profile_id"], profile["id"])
+        self.assertEqual(reopened.get_profile(profile["id"])["instructions"], "Explique pas à pas")
+        reopened.save_profile("Tuteur Python", "🐍", "Donne des exemples", profile_id=profile["id"])
+        self.assertEqual(reopened.get_profile(profile["id"])["instructions"], "Donne des exemples")
+        self.assertTrue(reopened.delete_profile(profile["id"]))
+        self.assertEqual(reopened.get_conversation(conversation_id)["profile_id"], "default")
+
+    def test_legacy_conversation_migrates_to_profiles(self):
+        import sqlite3
+        old_db = self.temp_dir.name + "/legacy.db"
+        connection = sqlite3.connect(old_db)
+        try:
+            connection.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT, created_at TEXT, updated_at TEXT, model_used TEXT)")
+            connection.execute("INSERT INTO conversations VALUES ('legacy', 'Ancien chat', '', '', 'default')")
+            connection.commit()
+        finally:
+            connection.close()
+        migrated = StorageManager(db_path=Path(old_db))
+        self.assertIsNone(migrated.get_conversation("legacy")["profile_id"])
+        self.assertIsNotNone(migrated.get_profile("default"))
+
 
 class TestStateManager(unittest.TestCase):
 

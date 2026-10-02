@@ -466,6 +466,18 @@ def detect_npus() -> list[dict[str, str]]:
                         "device_id": item.get("DeviceID", ""),
                         "type": "npu"
                     })
+            if not npus:
+                # CIM peut être interdit dans une session utilisateur alors que PnP
+                # expose toujours la classe dédiée aux accélérateurs de calcul.
+                fallback = subprocess.run(
+                    ["pnputil", "/enum-devices", "/class", "ComputeAccelerator", "/connected"],
+                    capture_output=True, text=True, timeout=8, check=False,
+                )
+                if fallback.returncode == 0:
+                    for line in fallback.stdout.splitlines():
+                        name = line.split(":", 1)[-1].strip()
+                        if any(label in name.lower() for label in ("ai boost", "ryzen ai", "hexagon", "npu", "neural processing")):
+                            npus.append({"name": name, "manufacturer": "", "device_id": "", "type": "npu"})
         elif platform.system() == "Linux":
             if os.path.exists("/dev/accel") or os.path.exists("/sys/class/accel"):
                 npus.append({"name": "Linux Compute Accelerator (NPU/VPU)", "manufacturer": "Generic", "type": "npu"})

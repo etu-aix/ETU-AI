@@ -2,25 +2,55 @@
 import unittest
 from pathlib import Path
 import sys
+import tempfile
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient
 from api_server import app
+import api_server
+from storage.db import StorageManager
+from storage.state_manager import StateManager
+from setup_wizard import SetupWizardManager
 
 
 class TestAPIServer(unittest.TestCase):
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.storage = StorageManager(Path(self.temp_dir.name) / "api.db")
+        self.original_state_instance = StateManager._instance
+        StateManager._instance = None
+        self.state = StateManager(Path(self.temp_dir.name) / "state.json")
+        self.wizard = SetupWizardManager(storage=self.storage)
+        self.wizard.state_mgr = self.state
+        self.patches = [
+            patch.object(api_server, "storage", self.storage),
+            patch.object(api_server, "state_manager", self.state),
+            patch.object(api_server, "wizard_manager", self.wizard),
+            patch.object(api_server.stream_handler, "storage", self.storage),
+        ]
+        for item in self.patches:
+            item.start()
         self.client = TestClient(app)
+
+    def tearDown(self):
+        self.client.close()
+        for item in reversed(self.patches):
+            item.stop()
+        StateManager._instance = self.original_state_instance
+        self.temp_dir.cleanup()
 
     def test_status_endpoint(self):
         resp = self.client.get("/api/status")
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertEqual(data["status"], "online")
+        self.assertEqual(data["app_name"], "ETU-AI")
         self.assertIn("backend", data)
         self.assertIn("paired_with_etu", data)
+        self.assertIn("model_state", data)
 
     def test_conversations_api(self):
         # Création
@@ -56,13 +86,11 @@ class TestAPIServer(unittest.TestCase):
             "/api/handshake",
             json={"pairing_token": "token_test_456", "student_id": "etu_999"},
         )
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertTrue(data["success"])
+        self.assertEqual(resp.status_code, 501)
 
         # Statut mis à jour
         status_resp = self.client.get("/api/status")
-        self.assertTrue(status_resp.json()["paired_with_etu"])
+        self.assertFalse(status_resp.json()["paired_with_etu"])
 
     def test_static_ui_serving(self):
         resp = self.client.get("/")
@@ -100,8 +128,11 @@ class TestAPIServer(unittest.TestCase):
         mock_resp = MagicMock()
         mock_resp.read.return_value = b'{"success": true, "model": "Ministral-3-3B-Instruct-2512-Q4_K_M"}'
         mock_resp.__enter__.return_value = mock_resp
+        status_mock = MagicMock()
+        status_mock.read.return_value = b'{"status": "running", "active_model": "Ministral-3-3B-Instruct-2512-Q4_K_M"}'
+        status_mock.__enter__.return_value = status_mock
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch("urllib.request.urlopen", side_effect=[mock_resp, status_mock]), patch.object(api_server.downloader, "list_installed_models", return_value=["Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"]):
             sel_resp = self.client.post("/api/models/select", json={"model": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"})
             self.assertEqual(sel_resp.status_code, 200)
             data = sel_resp.json()
@@ -151,11 +182,9 @@ class TestAPIServer(unittest.TestCase):
         self.assertIn("hardware", data)
 
     def test_auto_select_apply_api(self):
-        resp = self.client.post("/api/models/auto-select/apply")
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertTrue(data.get("success"))
-        self.assertIn("active_model", data)
+        with patch.object(api_server.downloader, "list_installed_models", return_value=[]):
+            resp = self.client.post("/api/models/auto-select/apply")
+        self.assertEqual(resp.status_code, 409)
 
 
 if __name__ == "__main__":

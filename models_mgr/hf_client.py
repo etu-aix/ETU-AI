@@ -510,25 +510,15 @@ class HuggingFaceClient:
         tree = self._get_json(url)
 
         if not tree or not isinstance(tree, list):
-            # Recherche dans le catalogue local de secours
-            for m in FALLBACK_GGUF_MODELS:
-                if m["repo"].lower() == repo_id.lower():
-                    return [
-                        {
-                            "filename": q["filename"],
-                            "size_bytes": int(q["size_gib"] * (1024 ** 3)),
-                            "size_gib": q["size_gib"],
-                            "quant": q["quant"],
-                        }
-                        for q in m.get("quantizations", [])
-                    ]
             return []
 
         gguf_files = []
         for file_info in tree:
             path = file_info.get("path", "")
-            if path.lower().endswith(".gguf") and file_info.get("type") == "file":
-                size_bytes = file_info.get("size", 0)
+            if re.fullmatch(r"[A-Za-z0-9_.-]+\.gguf", path, re.IGNORECASE) and file_info.get("type") == "file":
+                size_bytes = file_info.get("size") or (file_info.get("lfs") or {}).get("size") or 0
+                if size_bytes <= 0:
+                    continue
                 size_gib = round(size_bytes / (1024 ** 3), 2) if size_bytes else 0.0
                 quant = self._extract_quant(path)
                 gguf_files.append({
@@ -536,6 +526,7 @@ class HuggingFaceClient:
                     "size_bytes": size_bytes,
                     "size_gib": size_gib,
                     "quant": quant,
+                    "sha256": (file_info.get("lfs") or {}).get("oid"),
                 })
 
         # Tri par pertinence de quantification : Q4_K_M en premier, puis Q5_K_M, etc.
@@ -580,7 +571,7 @@ class HuggingFaceClient:
         has_npu = bool(npus and len(npus) > 0)
         has_gpu = bool(gpus and backend in ("cuda", "vulkan", "metal"))
 
-        # Critères d'accélération NPU : taille <= 3.8 Go (idéalement 1B à 3.8B paramètres)
+        # La taille rend un modèle léger, mais ne prouve pas un backend NPU.
         is_npu_optimal = has_npu and (size_gib <= 3.2)
         is_npu_compatible = has_npu and (size_gib <= 4.2)
 
@@ -603,14 +594,6 @@ class HuggingFaceClient:
             color = "warning"
             recommendation = f"Fonctionnera mais consommera presque toute votre RAM ({required_ram_gib} Go / {total_ram_gib} Go)."
             score = 45
-        elif is_npu_optimal:
-            is_compatible = True
-            status_tier = "optimal"
-            npu_name = npus[0].get("name", "NPU")
-            badge = "⚡ Optimal NPU"
-            color = "cyan"
-            recommendation = f"Exécution ultra-rapide et économe accélérée par votre puce neurale ({npu_name})."
-            score = 98
         elif has_gpu and size_gib <= 8.0:
             is_compatible = True
             status_tier = "optimal"
@@ -618,13 +601,6 @@ class HuggingFaceClient:
             color = "success"
             recommendation = f"Excellente vitesse avec accélération matérielle graphique ({backend.upper()})."
             score = 95
-        elif is_npu_compatible:
-            is_compatible = True
-            status_tier = "optimal"
-            badge = "⚡ Compatible NPU"
-            color = "cyan"
-            recommendation = "Compatible avec votre unité neurale NPU pour un usage basse consommation."
-            score = 90
         elif required_ram_gib <= 6.0:
             is_compatible = True
             status_tier = "optimal"
@@ -648,9 +624,10 @@ class HuggingFaceClient:
             "recommendation": recommendation,
             "score": score,
             "required_ram_gib": required_ram_gib,
-            "has_npu_acceleration": is_npu_optimal or is_npu_compatible,
+            "has_npu_acceleration": False,
+            "npu_candidate": is_npu_optimal or is_npu_compatible,
             "has_gpu_acceleration": has_gpu,
-            "npu_compatible": is_npu_compatible,
+            "npu_compatible": False,
             "system_total_ram_gib": total_ram_gib,
         }
 
@@ -677,9 +654,11 @@ class HuggingFaceClient:
             if not query or query.lower() in fb["name"].lower() or query.lower() in fb["repo"].lower():
                 candidates.append(fb)
                 seen_repos.add(fb["repo"].lower())
+                if len(candidates) >= limit:
+                    break
 
         # 2. Modèles issus de Hugging Face Live API
-        for item in raw_list:
+        for item in raw_list[:max(0, limit - len(candidates))]:
             repo = item["repo"]
             if repo.lower() not in seen_repos:
                 candidates.append(item)
@@ -692,21 +671,15 @@ class HuggingFaceClient:
             default_file = c.get("default_file")
             quantizations = c.get("quantizations")
             
+            verified_file = False
             if not default_file:
                 # Récupération des fichiers du dépôt
                 files = self.get_model_files(repo)
                 if not files:
-                    # Estimation par défaut basée sur le nombre de paramètres
-                    est_size = self._estimate_size_from_params(c.get("params", "3B"))
-                    default_file = {
-                        "filename": f"{c.get('name', 'model').replace(' ', '-')}-Q4_K_M.gguf",
-                        "size_gib": est_size,
-                        "quant": "Q4_K_M",
-                    }
-                    quantizations = [default_file]
-                else:
-                    default_file = files[0]
-                    quantizations = files
+                    continue
+                default_file = files[0]
+                quantizations = files
+                verified_file = True
 
             size_gib = default_file.get("size_gib", 2.5)
             comp = self.evaluate_model_compatibility(
@@ -735,7 +708,8 @@ class HuggingFaceClient:
                 "compatibility": comp,
                 "npu_compatible": comp["npu_compatible"],
                 "is_installed": False,
-                "is_huggingface_live": True,
+                "is_huggingface_live": verified_file,
+                "file_verified": verified_file,
             }
             compatible_models.append(entry)
 
@@ -761,6 +735,10 @@ class HuggingFaceClient:
         if not models:
             # Sécurité : renvoie le premier modèle de secours
             first_fallback = dict(FALLBACK_GGUF_MODELS[0])
+            first_fallback["filename"] = first_fallback["default_file"]["filename"]
+            first_fallback["size_gib"] = first_fallback["default_file"]["size_gib"]
+            first_fallback["is_installed"] = False
+            first_fallback["file_verified"] = False
             first_fallback["compatibility"] = self.evaluate_model_compatibility(
                 size_gib=first_fallback["default_file"]["size_gib"],
                 model_name=first_fallback["name"],

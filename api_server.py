@@ -5,11 +5,16 @@ du handshake avec etu-aix.alwaysdata.net et sert l'interface web statique.
 """
 
 import json
+import base64
+import logging
+import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 import urllib.request
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -30,10 +35,13 @@ from models_mgr.catalog import get_catalog_with_status
 from models_mgr.downloader import ModelDownloader
 from models_mgr.hf_client import hf_client
 from storage.db import StorageManager
+from storage.api_credentials import delete_api_key, get_api_key, set_api_key
 from storage.state_manager import state_manager
 from tools.executor import ToolExecutor
 
 from setup_wizard import wizard_manager
+
+logger = logging.getLogger(__name__)
 
 UI_DIR = BASE_DIR / "ui"
 
@@ -48,7 +56,10 @@ app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
 def on_startup():
     """Initialisation au démarrage du serveur : enregistre l'état et lance Beacon si setup déjà fait."""
     import threading
-    state_manager.record_startup()
+    try:
+        state_manager.record_startup()
+    except OSError as exc:
+        print(f"[!] Horodatage du démarrage non enregistré : {exc}")
     try:
         hw = scan_hardware()
         state_manager.update_state({
@@ -96,6 +107,67 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     message: str
     model: Optional[str] = None
+    profile_id: Optional[str] = None
+
+
+class ProfileRequest(BaseModel):
+    name: str
+    avatar: str = "✦"
+    instructions: str = ""
+    model: Optional[str] = None
+
+
+class ProviderSettingsRequest(BaseModel):
+    provider: str = "openai-compatible"
+    enabled: bool = False
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
+    api_key: Optional[str] = None
+    clear_api_key: bool = False
+
+
+PROVIDER_PRESETS = {
+    "openai-compatible": {"label": "Autre API compatible OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "openai": {"label": "OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "openrouter": {"label": "OpenRouter", "type": "openai", "base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-4o-mini"},
+    "groq": {"label": "Groq", "type": "openai", "base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile"},
+    "mistral": {"label": "Mistral", "type": "openai", "base_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"},
+    "together": {"label": "Together AI", "type": "openai", "base_url": "https://api.together.xyz/v1", "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo"},
+    "deepseek": {"label": "DeepSeek", "type": "openai", "base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+    "xai": {"label": "xAI", "type": "openai", "base_url": "https://api.x.ai/v1", "model": "grok-3-mini"},
+    "cerebras": {"label": "Cerebras", "type": "openai", "base_url": "https://api.cerebras.ai/v1", "model": "llama-3.3-70b"},
+    "fireworks": {"label": "Fireworks AI", "type": "openai", "base_url": "https://api.fireworks.ai/inference/v1", "model": "accounts/fireworks/models/llama-v3p3-70b-instruct"},
+    "perplexity": {"label": "Perplexity", "type": "openai", "base_url": "https://api.perplexity.ai", "model": "sonar"},
+    "nvidia": {"label": "NVIDIA NIM", "type": "openai", "base_url": "https://integrate.api.nvidia.com/v1", "model": "meta/llama-3.3-70b-instruct"},
+    "sambanova": {"label": "SambaNova", "type": "openai", "base_url": "https://api.sambanova.ai/v1", "model": "Meta-Llama-3.3-70B-Instruct"},
+    "deepinfra": {"label": "DeepInfra", "type": "openai", "base_url": "https://api.deepinfra.com/v1/openai", "model": "meta-llama/Meta-Llama-3.1-70B-Instruct"},
+    "github-models": {"label": "GitHub Models", "type": "openai", "base_url": "https://models.inference.ai.azure.com", "model": "gpt-4o-mini"},
+    "anthropic": {"label": "Anthropic", "type": "anthropic", "base_url": "https://api.anthropic.com", "model": "claude-haiku-4-5-20251001"},
+    "gemini": {"label": "Google Gemini", "type": "gemini", "base_url": "https://generativelanguage.googleapis.com", "model": "gemini-3.8-flash"},
+    "custom": {"label": "Autre API compatible OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1", "model": ""},
+}
+
+
+def validate_profile(req: ProfileRequest) -> tuple[str, str, str]:
+    name = req.name.strip()
+    avatar = req.avatar.strip() or "✦"
+    instructions = req.instructions.strip()
+    image_prefix = "data:image/webp;base64,"
+    if avatar.startswith(image_prefix):
+        encoded = avatar[len(image_prefix):]
+        if len(encoded) > 95000 or not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded):
+            raise HTTPException(status_code=422, detail="Image de profil invalide")
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Image de profil invalide")
+        if len(image_bytes) > 70000 or image_bytes[:4] != b"RIFF" or image_bytes[8:12] != b"WEBP":
+            raise HTTPException(status_code=422, detail="Image de profil invalide")
+    elif len(avatar) > 20:
+        raise HTTPException(status_code=422, detail="Tête de profil trop longue")
+    if not name or len(name) > 50 or len(instructions) > 3000:
+        raise HTTPException(status_code=422, detail="Nom ou instructions invalides")
+    return name, avatar, instructions
 
 
 class DownloadRequest(BaseModel):
@@ -105,7 +177,9 @@ class DownloadRequest(BaseModel):
 
 class ModelSelectRequest(BaseModel):
     model: str
-    context_size: Optional[int] = 4096
+    context_size: Optional[int] = None
+    source: str = "local"
+    provider: Optional[str] = None
 
 
 class HandshakeRequest(BaseModel):
@@ -120,15 +194,25 @@ class HandshakeRequest(BaseModel):
 async def chat_stream_endpoint(req: ChatRequest):
     """Point d'entrée du streaming SSE pour les réponses de l'IA."""
     conv_id = req.conversation_id
-    if not conv_id:
-        conv_id = storage.create_conversation(title=req.message[:30] + "...")
+    if conv_id:
+        conversation = storage.get_conversation(conv_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation introuvable")
+        profile_id = conversation.get("profile_id") or "default"
+    else:
+        profile_id = req.profile_id or storage.get_setting("active_profile", "default")
+        if not storage.get_profile(profile_id):
+            raise HTTPException(status_code=404, detail="Profil introuvable")
+        conv_id = storage.create_conversation(title=req.message[:30] + "...", profile_id=profile_id)
+    profile = storage.get_profile(profile_id) or storage.get_profile("default")
 
     return StreamingResponse(
-        stream_handler.stream_chat(conv_id, req.message, req.model),
+        stream_handler.stream_chat(conv_id, req.message, req.model or profile.get("model"), profile),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
             "X-Conversation-Id": conv_id,
         },
     )
@@ -145,7 +229,10 @@ def list_conversations():
 @app.post("/api/conversations")
 def create_conversation(data: dict[str, Any]):
     title = data.get("title", "Nouvelle discussion")
-    conv_id = storage.create_conversation(title=title)
+    profile_id = data.get("profile_id") or storage.get_setting("active_profile", "default")
+    if not storage.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    conv_id = storage.create_conversation(title=title, profile_id=profile_id)
     return {"conversation_id": conv_id, "title": title}
 
 
@@ -163,38 +250,88 @@ def delete_conversation(conv_id: str):
     return {"success": success}
 
 
+@app.get("/api/profiles")
+def list_profiles():
+    return {"profiles": storage.list_profiles(), "active_profile_id": storage.get_setting("active_profile", "default")}
+
+
+@app.post("/api/profiles")
+def create_profile(req: ProfileRequest):
+    name, avatar, instructions = validate_profile(req)
+    return storage.save_profile(name, avatar, instructions, req.model)
+
+
+@app.put("/api/profiles/{profile_id}")
+def update_profile(profile_id: str, req: ProfileRequest):
+    if not storage.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    name, avatar, instructions = validate_profile(req)
+    return storage.save_profile(name, avatar, instructions, req.model, profile_id)
+
+
+@app.post("/api/profiles/{profile_id}/activate")
+def activate_profile(profile_id: str):
+    if not storage.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    storage.set_setting("active_profile", profile_id)
+    return {"active_profile_id": profile_id}
+
+
+@app.delete("/api/profiles/{profile_id}")
+def delete_profile(profile_id: str):
+    if profile_id == "default":
+        raise HTTPException(status_code=400, detail="Le profil initial ne peut pas être supprimé")
+    if not storage.delete_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profil introuvable")
+    if storage.get_setting("active_profile", "default") == profile_id:
+        storage.set_setting("active_profile", "default")
+    return {"success": True}
+
+
 # -----------------------------------------------------------------------------
 # Endpoints de Gestion des Modèles
 # -----------------------------------------------------------------------------
+def get_configured_api_models() -> list[dict[str, Any]]:
+    state = storage.get_setting("api_providers", {}) or {}
+    configs = state.get("configs", {})
+    legacy = storage.get_setting("api_provider", {}) or {}
+    if not configs and legacy:
+        configs = {legacy.get("provider", "openai-compatible"): legacy}
+    models = []
+    for provider_id, config in configs.items():
+        model_name = str(config.get("model", "")).strip()
+        if not model_name:
+            continue
+        try:
+            has_key = bool(get_api_key(provider_id))
+        except Exception:
+            has_key = False
+        if not has_key:
+            continue
+        preset = PROVIDER_PRESETS.get(provider_id, {})
+        models.append({
+            "id": f"api:{provider_id}",
+            "model": model_name,
+            "name": model_name,
+            "provider": provider_id,
+            "provider_label": preset.get("label", provider_id),
+            "source": "api",
+        })
+    return models
+
+
 @app.get("/api/models/catalog")
 def get_catalog():
     hw = scan_hardware()
     installed = set(downloader.list_installed_models())
-    # 1. Base catalogue de référence et modèles locaux
+    # Le catalogue local doit rester disponible même si Hugging Face est lent.
+    # L'exploration distante possède son propre onglet et son propre endpoint.
     base_catalog = get_catalog_with_status(hw, list(installed))
-    seen_filenames = {m.get("filename") for m in base_catalog if m.get("filename")}
-    seen_repos = {m.get("repo", "").lower() for m in base_catalog if m.get("repo")}
-
-    # 2. Enrichissement automatique avec toutes les IA compatibles Hugging Face
-    hf_compatible = hf_client.get_all_compatible_models(
-        hardware_info=hw,
-        query="",
-        limit=60,
-        only_compatible=True,
-    )
-    for hf_m in hf_compatible:
-        fn = hf_m.get("filename")
-        repo = hf_m.get("repo", "").lower()
-        if fn not in seen_filenames and repo not in seen_repos:
-            if fn in installed:
-                hf_m["is_installed"] = True
-            base_catalog.append(hf_m)
-            seen_filenames.add(fn)
-            seen_repos.add(repo)
 
     return {
         "catalog": base_catalog,
         "installed": list(installed),
+        "remote_models": get_configured_api_models(),
         "hardware": {
             "recommended_backend": hw.get("recommended_backend"),
             "gpus": hw.get("gpus", []),
@@ -322,18 +459,30 @@ def apply_auto_selected_model():
         raise HTTPException(status_code=404, detail="Aucun modèle compatible détecté")
     target = best[0]
     filename = target.get("filename")
-    clean_stem = filename[:-5] if filename and filename.lower().endswith(".gguf") else (filename or "model")
-    storage.set_setting("selected_model", clean_stem)
-    return {
-        "success": True,
-        "selected_model": target,
-        "active_model": clean_stem,
-    }
+    if filename not in downloader.list_installed_models():
+        raise HTTPException(status_code=409, detail="Le modèle recommandé doit d'abord être installé")
+    result = select_model(ModelSelectRequest(model=filename))
+    return {**result, "selected_model": target}
 
 
 @app.post("/api/models/download")
 def download_model(req: DownloadRequest):
-    task_id = downloader.start_download(req.repo, req.filename)
+    try:
+        downloader.validate_reference(req.repo, req.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if req.filename in downloader.list_installed_models():
+        raise HTTPException(status_code=409, detail="Ce fichier GGUF est déjà installé")
+    files = hf_client.get_model_files(req.repo)
+    if not files:
+        raise HTTPException(status_code=503, detail="Impossible de vérifier les fichiers du dépôt Hugging Face")
+    selected_file = next((entry for entry in files if entry["filename"] == req.filename), None)
+    if not selected_file:
+        raise HTTPException(status_code=404, detail="Fichier GGUF absent du dépôt")
+    try:
+        task_id = downloader.start_download(req.repo, req.filename, selected_file.get("sha256"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return {"task_id": task_id, "status": "started"}
 
 
@@ -345,14 +494,47 @@ def get_download_task(task_id: str):
     return task
 
 
+@app.post("/api/models/tasks/{task_id}/cancel")
+def cancel_download_task(task_id: str):
+    if not downloader.cancel_download(task_id):
+        raise HTTPException(status_code=404, detail="Tâche active introuvable")
+    return {"cancelled": True}
+
+
 @app.post("/api/models/select")
 def select_model(req: ModelSelectRequest):
     """Bascule à chaud du modèle via l'API de MAIA-Beacon."""
+    if req.source == "api":
+        if not req.provider or req.provider not in PROVIDER_PRESETS:
+            raise HTTPException(status_code=400, detail="Fournisseur API invalide")
+        state = storage.get_setting("api_providers", {}) or {}
+        configs = state.get("configs", {})
+        legacy = storage.get_setting("api_provider", {}) or {}
+        if not configs and legacy:
+            configs = {legacy.get("provider", "openai-compatible"): legacy}
+        config = configs.get(req.provider)
+        if not config or config.get("model") != req.model:
+            raise HTTPException(status_code=404, detail="Modèle API non configuré")
+        try:
+            if not get_api_key(req.provider):
+                raise HTTPException(status_code=400, detail="Clé API manquante pour ce fournisseur")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Coffre de clés indisponible") from exc
+        storage.set_setting("api_providers", {"active_provider": req.provider, "configs": configs})
+        return {"success": True, "active_model": req.model, "active_model_id": f"api:{req.provider}", "active_provider": req.provider}
+    if req.source != "local":
+        raise HTTPException(status_code=400, detail="Source de modèle invalide")
     clean_model = req.model[:-5] if req.model.lower().endswith(".gguf") else req.model
-    storage.set_setting("selected_model", clean_model)
+    if f"{clean_model}.gguf" not in downloader.list_installed_models():
+        raise HTTPException(status_code=404, detail="Modèle non installé")
     try:
         beacon_url = "http://127.0.0.1:11343/api/select"
-        payload = json.dumps({"model": clean_model, "context_size": req.context_size}).encode("utf-8")
+        selection: dict[str, Any] = {"model": clean_model}
+        if req.context_size is not None:
+            selection["context_size"] = req.context_size
+        payload = json.dumps(selection).encode("utf-8")
         req_post = urllib.request.Request(
             beacon_url,
             data=payload,
@@ -361,14 +543,31 @@ def select_model(req: ModelSelectRequest):
         )
         with urllib.request.urlopen(req_post, timeout=10) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            return {"success": True, "active_model": clean_model, "result": data}
+            if data.get("success") is False:
+                raise HTTPException(status_code=502, detail=data.get("error", "Beacon a refusé le modèle"))
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=3) as status_resp:
+                status = json.loads(status_resp.read().decode("utf-8"))
+            if status.get("status") == "error":
+                raise HTTPException(status_code=502, detail=status.get("error_message") or "Chargement du modèle échoué")
+            if status.get("status") == "running" and status.get("active_model") == clean_model:
+                storage.set_setting("selected_model", clean_model)
+                provider_state = storage.get_setting("api_providers", {}) or {}
+                if provider_state:
+                    provider_state["active_provider"] = None
+                    storage.set_setting("api_providers", provider_state)
+                legacy_provider = storage.get_setting("api_provider", {}) or {}
+                if legacy_provider.get("enabled"):
+                    legacy_provider["enabled"] = False
+                    storage.set_setting("api_provider", legacy_provider)
+                return {"success": True, "active_model": clean_model, "result": status}
+            time.sleep(0.5)
+        raise HTTPException(status_code=504, detail="Délai de chargement du modèle dépassé")
+    except HTTPException:
+        raise
     except Exception as e:
-        return {
-            "success": True,
-            "active_model": clean_model,
-            "beacon_online": False,
-            "message": f"Modèle '{clean_model}' sélectionné ({e}).",
-        }
+        raise HTTPException(status_code=503, detail=f"Beacon indisponible : {e}")
 
 
 # -----------------------------------------------------------------------------
@@ -377,6 +576,94 @@ def select_model(req: ModelSelectRequest):
 @app.get("/api/setup/status")
 def get_setup_status():
     return wizard_manager.get_status()
+
+
+@app.get("/api/settings/provider")
+def get_provider_settings(provider: Optional[str] = None):
+    state = storage.get_setting("api_providers", {}) or {}
+    configs = state.get("configs", {})
+    legacy = storage.get_setting("api_provider", {}) or {}
+    if not configs and legacy:
+        legacy_id = legacy.get("provider", "openai-compatible")
+        configs[legacy_id] = legacy
+    provider = provider or state.get("active_provider") or legacy.get("provider") or "openai-compatible"
+    if provider not in PROVIDER_PRESETS:
+        raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
+    config = configs.get(provider, {})
+    preset = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["custom"])
+    try:
+        has_key = bool(get_api_key(provider))
+    except Exception:
+        has_key = False
+    configured = {}
+    for key, value in configs.items():
+        try:
+            configured[key] = {"base_url": value.get("base_url"), "model": value.get("model"), "has_api_key": bool(get_api_key(key))}
+        except Exception:
+            configured[key] = {"base_url": value.get("base_url"), "model": value.get("model"), "has_api_key": False}
+    return {
+        **preset,
+        **config,
+        "provider": provider,
+        "enabled": state.get("active_provider") == provider or (not state and bool(legacy.get("enabled")) and legacy.get("provider", "openai-compatible") == provider),
+        "active_provider": state.get("active_provider") if "active_provider" in state else (legacy.get("provider", "openai-compatible") if legacy.get("enabled") else None),
+        "providers": PROVIDER_PRESETS,
+        "configured": configured,
+        "has_api_key": has_key,
+        "api_key": "",
+    }
+
+
+@app.put("/api/settings/provider")
+def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str] = Header(default=None, alias="Origin")):
+    if origin:
+        try:
+            parsed_origin = urlsplit(origin)
+            local_origin = parsed_origin.scheme in {"http", "https"} and parsed_origin.hostname in {"127.0.0.1", "localhost", "::1"}
+        except ValueError:
+            local_origin = False
+        if not local_origin:
+            raise HTTPException(status_code=403, detail="La configuration des clés est réservée à l’interface locale.")
+    if req.provider not in PROVIDER_PRESETS:
+        raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
+    preset = PROVIDER_PRESETS[req.provider]
+    base_url = req.base_url.strip().rstrip("/")
+    model = req.model.strip() or preset["model"]
+    try:
+        parsed_url = urlsplit(base_url)
+        local_http = parsed_url.scheme == "http" and parsed_url.hostname in {"127.0.0.1", "localhost", "::1"}
+        secure_https = parsed_url.scheme == "https" and bool(parsed_url.hostname)
+    except ValueError:
+        local_http = secure_https = False
+        parsed_url = None
+    if not (local_http or secure_https) or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+        raise HTTPException(status_code=400, detail="L’URL doit utiliser HTTPS (sauf pour un serveur local).")
+    if not model or len(model) > 200:
+        raise HTTPException(status_code=400, detail="URL ou nom de modèle invalide.")
+    key = (req.api_key or "").strip()
+    if key and not req.clear_api_key:
+        try:
+            set_api_key(key, req.provider)
+        except Exception as exc:
+            logger.exception("Secure API credential save failed for provider=%s", req.provider)
+            raise HTTPException(status_code=503, detail="Le coffre-fort système n’est pas disponible.") from exc
+    if req.clear_api_key:
+        delete_api_key(req.provider)
+    try:
+        has_key = bool(get_api_key(req.provider))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Le coffre-fort système n’est pas disponible.") from exc
+    if req.enabled and not has_key:
+        raise HTTPException(status_code=400, detail="Ajoutez une clé API avant d’activer le fournisseur.")
+    state = storage.get_setting("api_providers", {}) or {}
+    configs = state.get("configs", {})
+    legacy = storage.get_setting("api_provider", {}) or {}
+    if not configs and legacy:
+        configs[legacy.get("provider", "openai-compatible")] = legacy
+    configs[req.provider] = {"base_url": base_url, "model": model, "type": preset["type"]}
+    active_provider = req.provider if req.enabled else (None if state.get("active_provider", legacy.get("provider")) == req.provider else state.get("active_provider"))
+    storage.set_setting("api_providers", {"active_provider": active_provider, "configs": configs})
+    return get_provider_settings(req.provider)
 
 
 @app.get("/api/setup/state")
@@ -410,27 +697,20 @@ def reset_setup_endpoint():
 # -----------------------------------------------------------------------------
 @app.post("/api/handshake")
 def process_handshake(req: HandshakeRequest):
-    """Enregistre le token d'appairage étudiant pour autoriser etu-aix.alwaysdata.net."""
-    storage.set_setting("pairing_token", req.pairing_token)
-    if req.student_id:
-        storage.set_setting("student_id", req.student_id)
-        tool_executor.auth_token = req.pairing_token
-    return {
-        "success": True,
-        "message": "Appairage avec etu-aix.alwaysdata.net validé.",
-        "student_id": req.student_id,
-    }
+    """L'ancien protocole d'appairage attend le contrat GET découvrable d'Etu2."""
+    raise HTTPException(status_code=501, detail="Appairage Etu2 indisponible avant la publication de son contrat d'API")
 
 
 @app.get("/api/status")
 def server_status():
     hw = scan_hardware()
     installed = downloader.list_installed_models()
-    token = storage.get_setting("pairing_token")
     beacon_online = wizard_manager.is_beacon_online()
 
     active_model = None
     active_engine = None
+    model_ready = False
+    model_state = "offline"
     if beacon_online:
         try:
             req_b = urllib.request.Request("http://127.0.0.1:11343/api/status")
@@ -438,6 +718,8 @@ def server_status():
                 bdata = json.loads(resp.read().decode("utf-8"))
                 active_model = bdata.get("active_model")
                 active_engine = bdata.get("active_engine")
+                model_state = bdata.get("status", "unknown")
+                model_ready = bdata.get("status") == "running" and bool(active_model)
         except Exception:
             pass
 
@@ -449,16 +731,25 @@ def server_status():
 
     catalog_items = get_catalog_with_status(hw, installed)
     installed_catalog = [m for m in catalog_items if m.get("is_installed")]
+    provider_state = storage.get_setting("api_providers", {}) or {}
+    active_provider = provider_state.get("active_provider")
+    active_remote_model = next((model for model in get_configured_api_models() if model["provider"] == active_provider), None)
 
     return {
+        "app_name": "ETU-AI",
         "status": "online",
         "setup_completed": wizard_manager.is_completed(),
         "beacon_online": beacon_online,
         "active_model": active_model,
+        "active_remote_model": active_remote_model,
         "active_engine": active_engine,
-        "paired_with_etu": bool(token),
+        "model_ready": model_ready,
+        "model_state": model_state,
+        "paired_with_etu": False,
+        "etu2_available": False,
         "installed_models_count": len(installed),
         "installed_models": installed_catalog,
+        "remote_models": get_configured_api_models(),
         "backend": hw.get("recommended_backend"),
         "gpus": hw.get("gpus", []),
         "npus": hw.get("npus", []),

@@ -52,8 +52,6 @@ class SetupWizardManager:
         # 2. Vérification dans SQLite settings
         val = self.storage.get_setting("setup_completed", "false")
         if val in ("true", True, "1"):
-            # Synchroniser StateManager
-            self.state_mgr.update_state({"setup": {"completed": True}})
             return True
         return False
 
@@ -63,6 +61,15 @@ class SetupWizardManager:
             req = urllib.request.Request(f"{BEACON_URL}/v1/models")
             with urllib.request.urlopen(req, timeout=2) as resp:
                 return resp.status == 200
+        except Exception:
+            return False
+
+    def is_model_ready(self, filename: str) -> bool:
+        """Attend l'état réellement chargé, pas seulement l'ouverture du port."""
+        try:
+            with urllib.request.urlopen(f"{BEACON_URL}/api/status", timeout=3) as resp:
+                status = json.loads(resp.read().decode("utf-8"))
+            return status.get("status") == "running" and status.get("active_model") == Path(filename).stem
         except Exception:
             return False
 
@@ -149,6 +156,22 @@ class SetupWizardManager:
     def _run_pipeline(self, selected_models: list[dict[str, Any]]) -> None:
         """Exécute les 4 étapes du setup séquentiellement avec streaming des logs."""
         try:
+            if not selected_models:
+                raise ValueError("Choisissez au moins un modèle avant l'installation")
+            from models_mgr.hf_client import hf_client
+            from models_mgr.downloader import ModelDownloader
+            validator = ModelDownloader(storage=self.storage)
+            for item in selected_models:
+                repo, filename = item.get("repo", ""), item.get("filename", "")
+                if not repo or not filename:
+                    raise ValueError("Modèle sélectionné incomplet")
+                validator.validate_reference(repo if repo != "local" else "local/model", filename)
+                if not (AI_SERVER_DIR / "models" / filename).is_file():
+                    if repo == "local":
+                        raise ValueError(f"Fichier local {filename} absent")
+                    files = hf_client.get_model_files(repo)
+                    if filename not in {entry["filename"] for entry in files}:
+                        raise ValueError(f"Fichier {filename} introuvable ou impossible à vérifier sur Hugging Face")
             primary_model = selected_models[0] if selected_models else {
                 "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
                 "filename": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
@@ -306,12 +329,12 @@ class SetupWizardManager:
 
             # Attente de disponibilité de Beacon
             self.add_log("Validation de l'API Beacon et du chargement du modèle...")
-            deadline = time.monotonic() + 120
+            deadline = time.monotonic() + 300
             service_ready = False
             while time.monotonic() < deadline:
                 if self.beacon_process.poll() is not None:
                     raise RuntimeError(f"Le processus Beacon s'est arrêté prématurément (code {self.beacon_process.returncode})")
-                if self.is_beacon_online():
+                if self.is_model_ready(primary_model["filename"]):
                     service_ready = True
                     break
                 time.sleep(1)

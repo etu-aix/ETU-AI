@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import tempfile
 import threading
+import time
 from typing import Any, Optional
 
 STATE_FILE = Path(__file__).resolve().parent / "app_state.json"
@@ -105,11 +107,22 @@ class StateManager:
 
     def _save_atomic(self, data: dict[str, Any]) -> None:
         """Sauvegarde atomique du fichier JSON pour éviter toute corruption."""
-        tmp_file = self.file_path.with_suffix(".tmp")
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        tmp_file.replace(self.file_path)
+        fd, tmp_path = tempfile.mkstemp(prefix="app-state-", suffix=".tmp", dir=self.file_path.parent)
+        tmp_file = Path(tmp_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            for attempt in range(5):
+                try:
+                    tmp_file.replace(self.file_path)
+                    return
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.1 * (attempt + 1))
+        finally:
+            tmp_file.unlink(missing_ok=True)
 
     def get_state(self) -> dict[str, Any]:
         """Retourne une copie fraîche de l'état complet de l'application."""

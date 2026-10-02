@@ -54,9 +54,9 @@ class TestModelCatalog(unittest.TestCase):
         ministral = RECOMMENDED_CATALOG[0]
         self.assertTrue(ministral.get("npu_compatible"))
         res = assess_compatibility(ministral, hw_with_npu)
-        self.assertTrue(res["has_npu_acceleration"])
-        self.assertEqual(res["color"], "cyan")
-        self.assertIn("NPU", res["badge"])
+        self.assertFalse(res["has_npu_acceleration"])
+        self.assertTrue(res["npu_candidate"])
+        self.assertNotIn("NPU", res["badge"])
 
     def test_local_model_detection(self):
         from models_mgr.catalog import detect_local_models
@@ -94,9 +94,9 @@ class TestHuggingFaceClient(unittest.TestCase):
         }
         res = self.client.evaluate_model_compatibility(size_gib=2.1, model_name="Ministral 3B", hardware_info=hw)
         self.assertTrue(res["is_compatible"])
-        self.assertTrue(res["has_npu_acceleration"])
-        self.assertEqual(res["color"], "cyan")
-        self.assertGreater(res["score"], 80)
+        self.assertFalse(res["has_npu_acceleration"])
+        self.assertTrue(res["npu_candidate"])
+        self.assertGreater(res["score"], 70)
 
     def test_hf_evaluate_compatibility_ram_limit(self):
         # Model requires 45GB RAM on an 8GB machine -> should be marked incompatible
@@ -137,8 +137,8 @@ class TestHuggingFaceClient(unittest.TestCase):
         }
         best = self.client.auto_select_best_models(hardware_info=hw_npu, top_k=2)
         self.assertGreaterEqual(len(best), 1)
-        # Should prioritize NPU-compatible model
-        self.assertTrue(best[0]["compatibility"]["has_npu_acceleration"] or best[0]["npu_compatible"])
+        # Détection seule ne garantit pas l'accélération NPU.
+        self.assertFalse(best[0]["compatibility"]["has_npu_acceleration"])
 
 
 if __name__ == "__main__":

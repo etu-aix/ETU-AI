@@ -9,15 +9,36 @@ let activeDownloadPollers = {};
 let setupPollingInterval = null;
 let currentActiveModel = null;
 let availableInstalledModels = [];
+let remoteApiModels = [];
+let assistantProfiles = [];
+let activeProfileId = "default";
+let preferredProfileId = "default";
+let pendingAvatarData = null;
+const streamMarkup = new WeakMap();
+const streamFrames = new WeakMap();
+const appliedStreamTemplates = new WeakMap();
 
 document.addEventListener("DOMContentLoaded", () => {
+  document.documentElement.dataset.theme = localStorage.getItem("etu-theme") || "dark";
+  document.getElementById("btn-theme").addEventListener("click", () => {
+    const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("etu-theme", theme);
+  });
   initSetupWizard();
   initModals();
   initModelSelector();
   initChatForm();
+  document.getElementById("chat-messages").addEventListener("click", (event) => {
+    const suggestion = event.target.closest("[data-prompt]");
+    if (!suggestion) return;
+    document.getElementById("chat-input").value = suggestion.dataset.prompt;
+    document.getElementById("chat-form").requestSubmit();
+  });
+  initProfiles();
+  initApiSettings();
   loadConversations();
   loadServerStatus();
-  loadModelCatalog();
 
   const newChatBtn = document.getElementById("btn-new-chat");
   if (newChatBtn) {
@@ -42,6 +63,119 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 });
+
+async function initApiSettings() {
+  const open = document.getElementById("btn-open-api-settings");
+  const form = document.getElementById("api-settings-form");
+  if (!open || !form) return;
+  const providerSelect = document.getElementById("api-provider-select");
+  let presets = {};
+  const setKeyStatus = (hasKey) => {
+    const status = document.getElementById("api-key-status");
+    status.textContent = hasKey ? "Clé enregistrée" : "Aucune clé";
+    status.dataset.hasKey = String(Boolean(hasKey));
+  };
+  const renderProviderBrand = (id, config = {}) => {
+    const provider = presets[id] || {};
+    const labels = {
+      openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral",
+      openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek",
+      xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity",
+      nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models",
+      "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé",
+    };
+    const marks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
+    const card = document.getElementById("api-provider-brand");
+    card.dataset.provider = id;
+    document.getElementById("api-provider-mark").textContent = marks[id] || "AI";
+    document.getElementById("api-provider-brand-name").textContent = provider.label || labels[id] || id;
+    document.getElementById("api-provider-brand-detail").textContent = `${provider.type === "openai" ? "API compatible OpenAI" : "Connexion API native"} · clé stockée localement`;
+    document.getElementById("api-provider-brand-state").textContent = config.enabled ? "Actif" : (config.has_api_key ? "Clé enregistrée" : "À configurer");
+    card.classList.toggle("is-active", Boolean(config.enabled));
+  };
+  const updatePrivacyHint = (config) => {
+    const hint = document.getElementById("chat-privacy-hint");
+    const active = config?.active_provider;
+    const providerLabel = active && config.providers?.[active]?.label;
+    if (hint) hint.textContent = providerLabel ? `Messages transmis à ${providerLabel}.` : "Les réponses restent sur cet ordinateur.";
+  };
+  const applyProviderPreset = (id, preserveValues = false) => {
+    const preset = presets[id];
+    if (!preset) return;
+    const nativeProvider = preset.type !== "openai";
+    document.getElementById("api-provider-url-wrap").hidden = nativeProvider;
+    document.getElementById("api-provider-url").required = !nativeProvider;
+    if (!preserveValues) {
+      document.getElementById("api-provider-url").value = preset.base_url;
+      document.getElementById("api-provider-model").value = preset.model || "";
+    }
+  };
+  providerSelect.addEventListener("change", async () => {
+    applyProviderPreset(providerSelect.value);
+    document.getElementById("api-provider-key").value = "";
+    document.getElementById("api-provider-clear-key").checked = false;
+    try {
+      const response = await fetch(`/api/settings/provider?provider=${encodeURIComponent(providerSelect.value)}`);
+      if (!response.ok) throw new Error("Impossible de charger les réglages de ce fournisseur.");
+      const config = await response.json();
+      renderProviderBrand(providerSelect.value, config);
+      document.getElementById("api-provider-url").value = config.base_url || presets[providerSelect.value]?.base_url || "";
+      document.getElementById("api-provider-model").value = config.model || presets[providerSelect.value]?.model || "";
+      document.getElementById("api-provider-enabled").checked = Boolean(config.enabled);
+      setKeyStatus(config.has_api_key);
+    } catch (error) {
+      document.getElementById("api-settings-message").textContent = error.message;
+    }
+  });
+  fetch("/api/settings/provider").then((response) => response.ok ? response.json() : null).then(updatePrivacyHint).catch(() => {});
+  open.addEventListener("click", async () => {
+    const message = document.getElementById("api-settings-message");
+    message.textContent = "";
+    try {
+      const response = await fetch("/api/settings/provider");
+      if (!response.ok) throw new Error("Impossible de charger la configuration.");
+      const config = await response.json();
+      presets = config.providers || {};
+      providerSelect.value = config.provider || "openai-compatible";
+      if (!providerSelect.value) providerSelect.value = "custom";
+      renderProviderBrand(providerSelect.value, config);
+      applyProviderPreset(providerSelect.value, true);
+      document.getElementById("api-provider-enabled").checked = Boolean(config.enabled);
+      document.getElementById("api-provider-url").value = config.base_url || presets[providerSelect.value]?.base_url || "https://api.openai.com/v1";
+      document.getElementById("api-provider-model").value = config.model || presets[providerSelect.value]?.model || "";
+      document.getElementById("api-provider-key").value = "";
+      document.getElementById("api-provider-clear-key").checked = false;
+      setKeyStatus(config.has_api_key);
+      openModal("modal-api-settings");
+    } catch (error) { message.textContent = error.message; }
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const message = document.getElementById("api-settings-message");
+    message.textContent = "Enregistrement…";
+    const payload = {
+      enabled: document.getElementById("api-provider-enabled").checked,
+      base_url: document.getElementById("api-provider-url").value,
+      model: document.getElementById("api-provider-model").value,
+      api_key: document.getElementById("api-provider-key").value,
+      clear_api_key: document.getElementById("api-provider-clear-key").checked,
+      provider: providerSelect.value,
+    };
+    try {
+      const response = await fetch("/api/settings/provider", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Enregistrement impossible.");
+      document.getElementById("api-provider-key").value = "";
+      setKeyStatus(result.has_api_key);
+      renderProviderBrand(providerSelect.value, result);
+      updatePrivacyHint(result);
+      message.textContent = result.enabled ? "Fournisseur activé et configuration enregistrée." : "Configuration enregistrée.";
+      loadServerStatus();
+    } catch (error) { message.textContent = error.message; }
+  });
+}
 
 /* -------------------------------------------------------------------------- */
 /* -------------------------------------------------------------------------- */
@@ -182,8 +316,13 @@ class WizardParticlesFX {
   }
 
   animate() {
-    requestAnimationFrame(() => this.animate());
     if (!this.ctx || !this.canvas) return;
+    if (document.hidden || document.getElementById("wizard-container")?.style.display === "none" ||
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setTimeout(() => this.animate(), 1000);
+      return;
+    }
+    requestAnimationFrame(() => this.animate());
 
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
@@ -294,7 +433,8 @@ async function initSetupWizard() {
   const appContainer = document.getElementById("app-container");
 
   // Initialisation du canvas de particules et d'ondulations
-  wizardParticles = new WizardParticlesFX("wizard-particles-canvas");
+  // Les effets de particules étaient coûteux sur les machines visées par l'IA locale.
+  // L'orbe CSS conserve un retour visuel sans boucle de rendu permanente.
 
   // Boutons de navigation du Wizard
   document.getElementById("btn-wizard-to-step2").addEventListener("click", () => {
@@ -373,6 +513,7 @@ function showWizardStep(stepNum) {
   document.querySelectorAll(".wizard-step").forEach((el) => el.classList.remove("active"));
   const target = document.getElementById(`wizard-step-${stepNum}`);
   if (target) target.classList.add("active");
+  document.getElementById("wizard-container").scrollTop = 0;
 }
 
 async function loadHardwareDiagnosis() {
@@ -417,7 +558,7 @@ async function loadHardwareDiagnosis() {
         const npuNames = data.npus.map((n) => n.name).join(", ");
         hwNpu.textContent = `⚡ ${npuNames}`;
         hwNpu.style.color = "#38bdf8";
-        if (moodText) moodText.textContent = "Puce NPU détectée : Accélération neurale active";
+        if (moodText) moodText.textContent = "Puce NPU détectée ; backend à confirmer";
         if (wizardParticles) wizardParticles.setTheme("cyan");
       } else {
         hwNpu.textContent = "Aucun NPU détecté";
@@ -442,6 +583,8 @@ let wizardSearchDebounceTimer = null;
 let wizardHfSearchBound = false;
 let allLoadedWizardModels = [];
 let activeWizardCategory = "all";
+const wizardSelectedModels = new Map();
+let wizardSelectionInitialized = false;
 
 async function loadWizardModelSelection(searchQuery = "") {
   const container = document.getElementById("wizard-model-selection-list");
@@ -485,24 +628,15 @@ async function loadWizardModelSelection(searchQuery = "") {
       btnAutoSelect.addEventListener("click", async () => {
         try {
           btnAutoSelect.disabled = true;
-          btnAutoSelect.textContent = "⚡ Détection...";
-          const resp = await fetch("/api/models/auto-select?count=3");
+          btnAutoSelect.textContent = "Recherche...";
+          const resp = await fetch("/api/models/auto-select?count=1");
           const data = await resp.json();
           const recs = data.recommended_models || [];
           if (recs.length > 0) {
-            const filenames = recs.map((r) => r.filename);
-            document.querySelectorAll(".model-select-card").forEach((card) => {
-              const chk = card.querySelector("input[type='checkbox']");
-              const isRec = filenames.includes(card.dataset.filename);
-              if (chk) chk.checked = isRec;
-              if (isRec) {
-                card.classList.add("selected");
-              } else {
-                card.classList.remove("selected");
-              }
-            });
-            const selCount = document.querySelectorAll(".model-select-card.selected").length;
-            if (counterEl) counterEl.textContent = selCount;
+            wizardSelectedModels.clear();
+            const chosen = allLoadedWizardModels.find((m) => m.filename === recs[0].filename) || recs[0];
+            wizardSelectedModels.set(chosen.filename, { repo: chosen.repo, filename: chosen.filename, npu_compatible: !!chosen.npu_compatible });
+            renderWizardModelCards(allLoadedWizardModels, activeWizardCategory);
             const primaryName = data.primary_model?.name || recs[0].name;
             showToast(`⚡ IA optimale sélectionnée pour ce PC : <strong>${escapeHtml(primaryName)}</strong>`, "success", 4000);
             if (moodText) moodText.textContent = `Recommandation automatique : ${primaryName}`;
@@ -511,7 +645,7 @@ async function loadWizardModelSelection(searchQuery = "") {
           showToast(`Erreur auto-sélection : ${e}`, "warning");
         } finally {
           btnAutoSelect.disabled = false;
-          btnAutoSelect.textContent = "⚡ Auto-Sélection Config PC";
+          btnAutoSelect.textContent = "Choisir pour moi";
         }
       });
     }
@@ -549,7 +683,7 @@ async function loadWizardModelSelection(searchQuery = "") {
         const npuTitle = document.getElementById("npu-banner-title");
         const npuText = document.getElementById("npu-banner-text");
         if (npuTitle) npuTitle.textContent = `Puce NPU Détectée : ${npuName}`;
-        if (npuText) npuText.textContent = `Votre processeur intègre l'unité neurale ${npuName}. Les modèles marqués ⚡ Compatible NPU sont optimisés pour tourner à pleine vitesse avec une consommation minimale.`;
+        if (npuText) npuText.textContent = `Votre processeur intègre l'unité neurale ${npuName}. Sa présence ne garantit pas que le moteur utilisera ce NPU.`;
         npuBanner.style.display = "flex";
       } else {
         npuBanner.style.display = "none";
@@ -604,6 +738,11 @@ function renderWizardModelCards(models, categoryFilter = "all") {
   if (!container) return;
 
   container.innerHTML = "";
+  if (!wizardSelectionInitialized && models.length) {
+    const initial = models.find((m) => m.is_installed) || models[0];
+    wizardSelectedModels.set(initial.filename, { repo: initial.repo, filename: initial.filename, npu_compatible: !!initial.npu_compatible });
+    wizardSelectionInitialized = true;
+  }
 
   const filtered = models.filter((m) => {
     if (categoryFilter === "all") return true;
@@ -626,17 +765,15 @@ function renderWizardModelCards(models, categoryFilter = "all") {
   }
 
   const updateCounter = () => {
-    const selectedCount = document.querySelectorAll(".model-select-card.selected").length;
+    const selectedCount = wizardSelectedModels.size;
     if (counterEl) counterEl.textContent = selectedCount;
     if (moodText) {
       moodText.textContent = `${selectedCount} modèle(s) sélectionné(s) pour votre machine`;
     }
   };
 
-  const hasAnyInstalled = models.some((m) => m.is_installed);
-
-  filtered.forEach((item, index) => {
-    const isSelected = item.is_installed || (!hasAnyInstalled && index === 0);
+  filtered.forEach((item) => {
+    const isSelected = wizardSelectedModels.has(item.filename);
     const card = document.createElement("div");
     card.className = `model-select-card ${isSelected ? "selected" : ""} ${item.is_installed ? "is-installed" : ""} ${item.npu_compatible ? "is-npu-card" : ""}`;
     card.dataset.repo = item.repo;
@@ -645,7 +782,7 @@ function renderWizardModelCards(models, categoryFilter = "all") {
 
     let badgesHtml = `<span class="etu-badge etu-badge-${item.compatibility?.color || 'info'}">${item.compatibility?.badge || 'Compatible'}</span>`;
     if (item.npu_compatible) {
-      badgesHtml += ` <span class="etu-badge etu-badge-cyan">⚡ Compatible NPU</span>`;
+      badgesHtml += ` <span class="etu-badge etu-badge-cyan">⚡ Modèle léger</span>`;
     }
     if (item.is_installed) {
       const sizeInfo = item.local_size_gib ? `${item.local_size_gib} Go` : `${item.size_gib} Go`;
@@ -656,6 +793,8 @@ function renderWizardModelCards(models, categoryFilter = "all") {
     }
     if (item.is_huggingface_live) {
       badgesHtml += ` <span class="etu-badge etu-badge-info">🤗 Hugging Face</span>`;
+    } else if (item.file_verified === false && !item.is_installed) {
+      badgesHtml += ` <span class="etu-badge etu-badge-warning">Fichier à vérifier</span>`;
     }
 
     const installedNotice = item.is_installed
@@ -701,8 +840,10 @@ function renderWizardModelCards(models, categoryFilter = "all") {
       }
       if (chk.checked) {
         card.classList.add("selected");
+        wizardSelectedModels.set(item.filename, { repo: item.repo, filename: item.filename, npu_compatible: !!item.npu_compatible });
       } else {
         card.classList.remove("selected");
+        wizardSelectedModels.delete(item.filename);
       }
       updateCounter();
 
@@ -721,20 +862,12 @@ function renderWizardModelCards(models, categoryFilter = "all") {
 }
 
 async function startWizardInstallation() {
-  const selectedCards = document.querySelectorAll(".model-select-card.selected");
-  if (selectedCards.length === 0) {
+  if (wizardSelectedModels.size === 0) {
     alert("Veuillez sélectionner au moins un modèle pour démarrer l'installation.");
     return;
   }
 
-  const selectedModels = [];
-  selectedCards.forEach((c) => {
-    selectedModels.push({
-      repo: c.dataset.repo,
-      filename: c.dataset.filename,
-      npu_compatible: c.dataset.npu === "true",
-    });
-  });
+  const selectedModels = [...wizardSelectedModels.values()];
 
   showWizardStep(3);
 
@@ -883,13 +1016,6 @@ function initModals() {
     });
   }
 
-  const openPairingBtn = document.getElementById("btn-open-pairing");
-  if (openPairingBtn) {
-    openPairingBtn.addEventListener("click", () => {
-      openModal("modal-pairing");
-    });
-  }
-
   document.querySelectorAll(".modal-close").forEach((btn) => {
     btn.addEventListener("click", () => {
       closeModal(btn.dataset.target);
@@ -982,31 +1108,6 @@ function initModals() {
     });
   }
 
-  // Formulaire d'appairage
-  const formPairing = document.getElementById("form-pairing");
-  if (formPairing) {
-    formPairing.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const token = document.getElementById("pairing-token-input").value.trim();
-      const studentId = document.getElementById("student-id-input").value.trim();
-      try {
-        const resp = await fetch("/api/handshake", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pairing_token: token, student_id: studentId }),
-        });
-        const data = await resp.json();
-        if (data.success) {
-          alert(data.message);
-          closeModal("modal-pairing");
-          loadServerStatus();
-        }
-      } catch (err) {
-        alert("Erreur lors de l'appairage : " + err);
-      }
-    });
-  }
-
   // Formulaire téléchargement direct HF
   const formCustomDl = document.getElementById("form-custom-download");
   if (formCustomDl) {
@@ -1074,7 +1175,7 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true) {
           <div>
             <div class="hf-model-title-row">
               <span class="hf-model-title">${escapeHtml(item.name)}</span>
-              <span class="etu-badge etu-badge-info" style="font-size: 0.72rem;">${item.params || 'IA'}</span>
+              <span class="etu-badge etu-badge-info" style="font-size: 0.72rem;">${escapeHtml(item.params || 'IA')}</span>
               ${badgesHtml}
             </div>
             <span class="hf-model-author">🤗 ${escapeHtml(item.repo)}</span>
@@ -1097,8 +1198,8 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true) {
           <div>
             ${
               item.is_installed
-                ? `<button class="etu-btn etu-btn-secondary btn-select-hf" data-filename="${item.filename}" data-name="${item.name}">Activer</button>`
-                : `<button class="etu-btn etu-btn-primary btn-dl-hf" data-repo="${item.repo}">Télécharger GGUF</button>`
+                ? `<button class="etu-btn etu-btn-secondary btn-select-hf" data-filename="${escapeHtml(item.filename)}" data-name="${escapeHtml(item.name)}">Activer</button>`
+                : `<button class="etu-btn etu-btn-primary btn-dl-hf" data-repo="${escapeHtml(item.repo)}">Télécharger GGUF</button>`
             }
           </div>
         </div>
@@ -1221,13 +1322,15 @@ function initModelSelector() {
   });
 }
 
-function updateModelUI(activeModelName, installedModels) {
+function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   if (activeModelName) {
     currentActiveModel = activeModelName;
   }
   if (installedModels && Array.isArray(installedModels)) {
     availableInstalledModels = installedModels;
   }
+  if (remoteModels && Array.isArray(remoteModels)) remoteApiModels = remoteModels;
+  const selectableModels = [...availableInstalledModels, ...remoteApiModels];
 
   const activeNameEl = document.getElementById("active-model-name");
   const quickNameEl = document.getElementById("quick-model-name");
@@ -1238,19 +1341,16 @@ function updateModelUI(activeModelName, installedModels) {
 
   // Déterminer le modèle d'affichage et ses métadonnées
   let currentDisplay = currentActiveModel || "Ministral 3B";
-  let isNpu = false;
-  let isGpu = false;
 
-  const matched = availableInstalledModels.find(
+  const matched = currentActiveModel && selectableModels.find(
     (m) =>
+      (m.id && m.id === currentActiveModel) ||
       (m.filename && m.filename.toLowerCase().includes((currentActiveModel || "").toLowerCase())) ||
       (m.name && m.name.toLowerCase().includes((currentActiveModel || "").toLowerCase()))
   );
 
   if (matched) {
-    currentDisplay = matched.name || matched.filename.replace(".gguf", "");
-    isNpu = matched.npu_compatible;
-    isGpu = matched.compatibility?.has_gpu_acceleration;
+    currentDisplay = matched.source === "api" ? `${matched.name} · ${matched.provider_label}` : (matched.name || matched.filename.replace(".gguf", ""));
   } else if (currentActiveModel) {
     currentDisplay = currentActiveModel.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
   }
@@ -1258,26 +1358,26 @@ function updateModelUI(activeModelName, installedModels) {
   if (activeNameEl) activeNameEl.textContent = currentDisplay;
   if (quickNameEl) quickNameEl.textContent = currentDisplay;
 
-  const icon = isNpu ? "⚡" : (isGpu ? "🚀" : "🧠");
+  const icon = "🧠";
   if (badgeIconEl) badgeIconEl.textContent = icon;
   if (quickIconEl) quickIconEl.textContent = icon;
 
   if (countBadgeEl) {
-    countBadgeEl.textContent = `${availableInstalledModels.length} disponible${availableInstalledModels.length > 1 ? "s" : ""}`;
+    countBadgeEl.textContent = `${selectableModels.length} disponible${selectableModels.length > 1 ? "s" : ""}`;
   }
 
   // Remplir le menu déroulant
   if (listEl) {
     listEl.innerHTML = "";
-    if (availableInstalledModels.length === 0) {
+    if (selectableModels.length === 0) {
       listEl.innerHTML = `
         <div style="padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.82rem;">
           Aucun modèle installé.<br>Cliquez sur "Gérer les modèles" ci-dessous.
         </div>
       `;
     } else {
-      availableInstalledModels.forEach((item) => {
-        const itemStem = item.filename ? item.filename.replace(/\.gguf$/i, "") : item.id;
+      selectableModels.forEach((item) => {
+        const itemStem = item.source === "api" ? item.id : (item.filename ? item.filename.replace(/\.gguf$/i, "") : item.id);
         const isActive =
           currentActiveModel &&
           (currentActiveModel.toLowerCase() === itemStem.toLowerCase() ||
@@ -1287,20 +1387,23 @@ function updateModelUI(activeModelName, installedModels) {
         itemEl.className = `model-dropdown-item ${isActive ? "active" : ""}`;
         
         let badgesHtml = "";
-        if (item.npu_compatible) {
-          badgesHtml += `<span class="etu-badge etu-badge-cyan" style="font-size: 0.68rem; padding: 1px 5px;">⚡ NPU</span>`;
+        if (item.source === "api") {
+          badgesHtml += `<span class="model-source-badge api">API · ${escapeHtml(item.provider_label)}</span>`;
+        } else if (item.npu_compatible) {
+          badgesHtml += `<span class="etu-badge etu-badge-cyan" style="font-size: 0.68rem; padding: 1px 5px;">⚡ Léger</span>`;
         } else if (item.compatibility?.has_gpu_acceleration) {
-          badgesHtml += `<span class="etu-badge etu-badge-success" style="font-size: 0.68rem; padding: 1px 5px;">🚀 GPU</span>`;
+          badgesHtml += `<span class="etu-badge etu-badge-success" style="font-size: 0.68rem; padding: 1px 5px;">GPU possible</span>`;
         }
 
         const sizeLabel = item.local_size_gib ? `${item.local_size_gib} Go` : (item.size_gib ? `${item.size_gib} Go` : "");
+        const metaLabel = item.source === "api" ? `Modèle distant · ${item.model}` : `${sizeLabel ? sizeLabel + " • " : ""}${item.quant || "GGUF"}`;
 
         itemEl.innerHTML = `
           <div class="model-dropdown-item-left">
             <span class="model-item-check">${isActive ? "✓" : ""}</span>
             <div class="model-item-details">
               <span class="model-item-title">${escapeHtml(item.name || itemStem)}</span>
-              <span class="model-item-meta">${sizeLabel ? sizeLabel + " • " : ""}${item.quant || "GGUF"}</span>
+              <span class="model-item-meta">${escapeHtml(metaLabel)}</span>
             </div>
           </div>
           <div class="model-dropdown-item-right">
@@ -1313,7 +1416,8 @@ function updateModelUI(activeModelName, installedModels) {
           const btnHeaderSelector = document.getElementById("btn-model-selector");
           if (menu) menu.classList.remove("active");
           if (btnHeaderSelector) btnHeaderSelector.classList.remove("open");
-          switchActiveModel(item.filename || itemStem, item.name || itemStem);
+          const displayName = item.source === "api" ? `${item.name} · ${item.provider_label}` : (item.name || itemStem);
+          switchActiveModel(item.source === "api" ? item.model : (item.filename || itemStem), displayName, item.source || "local", item.provider);
         });
 
         listEl.appendChild(itemEl);
@@ -1322,8 +1426,8 @@ function updateModelUI(activeModelName, installedModels) {
   }
 }
 
-async function switchActiveModel(modelFilename, displayName = null) {
-  const cleanStem = modelFilename.replace(/\.gguf$/i, "");
+async function switchActiveModel(modelFilename, displayName = null, source = "local", provider = null) {
+  const cleanStem = source === "api" ? modelFilename : modelFilename.replace(/\.gguf$/i, "");
   const friendlyName = displayName || cleanStem;
 
   const indicator = document.getElementById("model-status-indicator");
@@ -1335,12 +1439,13 @@ async function switchActiveModel(modelFilename, displayName = null) {
     const resp = await fetch("/api/models/select", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: cleanStem }),
+      body: JSON.stringify({ model: cleanStem, source, provider }),
     });
     const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "Activation refusée");
 
     if (data.success) {
-      currentActiveModel = data.active_model || cleanStem;
+      currentActiveModel = data.active_model_id || data.active_model || cleanStem;
       updateModelUI(currentActiveModel, availableInstalledModels);
       showToast(`✅ Modèle <strong>${escapeHtml(friendlyName)}</strong> activé et prêt !`, "success", 3500);
     } else {
@@ -1364,34 +1469,44 @@ async function loadServerStatus() {
     const pairingText = document.getElementById("pairing-text");
     const beaconText = document.getElementById("beacon-text");
     const beaconDot = document.getElementById("beacon-dot");
+    const modelIndicator = document.getElementById("model-status-indicator");
+    if (modelIndicator) {
+      modelIndicator.style.background = data.active_remote_model ? "var(--accent-color)" : (data.model_ready ? "var(--success)" : "var(--warning)");
+      modelIndicator.title = data.active_remote_model ? "Modèle API sélectionné" : (data.model_ready ? "Modèle prêt" : (data.model_state === "sleeping" ? "Modèle en veille" : "Modèle non prêt"));
+    }
 
-    if (backendText) backendText.textContent = `Backend : ${(data.backend || "CPU").toUpperCase()}`;
+    if (backendText) backendText.textContent = data.active_engine
+      ? `Moteur actif : ${String(data.active_engine).toUpperCase()}`
+      : `Moteur conseillé : ${(data.backend || "CPU").toUpperCase()}`;
 
     if (beaconText && beaconDot) {
-      if (data.beacon_online) {
-        beaconText.textContent = "Beacon (11343) : Actif";
+      if (data.model_ready) {
+        beaconText.textContent = "Modèle local : Prêt";
         beaconDot.style.background = "var(--success)";
+      } else if (data.model_state === "sleeping") {
+        beaconText.textContent = "Modèle local : En veille";
+        beaconDot.style.background = "var(--accent-color)";
+      } else if (data.beacon_online) {
+        beaconText.textContent = "Modèle local : Chargement";
+        beaconDot.style.background = "var(--warning)";
       } else {
-        beaconText.textContent = "Beacon (11343) : Inactif";
+        beaconText.textContent = "Beacon : Inactif";
         beaconDot.style.background = "var(--warning)";
       }
     }
 
     if (pairingText) {
-      if (data.paired_with_etu) {
-        pairingText.textContent = "etu-aix : Connecté";
-        pairingText.style.color = "var(--success)";
-      } else {
-        pairingText.textContent = "etu-aix : Mode Local";
-        pairingText.style.color = "var(--text-muted)";
-      }
+      pairingText.textContent = "Etu2 : à venir";
+      pairingText.style.color = "var(--text-muted)";
     }
 
     // Mise à jour du sélecteur de modèle
     if (data.installed_models) {
       availableInstalledModels = data.installed_models;
     }
-    updateModelUI(data.active_model, availableInstalledModels);
+    if (data.remote_models) remoteApiModels = data.remote_models;
+    currentActiveModel = data.active_remote_model?.id || data.active_model || null;
+    updateModelUI(currentActiveModel, availableInstalledModels, remoteApiModels);
   } catch (err) {
     console.warn("Serveur de status non joignable :", err);
   }
@@ -1433,8 +1548,11 @@ async function selectConversation(convId) {
   currentConversationId = convId;
   loadConversations();
   try {
+    if (!assistantProfiles.length) await loadProfiles();
     const resp = await fetch(`/api/conversations/${convId}/messages`);
     const data = await resp.json();
+    const profileId = data.conversation.profile_id || "default";
+    setDisplayedProfile(profileId);
     const container = document.getElementById("chat-messages");
     if (!container) return;
     container.innerHTML = "";
@@ -1449,16 +1567,10 @@ async function selectConversation(convId) {
 
 function startNewConversation() {
   currentConversationId = null;
+  setDisplayedProfile(preferredProfileId);
   const container = document.getElementById("chat-messages");
   if (container) {
-    container.innerHTML = `
-      <div class="message assistant">
-        <div class="avatar ai-avatar">AI</div>
-        <div class="message-bubble">
-          <p class="etu-text">Nouvelle discussion démarrée. Que souhaitez-vous faire ?</p>
-        </div>
-      </div>
-    `;
+    container.innerHTML = '<div class="chat-welcome"><div class="welcome-orb" aria-hidden="true">✦</div><h2>Comment puis-je vous aider ?</h2><p>Un assistant local pour apprendre, coder et explorer vos idées.</p><div class="welcome-suggestions"><button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button><button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button><button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button></div></div>';
   }
   loadConversations();
 }
@@ -1492,20 +1604,28 @@ function initChatForm() {
     e.preventDefault();
     const rawMessage = input.value.trim();
     if (!rawMessage) return;
+    if (form.dataset.busy === "true") return;
+    form.dataset.busy = "true";
+    document.getElementById("btn-send").disabled = true;
     input.value = "";
 
     // Commande slash pour changer de modèle : /model ou /models
     if (rawMessage.startsWith("/model") || rawMessage.startsWith("/switch")) {
       handleModelSlashCommand(rawMessage);
+      form.dataset.busy = "false";
+      document.getElementById("btn-send").disabled = false;
       return;
     }
 
     // 1. Afficher le message utilisateur
-    renderMessage("user", escapeHtml(rawMessage));
+    document.querySelector("#chat-messages .chat-welcome")?.remove();
+    renderMessage("user", rawMessage);
 
     // 2. Créer la bulle assistant pour le streaming
     const assistantBubble = renderMessage("assistant", "");
+    assistantBubble.classList.add("streaming");
     const bubbleContent = assistantBubble.querySelector(".message-bubble");
+    setAssistantActivity(assistantBubble, "thinking", "Réflexion en cours");
 
     // 3. Appel au flux SSE avec le modèle sélectionné
     try {
@@ -1516,8 +1636,14 @@ function initChatForm() {
           conversation_id: currentConversationId,
           message: rawMessage,
           model: currentActiveModel,
+          profile_id: activeProfileId,
         }),
       });
+
+      if (!resp.ok) {
+        const failure = await resp.json();
+        throw new Error(failure.detail || "Réponse du serveur indisponible");
+      }
 
       const convHeader = resp.headers.get("X-Conversation-Id");
       if (convHeader && !currentConversationId) {
@@ -1534,7 +1660,7 @@ function initChatForm() {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n\n");
+        const lines = buffer.split(/\r?\n\r?\n/);
         buffer = lines.pop();
 
         for (const line of lines) {
@@ -1550,14 +1676,34 @@ function initChatForm() {
           }
         }
       }
+      buffer += decoder.decode();
+      if (buffer.trim()) {
+        const dataMatch = buffer.match(/^data:\s*(.*)$/m);
+        if (dataMatch) handleStreamEvent(JSON.parse(dataMatch[1]), bubbleContent);
+      }
+      finishStreamRender(bubbleContent);
+      if (assistantBubble.classList.contains("streaming")) {
+        assistantBubble.classList.remove("streaming");
+        finalizeAssistantBubble(bubbleContent);
+      }
+      setAssistantActivity(assistantBubble, "done", "");
     } catch (err) {
-      bubbleContent.innerHTML += `<p class="etu-text etu-badge-warning">Erreur de connexion au serveur : ${err}</p>`;
+      finishStreamRender(bubbleContent);
+      setAssistantActivity(assistantBubble, "error", "Erreur de réponse");
+      assistantBubble.classList.remove("streaming");
+      const error = document.createElement("p");
+      error.className = "etu-text etu-badge-warning";
+      error.textContent = `Erreur de connexion au serveur : ${err}`;
+      bubbleContent.appendChild(error);
+    } finally {
+      form.dataset.busy = "false";
+      document.getElementById("btn-send").disabled = false;
     }
   });
 }
 
 function handleModelSlashCommand(commandStr) {
-  renderMessage("user", escapeHtml(commandStr));
+  renderMessage("user", commandStr);
   const parts = commandStr.trim().split(/\s+/);
 
   if (parts.length === 1 || parts[1] === "list") {
@@ -1628,16 +1774,188 @@ function handleModelSlashCommand(commandStr) {
 
 function handleStreamEvent(data, bubbleEl) {
   if (data.event === "token" && data.html) {
-    bubbleEl.innerHTML += data.html;
-    attachInteractiveButtons(bubbleEl);
-    scrollToBottom();
+    const html = (streamMarkup.get(bubbleEl) || "") + data.html;
+    streamMarkup.set(bubbleEl, html);
+    setAssistantActivity(bubbleEl.closest(".message"), "writing", "Rédaction en cours");
+    if (!streamFrames.has(bubbleEl)) {
+      streamFrames.set(bubbleEl, setTimeout(() => {
+        streamFrames.delete(bubbleEl);
+        renderStreamMarkup(bubbleEl);
+      }, 55));
+    }
   } else if (data.event === "tool_start" && data.html) {
-    bubbleEl.innerHTML += data.html;
-    scrollToBottom();
+    setAssistantActivity(bubbleEl.closest(".message"), "tool", "Consultation en cours");
   } else if (data.event === "tool_result") {
-    const badge = bubbleEl.querySelector(".etu-loading-badge");
-    if (badge) badge.remove();
+    setAssistantActivity(bubbleEl.closest(".message"), "thinking", "Analyse du résultat");
+  } else if (data.event === "done") {
+    finishStreamRender(bubbleEl);
+    bubbleEl.closest(".message")?.classList.remove("streaming");
+    setAssistantActivity(bubbleEl.closest(".message"), "done", "");
+    finalizeAssistantBubble(bubbleEl);
+  } else if (data.event === "status") {
+    setAssistantActivity(bubbleEl.closest(".message"), "thinking", data.message || "Réflexion en cours");
+  } else if (data.event === "error") {
+    finishStreamRender(bubbleEl);
+    bubbleEl.innerHTML = `<p class="etu-text etu-badge-warning">${escapeHtml(data.message || "La requête a échoué.")}</p>`;
   }
+}
+
+function setAssistantActivity(message, state, label) {
+  if (!message) return;
+  let activity = message.querySelector(".assistant-activity");
+  if (state === "done") {
+    activity?.remove();
+    return;
+  }
+  if (!activity) {
+    activity = document.createElement("div");
+    activity.className = "assistant-activity";
+    activity.setAttribute("role", "status");
+    activity.innerHTML = '<span class="activity-orb" aria-hidden="true"></span><span class="activity-label"></span>';
+    message.querySelector(".message-bubble").before(activity);
+  }
+  activity.dataset.state = state;
+  activity.querySelector(".activity-label").textContent = label;
+}
+
+function renderStreamMarkup(bubble) {
+  const raw = streamMarkup.get(bubble) || "";
+  if (renderAuthoredPreview(bubble, raw, false)) {
+    // The iframe receives the model's actual markup as it arrives.
+  } else {
+    let live = bubble.querySelector(".stream-live-text");
+    if (!live) {
+      live = document.createElement("div");
+      live.className = "stream-live-text";
+      bubble.appendChild(live);
+    }
+    const visible = raw.replace(/<template\b[\s\S]*?(?:<\/template>|$)/gi, "")
+      .replace(/<\?(?:marker|start|end)\b[^>]*>?/gi, "")
+      .replace(/<[^>]*>?/g, "")
+      .replace(/^\s*```(?:html|markdown)?\s*/i, "");
+    live.textContent = visible;
+    applyCompletedStreamTemplates(bubble, raw);
+  }
+  scrollToBottom();
+}
+
+function applyCompletedStreamTemplates(bubble, raw) {
+  const matches = raw.match(/<template\s+for=["'][\w-]{1,80}["']\s*>[\s\S]*?<\/template>/gi) || [];
+  const applied = appliedStreamTemplates.get(bubble) || 0;
+  for (const markup of matches.slice(applied)) {
+    bubble.appendChild(safeFragment(markup));
+    applyPartialUpdates(bubble);
+  }
+  appliedStreamTemplates.set(bubble, matches.length);
+}
+
+function authoredDocument(raw) {
+  const fence = /```(?:html|htm)\s*\n/i.exec(raw);
+  if (fence) {
+    const start = fence.index + fence[0].length;
+    const end = raw.indexOf("```", start);
+    return { html: raw.slice(start, end < 0 ? undefined : end), source: raw, complete: end >= 0 };
+  }
+  if (/^\s*(?:<!doctype|<html\b|<style\b)/i.test(raw) ||
+      /^\s*<(?:div|section|main|article)\b[^>]*\b(?:style|class)=/i.test(raw)) {
+    return { html: raw, source: raw, complete: true };
+  }
+  return null;
+}
+
+function renderAuthoredPreview(bubble, raw, complete) {
+  const authored = authoredDocument(raw);
+  if (!authored) return false;
+  let frame = bubble.querySelector(".authored-preview-frame");
+  if (!frame) {
+    bubble.replaceChildren();
+    frame = document.createElement("iframe");
+    frame.className = "authored-preview-frame";
+    frame.title = "Interface créée par l’IA";
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.src = "/static/preview.html?v=interactive-programs-1";
+    frame.addEventListener("load", () => sendAuthoredPreview(frame));
+    bubble.appendChild(frame);
+  }
+  frame.previewHtml = authored.html;
+  frame.previewComplete = complete;
+  sendAuthoredPreview(frame);
+  if (complete) {
+    let details = bubble.querySelector(".authored-preview-source");
+    if (!details) {
+      details = document.createElement("details");
+      details.className = "authored-preview-source";
+      details.innerHTML = '<summary>Voir le code de l’interface</summary><pre><code></code></pre>';
+      bubble.appendChild(details);
+    }
+    details.querySelector("code").textContent = authored.html;
+  }
+  return true;
+}
+
+function sendAuthoredPreview(frame) {
+  frame.contentWindow?.postMessage({ type: "etu-preview-update", html: frame.previewHtml || "", complete: frame.previewComplete === true }, "*");
+}
+
+window.addEventListener("message", async (event) => {
+  const frame = [...document.querySelectorAll(".authored-preview-frame")]
+    .find((candidate) => candidate.contentWindow === event.source);
+  if (!frame || !event.data || typeof event.data !== "object") return;
+  if (event.data.type === "etu-preview-ready") {
+    sendAuthoredPreview(frame);
+  } else if (event.data.type === "etu-preview-error") {
+    let feedback = frame.parentElement.querySelector(".authored-preview-error");
+    if (!feedback) {
+      feedback = document.createElement("p");
+      feedback.className = "authored-preview-error";
+      feedback.setAttribute("role", "status");
+      frame.after(feedback);
+    }
+    feedback.textContent = `Le code généré rencontre une erreur : ${String(event.data.message || "erreur inconnue").slice(0, 300)}`;
+    let retry = frame.parentElement.querySelector(".authored-preview-repair");
+    if (!retry) {
+      retry = document.createElement("button");
+      retry.className = "authored-preview-repair";
+      retry.type = "button";
+      retry.textContent = "Demander une correction";
+      retry.addEventListener("click", () => {
+        if (document.getElementById("btn-send").disabled) return;
+        document.getElementById("chat-input").value = `Corrige l’interface de ta dernière réponse. ${feedback.textContent}. Renvoie une version complète et fonctionnelle dans un seul bloc html, avec sa propre logique JavaScript.`;
+        document.getElementById("chat-form").requestSubmit();
+      });
+      feedback.after(retry);
+    }
+  } else if (event.data.type === "etu-preview-height") {
+    const height = Number(event.data.height);
+    if (Number.isFinite(height)) frame.style.height = `${Math.max(100, Math.min(680, height))}px`;
+  } else if (event.data.type === "etu-preview-copy" && typeof event.data.value === "string") {
+    if (!navigator.userActivation.isActive) return;
+    const value = event.data.value.slice(0, 500);
+    try { await navigator.clipboard.writeText(value); }
+    catch { /* Clipboard may require browser permission. */ }
+  } else if (event.data.type === "etu-preview-action" && typeof event.data.value === "string") {
+    if (!navigator.userActivation.isActive) return;
+    const input = document.getElementById("chat-input");
+    input.value = event.data.value.slice(0, 500);
+    document.getElementById("chat-form").requestSubmit();
+  }
+});
+
+function finishStreamRender(bubble) {
+  const frame = streamFrames.get(bubble);
+  if (frame) clearTimeout(frame);
+  streamFrames.delete(bubble);
+  if (streamMarkup.has(bubble)) renderStreamMarkup(bubble);
+}
+
+function finalizeAssistantBubble(bubble) {
+  const raw = streamMarkup.get(bubble) || "";
+  if (!renderAuthoredPreview(bubble, raw, true)) {
+    bubble.replaceChildren(safeFragment(formatAssistantMarkup(raw)));
+    applyPartialUpdates(bubble);
+  }
+  streamMarkup.delete(bubble);
+  appliedStreamTemplates.delete(bubble);
 }
 
 function attachInteractiveButtons(container) {
@@ -1646,10 +1964,22 @@ function attachInteractiveButtons(container) {
       btn.dataset.bound = "true";
       btn.addEventListener("click", () => {
         const action = btn.dataset.action;
-        const payload = btn.dataset.payload || btn.textContent;
-        alert(`Action déclenchée : ${action} (${payload})`);
+        const input = document.getElementById("chat-input");
+        input.value = action;
+        document.getElementById("chat-form").requestSubmit();
       });
     }
+  });
+  container.querySelectorAll("form[data-description]").forEach((form) => {
+    if (form.dataset.bound) return;
+    form.dataset.bound = "true";
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const fields = [...new FormData(form)].map(([key, value]) => `${key}: ${value}`).join("\n");
+      const input = document.getElementById("chat-input");
+      input.value = `${form.dataset.description}\n${fields}`.trim();
+      document.getElementById("chat-form").requestSubmit();
+    });
   });
 }
 
@@ -1659,14 +1989,327 @@ function renderMessage(role, contentHtml) {
   msgDiv.className = `message ${role}`;
 
   const isUser = role === "user";
+  const profile = getActiveProfile();
   msgDiv.innerHTML = `
-    <div class="avatar ${isUser ? "user-avatar" : "ai-avatar"}">${isUser ? "VOUS" : "AI"}</div>
-    <div class="message-bubble">${contentHtml}</div>
+    <div class="avatar ${isUser ? "user-avatar" : "ai-avatar"}">${isUser ? "VOUS" : avatarMarkup(profile.avatar)}</div>
+    <div class="message-bubble"></div>
   `;
+  const bubble = msgDiv.querySelector(".message-bubble");
+  if (isUser) bubble.textContent = contentHtml;
+  else {
+    if (!renderAuthoredPreview(bubble, contentHtml, true))
+      bubble.appendChild(safeFragment(formatAssistantMarkup(contentHtml)));
+  }
   container.appendChild(msgDiv);
+  if (!isUser) applyPartialUpdates(bubble);
   attachInteractiveButtons(msgDiv);
   scrollToBottom();
   return msgDiv;
+}
+
+function formatAssistantMarkup(raw) {
+  let text = String(raw || "");
+  // Certains petits modèles enveloppent du Markdown entier dans un seul <p>.
+  if (/^\s*<p\b[^>]*>/i.test(text) && /(?:```|\n#{2,5}\s)/.test(text)) {
+    text = text.replace(/^\s*<p\b[^>]*>/i, "").replace(/<\/p>\s*$/i, "");
+  }
+  if (/^\s*<(?:p|div|span|ul|ol|table|pre|blockquote|button|form|template|\?marker|\?start)/i.test(text)) return text;
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const result = [];
+  let inCode = false;
+  let inList = false;
+  let paragraph = [];
+  const inline = (value) => escapeHtml(value)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  const flush = () => {
+    if (paragraph.length) result.push(`<p>${inline(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      flush();
+      if (inList) { result.push("</ul>"); inList = false; }
+      result.push(inCode ? "</code></pre>" : '<pre class="etu-code"><code>');
+      inCode = !inCode;
+    } else if (inCode) {
+      result.push(`${escapeHtml(line)}\n`);
+    } else if (/^\s*#{1,5}\s+/.test(line)) {
+      flush();
+      if (inList) { result.push("</ul>"); inList = false; }
+      const match = line.match(/^\s*(#{1,5})\s+(.*)$/);
+      result.push(`<h${Math.min(match[1].length + 1, 5)}>${inline(match[2])}</h${Math.min(match[1].length + 1, 5)}>`);
+    } else if (/^\s*[-*]\s+/.test(line)) {
+      flush();
+      if (!inList) { result.push("<ul>"); inList = true; }
+      result.push(`<li>${inline(line.replace(/^\s*[-*]\s+/, ""))}</li>`);
+    } else if (!line.trim()) {
+      flush();
+      if (inList) { result.push("</ul>"); inList = false; }
+    } else if (!/^\s*---+\s*$/.test(line)) {
+      paragraph.push(line.trim());
+    }
+  }
+  flush();
+  if (inList) result.push("</ul>");
+  if (inCode) result.push("</code></pre>");
+  return result.join("");
+}
+
+function safeFragment(html) {
+  const allowed = new Set(["P", "DIV", "SPAN", "STRONG", "EM", "B", "I", "BR", "UL", "OL", "LI", "H2", "H3", "H4", "H5", "PRE", "CODE", "BLOCKQUOTE", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD", "BUTTON", "FORM", "LABEL", "INPUT", "TEXTAREA", "SELECT", "OPTION", "TEMPLATE"]);
+  const source = document.createElement("template");
+  source.innerHTML = String(html).replace(/<\?(marker|start)\s+name=["']?([\w-]{1,80})["']?\s*\?>/gi, "<!--etu-$1:$2-->")
+    .replace(/<\?end\s*\?>/gi, "<!--etu-end-->");
+  function clean(parent) {
+    for (const node of [...parent.childNodes]) {
+      if (node.nodeType === Node.TEXT_NODE) continue;
+      if (node.nodeType === Node.COMMENT_NODE) {
+        if (!/^etu-(?:marker|start):[\w-]{1,80}$|^etu-end$/.test(node.data)) node.remove();
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) { node.remove(); continue; }
+      if (!allowed.has(node.tagName)) { node.remove(); continue; }
+      for (const attr of [...node.attributes]) {
+        const name = attr.name.toLowerCase();
+        const value = attr.value;
+        const valid = (name === "class" && /^[\w\s-]{0,120}$/.test(value)) ||
+          (name === "data-action" && node.tagName === "BUTTON" && value.length <= 500) ||
+          (["data-model", "data-name"].includes(name) && node.tagName === "BUTTON" && value.length <= 200) ||
+          (name === "data-description" && node.tagName === "FORM" && value.length <= 500) ||
+          (name === "data-update-marker" && /^[\w-]{1,80}$/.test(value)) ||
+          (name === "for" && node.tagName === "TEMPLATE" && /^[\w-]{1,80}$/.test(value)) ||
+          (name === "data-color" && /^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$/.test(value)) ||
+          (name === "type" && ["button", "submit", "text", "checkbox", "radio", "number"].includes(value)) ||
+          (name === "name" && /^[\w-]{1,80}$/.test(value)) ||
+          (["value", "placeholder"].includes(name) && value.length <= 500) ||
+          (["checked", "selected", "required", "disabled"].includes(name));
+        if (!valid) node.removeAttribute(attr.name);
+      }
+      clean(node.tagName === "TEMPLATE" ? node.content : node);
+    }
+  }
+  clean(source.content);
+  const walker = document.createTreeWalker(source.content, NodeFilter.SHOW_TEXT);
+  const markdownNodes = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (node.parentElement?.closest("pre, code, textarea")) continue;
+    if (/\*\*[^*]+\*\*|`[^`]+`/.test(node.textContent)) markdownNodes.push(node);
+  }
+  markdownNodes.forEach((node) => {
+    const parts = node.textContent.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+    node.replaceWith(...parts.map((part) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        const strong = document.createElement("strong");
+        strong.textContent = part.slice(2, -2);
+        return strong;
+      }
+      if (part.startsWith("`") && part.endsWith("`")) {
+        const code = document.createElement("code");
+        code.textContent = part.slice(1, -1);
+        return code;
+      }
+      return document.createTextNode(part);
+    }));
+  });
+  return source.content;
+}
+
+function applyPartialUpdates(bubble) {
+  bubble.querySelectorAll("template[for]").forEach((template) => {
+    const marker = template.getAttribute("for");
+    const chat = document.getElementById("chat-messages");
+    const target = [...chat.querySelectorAll("[data-update-marker]")]
+      .find((element) => element.dataset.updateMarker === marker);
+    const content = template.content.cloneNode(true);
+    if (target) {
+      target.replaceChildren(content);
+      template.remove();
+    } else {
+      const walker = document.createTreeWalker(chat, NodeFilter.SHOW_COMMENT);
+      let start = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.data === `etu-marker:${marker}`) {
+          const slot = document.createElement("span");
+          slot.dataset.updateMarker = marker;
+          node.replaceWith(slot);
+          slot.replaceChildren(content);
+          template.remove();
+          break;
+        }
+        if (node.data === `etu-start:${marker}`) start = node;
+        if (node.data === "etu-end" && start && start.parentNode === node.parentNode) {
+          const range = document.createRange();
+          range.setStartAfter(start);
+          range.setEndBefore(node);
+          range.deleteContents();
+          node.parentNode.insertBefore(content, node);
+          template.remove();
+          break;
+        }
+      }
+    }
+  });
+  const chat = document.getElementById("chat-messages");
+  attachInteractiveButtons(chat);
+}
+
+function getActiveProfile() {
+  return assistantProfiles.find((profile) => profile.id === activeProfileId) ||
+    { id: "default", name: "ETU-AI", avatar: "✦", instructions: "" };
+}
+
+function avatarMarkup(avatar) {
+  return /^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(avatar || "")
+    ? `<img src="${avatar}" alt="" class="profile-avatar-image">`
+    : escapeHtml(avatar || "✦");
+}
+
+function updateProfilePreview(avatar) {
+  document.getElementById("profile-image-preview").innerHTML = avatarMarkup(avatar);
+}
+
+function setDisplayedProfile(profileId) {
+  activeProfileId = assistantProfiles.some((profile) => profile.id === profileId) ? profileId : "default";
+  const select = document.getElementById("profile-select");
+  if (select) select.value = activeProfileId;
+  document.querySelectorAll("#chat-messages .assistant .ai-avatar").forEach((avatar) => {
+    avatar.innerHTML = avatarMarkup(getActiveProfile().avatar);
+  });
+}
+
+async function loadProfiles() {
+  const response = await fetch("/api/profiles");
+  if (!response.ok) throw new Error("Impossible de charger les profils");
+  const data = await response.json();
+  assistantProfiles = data.profiles;
+  preferredProfileId = data.active_profile_id;
+  if (!currentConversationId) activeProfileId = preferredProfileId;
+  const select = document.getElementById("profile-select");
+  select.replaceChildren();
+  assistantProfiles.forEach((profile) => {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = `${profile.avatar.startsWith("data:image/") ? "◉" : profile.avatar} ${profile.name}`;
+    select.appendChild(option);
+  });
+  setDisplayedProfile(activeProfileId);
+  const list = document.getElementById("profile-list");
+  list.replaceChildren();
+  assistantProfiles.forEach((profile) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "profile-item" + (profile.id === activeProfileId ? " active" : "");
+    button.innerHTML = `<span class="profile-mini-image">${avatarMarkup(profile.avatar)}</span><span>${escapeHtml(profile.name)}</span>`;
+    button.addEventListener("click", () => editProfile(profile));
+    list.appendChild(button);
+  });
+}
+
+function editProfile(profile = null) {
+  pendingAvatarData = profile?.avatar?.startsWith("data:image/webp;base64,") ? profile.avatar : null;
+  document.getElementById("profile-id").value = profile?.id || "";
+  document.getElementById("profile-name").value = profile?.name || "";
+  document.getElementById("profile-avatar").value = pendingAvatarData ? "" : (profile?.avatar || "✦");
+  document.getElementById("profile-image-file").value = "";
+  updateProfilePreview(profile?.avatar || "✦");
+  document.getElementById("profile-instructions").value = profile?.instructions || "";
+  document.getElementById("profile-form-title").textContent = profile ? `Modifier ${profile.name}` : "Créer un profil";
+  document.getElementById("profile-delete").hidden = !profile || profile.id === "default";
+  document.getElementById("profile-form-error").textContent = "";
+}
+
+function initProfiles() {
+  loadProfiles().catch((error) => console.warn(error));
+  document.getElementById("btn-open-profiles").addEventListener("click", () => {
+    editProfile(getActiveProfile());
+    openModal("modal-profiles");
+  });
+  document.getElementById("profile-new").addEventListener("click", () => editProfile());
+  document.getElementById("profile-avatar").addEventListener("input", (event) => {
+    pendingAvatarData = null;
+    updateProfilePreview(event.target.value || "✦");
+  });
+  document.getElementById("profile-image-file").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const error = document.getElementById("profile-form-error");
+    try {
+      if (!file.type.startsWith("image/") || file.size > 5 * 1024 * 1024) throw new Error("Choisissez une image de moins de 5 Mo.");
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement("canvas");
+      canvas.width = 128;
+      canvas.height = 128;
+      const context = canvas.getContext("2d");
+      const side = Math.min(bitmap.width, bitmap.height);
+      context.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 128, 128);
+      bitmap.close();
+      const dataUrl = canvas.toDataURL("image/webp", 0.78);
+      if (dataUrl.length > 95000) throw new Error("Image trop volumineuse après réduction.");
+      pendingAvatarData = dataUrl;
+      document.getElementById("profile-avatar").value = "";
+      updateProfilePreview(dataUrl);
+      error.textContent = "";
+    } catch (problem) {
+      error.textContent = problem.message;
+    }
+  });
+  document.getElementById("profile-select").addEventListener("change", async (event) => {
+    const profileId = event.target.value;
+    try {
+      const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" });
+      if (!response.ok) throw new Error("Activation impossible");
+      preferredProfileId = profileId;
+      setDisplayedProfile(profileId);
+      startNewConversation();
+    } catch (error) {
+      event.target.value = activeProfileId;
+      showToast(escapeHtml(error.message), "warning");
+    }
+  });
+  document.getElementById("profile-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const id = document.getElementById("profile-id").value;
+    const body = {
+      name: document.getElementById("profile-name").value.trim(),
+      avatar: pendingAvatarData || document.getElementById("profile-avatar").value.trim() || "✦",
+      instructions: document.getElementById("profile-instructions").value.trim(),
+      model: null,
+    };
+    try {
+      const response = await fetch(id ? `/api/profiles/${encodeURIComponent(id)}` : "/api/profiles", {
+        method: id ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) throw new Error((await response.json()).detail || "Enregistrement impossible");
+      const profile = await response.json();
+      await loadProfiles();
+      editProfile(profile);
+      showToast("Profil enregistré", "success");
+    } catch (error) {
+      document.getElementById("profile-form-error").textContent = error.message;
+    }
+  });
+  document.getElementById("profile-delete").addEventListener("click", async () => {
+    const id = document.getElementById("profile-id").value;
+    if (!id || id === "default" || !confirm("Supprimer ce profil ? Ses conversations utiliseront ETU-AI.")) return;
+    const response = await fetch(`/api/profiles/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!response.ok) {
+      document.getElementById("profile-form-error").textContent = "Suppression impossible";
+      return;
+    }
+    if (activeProfileId === id) {
+      activeProfileId = "default";
+      preferredProfileId = "default";
+      startNewConversation();
+    }
+    await loadProfiles();
+    editProfile(getActiveProfile());
+  });
 }
 
 function scrollToBottom() {
@@ -1687,6 +2330,7 @@ async function loadModelCatalog() {
 
     const installed = data.catalog.filter((m) => m.is_installed);
     availableInstalledModels = installed;
+    remoteApiModels = Array.isArray(data.remote_models) ? data.remote_models : [];
     updateModelUI(currentActiveModel, availableInstalledModels);
 
     data.catalog.forEach((item) => {
@@ -1714,8 +2358,8 @@ async function loadModelCatalog() {
           <div>
             ${
               item.is_installed
-                ? `<button class="etu-btn etu-btn-secondary btn-select-model" data-filename="${item.filename}" data-name="${item.name}">Activer</button>`
-                : `<button class="etu-btn etu-btn-primary btn-dl-model" data-repo="${item.repo}" data-filename="${item.filename}">Télécharger</button>`
+                ? `<button class="etu-btn etu-btn-secondary btn-select-model" data-filename="${escapeHtml(item.filename)}" data-name="${escapeHtml(item.name)}">Activer</button>`
+                : `<button class="etu-btn etu-btn-primary btn-dl-model" data-repo="${escapeHtml(item.repo)}" data-filename="${escapeHtml(item.filename)}">Télécharger</button>`
             }
           </div>
         </div>
@@ -1750,6 +2394,7 @@ async function triggerDownload(repo, filename) {
       body: JSON.stringify({ repo, filename }),
     });
     const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "Téléchargement refusé");
     if (data.task_id) {
       pollDownloadProgress(data.task_id, filename);
     }
@@ -1776,8 +2421,14 @@ function pollDownloadProgress(taskId, filename) {
       <span class="task-speed">0 Mo/s</span>
       <span class="task-status">Démarrage...</span>
     </div>
+    <button type="button" class="task-cancel etu-btn etu-btn-secondary">Annuler</button>
   `;
   container.prepend(taskBox);
+  const cancelButton = taskBox.querySelector(".task-cancel");
+  cancelButton.addEventListener("click", async () => {
+    const response = await fetch(`/api/models/tasks/${taskId}/cancel`, { method: "POST" });
+    if (response.ok) cancelButton.disabled = true;
+  });
 
   const poller = setInterval(async () => {
     try {
@@ -1796,6 +2447,7 @@ function pollDownloadProgress(taskId, filename) {
 
       if (t.status === "completed") {
         clearInterval(poller);
+        cancelButton.remove();
         if (statusEl) {
           statusEl.textContent = "Téléchargé avec succès !";
           statusEl.style.color = "var(--success)";
@@ -1805,11 +2457,16 @@ function pollDownloadProgress(taskId, filename) {
         showToast(`✅ Modèle <strong>${escapeHtml(filename)}</strong> prêt à l'emploi !`, "success");
       } else if (t.status === "error") {
         clearInterval(poller);
+        cancelButton.remove();
         if (statusEl) {
           statusEl.textContent = `Erreur: ${t.error_message}`;
           statusEl.style.color = "var(--danger)";
         }
-        showToast(`❌ Erreur téléchargement ${escapeHtml(filename)}: ${t.error_message}`, "warning");
+        showToast(`❌ Erreur téléchargement ${escapeHtml(filename)}: ${escapeHtml(t.error_message)}`, "warning");
+      } else if (t.status === "cancelled") {
+        clearInterval(poller);
+        cancelButton.remove();
+        if (statusEl) statusEl.textContent = "Annulé — relancez pour reprendre";
       }
     } catch (e) {
       clearInterval(poller);
@@ -1824,6 +2481,6 @@ async function activateModel(filename, displayName = null) {
 
 function escapeHtml(str) {
   if (!str) return "";
-  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-

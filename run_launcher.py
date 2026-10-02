@@ -6,6 +6,7 @@ Compilable en .exe avec PyInstaller.
 """
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -23,7 +24,7 @@ def check_server_ready(url: str, timeout: int = 15) -> bool:
     while time.monotonic() - start < timeout:
         try:
             with urllib.request.urlopen(f"{url}/api/status", timeout=1) as resp:
-                if resp.status == 200:
+                if resp.status == 200 and json.load(resp).get("app_name") == "ETU-AI":
                     return True
         except Exception:
             pass
@@ -63,6 +64,11 @@ def main() -> int:
     print("=" * 60)
     print("           ETU-AI | Assistant Étudiant Autonome           ")
     print("=" * 60)
+
+    if check_server_ready(SERVER_URL, timeout=1):
+        print("[OK] ETU-AI est déjà lancé. Ouverture du navigateur.")
+        webbrowser.open(SERVER_URL)
+        return 0
 
     # 1. Démarrer le serveur
     process = start_server()

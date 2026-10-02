@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-etu-preview-runtime'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>html,body{margin:0;min-height:1px;scrollbar-width:none}::-webkit-scrollbar{display:none}body{font:14px/1.5 Inter,system-ui,sans-serif;overflow-wrap:anywhere}#preview-root{display:flow-root}</style>
+</head>
+<body>
+  <style id="authored-styles"></style>
+  <div id="preview-root"></div>
+  <script nonce="etu-preview-runtime">
+    (() => {
+    const root = document.getElementById("preview-root");
+    const styles = document.getElementById("authored-styles");
+    let previousMarkup = "";
+    let appliedPatches = 0;
+    let executedHtml = null;
+    const reportError = (message) => parent.postMessage({ type: "etu-preview-error", message: String(message).slice(0, 300) }, "*");
+    window.addEventListener("error", (event) => reportError(event.message));
+    window.addEventListener("unhandledrejection", (event) => reportError(event.reason?.message || event.reason));
+    const reportHeight = () => parent.postMessage({
+      type: "etu-preview-height",
+      height: Math.ceil(Math.max(document.body.scrollHeight, root.getBoundingClientRect().bottom))
+    }, "*");
+    new ResizeObserver(reportHeight).observe(root);
+
+    function sanitize(container) {
+      for (const node of [...container.children]) {
+        if (/^(STYLE|SCRIPT|IFRAME|OBJECT|EMBED|LINK|META|BASE|FRAME|FRAMESET)$/.test(node.tagName)) {
+          node.remove();
+          continue;
+        }
+        for (const attr of [...node.attributes]) {
+          const name = attr.name.toLowerCase();
+          const value = attr.value.trim();
+          if (name.startsWith("on") || name === "srcdoc" || name === "formaction" ||
+              (name === "href" && !value.startsWith("#")) ||
+              (name === "src" && !/^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(value))) {
+            node.removeAttribute(attr.name);
+          }
+        }
+        sanitize(node.tagName === "TEMPLATE" ? node.content : node);
+      }
+    }
+
+    function render(html, complete) {
+      if (html === executedHtml) return;
+      const parsed = new DOMParser().parseFromString(String(html).slice(0, 200000), "text/html");
+      const scripts = [...parsed.querySelectorAll("script:not([src])")]
+        .filter((node) => !node.type || ["text/javascript", "application/javascript", "module"].includes(node.type))
+        .map((node) => ({ code: node.textContent, type: node.type }));
+      const css = [...parsed.querySelectorAll("style")].map((node) => node.textContent).join("\n");
+      if (styles.textContent !== css) styles.textContent = css;
+      sanitize(parsed.body);
+      const patches = [...parsed.body.querySelectorAll("template[for]")].map((node) => {
+        const patch = { marker: node.getAttribute("for"), content: node.content.cloneNode(true) };
+        node.remove();
+        return patch;
+      });
+      const markup = parsed.body.innerHTML;
+      if (markup !== previousMarkup) {
+        root.replaceChildren(...parsed.body.childNodes);
+        previousMarkup = markup;
+        appliedPatches = 0;
+      }
+      for (const patch of patches.slice(appliedPatches)) {
+        const marker = patch.marker;
+        if (!/^[\w-]{1,80}$/.test(marker || "")) continue;
+        const target = [...root.querySelectorAll("[data-update-marker]")]
+          .find((element) => element.getAttribute("data-update-marker") === marker);
+        if (target) target.replaceChildren(patch.content);
+      }
+      appliedPatches = patches.length;
+      // Le code incomplet du flux reste inerte. Le programme du modèle démarre
+      // une seule fois, sur le DOM final, dans l'origine opaque de cette iframe.
+      if (complete) {
+        executedHtml = html;
+        for (const script of scripts) {
+          const executable = document.createElement("script");
+          executable.nonce = "etu-preview-runtime";
+          if (script.type === "module") executable.type = "module";
+          executable.textContent = script.code;
+          document.body.appendChild(executable);
+          executable.remove();
+        }
+      }
+      reportHeight();
+    }
+
+    window.addEventListener("message", (event) => {
+      if (event.source !== parent || event.data?.type !== "etu-preview-update") return;
+      render(event.data.html, event.data.complete === true);
+    });
+    root.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      const button = event.target.closest("[data-copy],[data-action]");
+      if (!button) return;
+      event.preventDefault();
+      if (button.hasAttribute("data-copy")) {
+        parent.postMessage({ type: "etu-preview-copy", value: button.getAttribute("data-copy") }, "*");
+      } else {
+        parent.postMessage({ type: "etu-preview-action", value: button.getAttribute("data-action") }, "*");
+      }
+    });
+    parent.postMessage({ type: "etu-preview-ready" }, "*");
+    })();
+  </script>
+</body>
+</html>

@@ -4,9 +4,16 @@ models/
 state.json
 __pycache__/
 *.db
+*.sqlite
+*.sqlite3
+# Clés API chiffrées par DPAPI sur Windows (ne jamais versionner).
+storage/api_secrets.dpapi
+# Fichiers de secrets locaux potentiels pour les autres coffres système.
+storage/api_secrets.json
 deps/
 log/
 logs/
 *.log
 *.lock
 *state*.json
+*beta/

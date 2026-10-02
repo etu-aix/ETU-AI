@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=api-providers-2&interactive=2">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
 </head>
 <body>
@@ -16,21 +16,18 @@
   <!-- WIZARD D'INSTALLATION ET DE CONFIGURATION INITIALE                     -->
   <!-- ======================================================================= -->
   <div id="wizard-container" class="wizard-screen active">
-    <!-- Toile interactive d'ondulations de particules et de réactivité lumineuse -->
-    <canvas id="wizard-particles-canvas"></canvas>
-
     <div class="wizard-card">
       <div class="wizard-header">
         <div class="brand">
-          <div class="thinking-orb-mini" id="wizard-header-orb" title="ETU-AI Neural Core">
+          <div class="thinking-orb-mini" id="wizard-header-orb" title="ETU-AI">
             <div class="orb-glow"></div>
             <div class="orb-ring ring-1"></div>
             <div class="orb-ring ring-2"></div>
             <div class="orb-core"></div>
           </div>
           <div class="brand-text">
-            <h1>ETU-AI <span class="ai-chip-badge">Setup Neural</span></h1>
-            <p class="wizard-subtitle">Configuration autonome et optimisation matérielle locale</p>
+            <h1>ETU-AI</h1>
+            <p class="wizard-subtitle">Votre assistant, sur cet ordinateur</p>
           </div>
         </div>
         <div class="wizard-orb-mood-indicator" id="wizard-orb-mood">
@@ -44,10 +41,9 @@
         <div class="wizard-content">
           <div class="step-hero">
             <div class="step-hero-text">
-              <h3>Bienvenue sur ETU-AI</h3>
+              <h3>Commençons simplement.</h3>
               <p class="etu-text">
-                Votre assistant universitaire souverain <strong>100% privé, local et gratuit</strong>,
-                interconnecté avec votre plateforme étudiante <strong>etu-aix.alwaysdata.net</strong>.
+                Nous vérifions votre ordinateur, puis vous choisissez un modèle adapté. Vous pourrez changer de modèle plus tard.
               </p>
             </div>
             <!-- Orbe Scanner Diagnostic -->
@@ -62,7 +58,7 @@
           <div class="etu-card hw-card hw-card-interactive">
             <div class="etu-card-header">
               <span class="etu-badge etu-badge-info" id="hw-backend-badge">Détection...</span>
-              <h4>Diagnostic Matériel & Accélération Détectée</h4>
+              <h4>Votre ordinateur</h4>
             </div>
             <div class="etu-card-body">
               <div class="hw-grid">
@@ -99,12 +95,12 @@
             <div class="feat-box" data-mood="cyan">
               <span class="feat-icon">⚡</span>
               <strong>TurboQuant & GGUF</strong>
-              <p>Inférence temps réel optimisée pour CPU, GPU dédié et NPU.</p>
+              <p>Le moteur choisit le matériel disponible et affiche le backend réellement utilisé.</p>
             </div>
             <div class="feat-box" data-mood="purple">
               <span class="feat-icon">🤝</span>
-              <strong>Interconnecté etu-aix</strong>
-              <p>Accédez à votre emploi du temps, gérez votre agenda et vos amis.</p>
+              <strong>Etu2 à venir</strong>
+              <p>Une connexion par API découvrable sera testée localement avant son activation.</p>
             </div>
           </div>
         </div>
@@ -112,7 +108,7 @@
         <div class="wizard-actions">
           <div></div>
           <button id="btn-wizard-to-step2" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
-            Choisir mes modèles de départ &rarr;
+            Continuer &rarr;
           </button>
         </div>
       </div>
@@ -122,10 +118,8 @@
         <div class="wizard-content">
           <div class="step-heading-row">
             <div>
-              <h3>Sélectionnez vos modèles de départ</h3>
-              <p class="etu-text">
-                Explorez l'API publique Hugging Face sans identifiant et sélectionnez les modèles 100% adaptés à votre PC.
-              </p>
+              <h3>Choisissez votre modèle</h3>
+              <p class="etu-text">Nous montrons les modèles adaptés à la mémoire disponible. Un petit modèle préserve les performances du PC.</p>
             </div>
             <div class="model-selection-counter" id="model-selection-counter">
               <span class="count-badge" id="selected-models-count">1</span> modèle(s) sélectionné(s)
@@ -143,27 +137,29 @@
                 <input type="checkbox" id="wizard-filter-compatible" checked>
                 <span>IA compatibles uniquement</span>
               </label>
-              <button type="button" id="btn-wizard-autoselect" class="etu-btn etu-btn-secondary" title="Sélectionne automatiquement les meilleurs modèles pour votre CPU/RAM/GPU/NPU">
-                ⚡ Auto-Sélection Config PC
+              <button type="button" id="btn-wizard-autoselect" class="etu-btn etu-btn-secondary" title="Sélectionne un modèle adapté à votre PC">
+                Choisir pour moi
               </button>
             </div>
           </div>
 
           <!-- Filtres de Catégories d'IA -->
+          <details class="wizard-advanced"><summary>Filtres avancés</summary>
           <div class="wizard-category-tabs" id="wizard-category-tabs">
             <button type="button" class="category-pill active" data-cat="all">Toutes les IA (<span id="cat-count-all">0</span>)</button>
-            <button type="button" class="category-pill" data-cat="npu">⚡ NPU & Ultra-Léger (<span id="cat-count-npu">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="npu">⚡ Modèles légers (<span id="cat-count-npu">0</span>)</button>
             <button type="button" class="category-pill" data-cat="code">💻 Code & Dev (<span id="cat-count-code">0</span>)</button>
             <button type="button" class="category-pill" data-cat="reasoning">🧠 Raisonnement (<span id="cat-count-reasoning">0</span>)</button>
             <button type="button" class="category-pill" data-cat="7b">🚀 7B-8B (<span id="cat-count-7b">0</span>)</button>
             <button type="button" class="category-pill" data-cat="installed">✓ Déjà Installés (<span id="cat-count-installed">0</span>)</button>
           </div>
+          </details>
 
           <div id="wizard-npu-banner" class="npu-banner" style="display: none;">
             <span class="npu-banner-icon">⚡</span>
             <div class="npu-banner-body">
               <strong id="npu-banner-title">Puce NPU Détectée</strong>
-              <p id="npu-banner-text">Votre processeur intègre une puce d'accélération neurale (NPU). Les modèles marqués ⚡ Compatible NPU sont optimisés pour une réactivité instantanée et une très faible consommation énergétique.</p>
+              <p id="npu-banner-text">Un NPU a été détecté. Son utilisation dépendra du backend réellement disponible dans Beacon.</p>
             </div>
           </div>
 
@@ -177,7 +173,7 @@
             &larr; Retour
           </button>
           <button id="btn-wizard-start-install" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
-            Lancer l'installation 🚀
+            Installer le modèle
           </button>
         </div>
       </div>
@@ -202,9 +198,9 @@
               <div class="orb-sparkles" id="orb-sparkles"></div>
             </div>
             <div class="master-orb-caption">
-              <h3 id="install-title">Initialisation de l'IA locale...</h3>
+              <h3 id="install-title">Installation de votre IA</h3>
               <p class="etu-text" id="install-subtitle">
-                Préparation du moteur et synchronisation des modules haute vitesse.
+                Cette étape peut prendre quelques minutes selon votre connexion.
               </p>
             </div>
           </div>
@@ -252,19 +248,12 @@
             <strong id="wizard-progress-percent" style="color: var(--accent-hover);">5%</strong>
           </div>
 
-          <!-- Terminal de logs live stylisé avec scanlines -->
-          <div class="terminal-log-container">
-            <div class="terminal-header">
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <span class="status-dot"></span>
-                <span>Terminal de configuration en direct</span>
-              </div>
-              <span class="terminal-badge">LIVE STREAM</span>
-            </div>
+          <details class="terminal-log-container">
+            <summary class="terminal-header">Afficher les détails techniques</summary>
             <div class="terminal-body" id="wizard-logs-box">
               <div class="terminal-line">[i] Initialisation du Setup Wizard ETU-AI...</div>
             </div>
-          </div>
+          </details>
         </div>
 
         <div class="wizard-actions">
@@ -285,14 +274,20 @@
     <!-- Sidebar -->
     <aside id="sidebar">
       <div class="brand">
-        <div class="brand-icon">🎓</div>
-        <h1>ETU-AI <span>Local</span></h1>
+        <div class="brand-icon">✦</div>
+        <h1>ETU-AI</h1>
       </div>
 
       <button id="btn-new-chat" class="btn-new-chat">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
         Nouvelle discussion
       </button>
+
+      <div class="profile-switcher">
+        <span class="profile-eyebrow">Votre assistant</span>
+        <select id="profile-select" aria-label="Choisir un profil d'assistant"></select>
+        <button id="btn-open-profiles" type="button" class="nav-btn">✦ Gérer les profils</button>
+      </div>
 
       <div class="conv-list" id="conv-list">
         <!-- Rempli dynamiquement -->
@@ -301,22 +296,20 @@
       <div class="sidebar-footer">
         <button id="btn-open-models" class="nav-btn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-          Gestionnaire de Modèles
-        </button>
-        <button id="btn-open-pairing" class="nav-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
-          Appairage etu-aix
+          Modèles
         </button>
         <button id="btn-reopen-wizard" class="nav-btn" style="color: var(--accent-color);">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          Assistant de configuration
+          Configuration
         </button>
+        <button id="btn-open-api-settings" class="nav-btn">🔑 Clés API</button>
       </div>
     </aside>
 
     <!-- Main Chat Area -->
     <main id="chat-main">
       <header>
+        <div class="chat-header-title">ETU-AI <span>· sur votre ordinateur</span></div>
         <div class="header-status">
           <div class="status-badge" id="backend-badge">
             <span class="status-dot"></span>
@@ -326,11 +319,10 @@
             <span class="status-dot" id="beacon-dot"></span>
             <span id="beacon-text">Beacon (11343) : Vérification...</span>
           </div>
-          <div class="status-badge" id="pairing-badge">
-            <span id="pairing-text">etu-aix : Mode Local</span>
-          </div>
+          <div class="status-badge" id="pairing-badge"><span id="pairing-text">Etu2 : à venir</span></div>
         </div>
         <div class="header-actions">
+          <button id="btn-theme" class="theme-toggle" type="button" aria-label="Changer le thème" title="Changer le thème">☀</button>
           <div class="model-selector-wrapper" id="model-selector-wrapper">
             <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d'IA" type="button">
               <span class="model-badge-icon" id="model-badge-icon">🧠</span>
@@ -344,7 +336,7 @@
 
             <div class="model-dropdown-menu" id="model-dropdown-menu">
               <div class="model-dropdown-header">
-                <span>Modèles Installés</span>
+                <span>Modèles disponibles</span>
                 <span class="model-count-badge" id="model-count-badge">0 disponible</span>
               </div>
               <div class="model-dropdown-list" id="model-dropdown-list">
@@ -361,27 +353,16 @@
         </div>
       </header>
 
-      <div id="chat-messages">
+      <div id="chat-messages" aria-live="off">
         <!-- Message de bienvenue -->
-        <div class="message assistant">
-          <div class="avatar ai-avatar">AI</div>
-          <div class="message-bubble">
-            <div class="etu-card">
-              <div class="etu-card-header">
-                <span class="etu-badge etu-badge-info">Prêt</span>
-                <h4>ETU-AI est opérationnel</h4>
-              </div>
-              <div class="etu-card-body">
-                <p class="etu-text">Bonjour ! Je suis votre assistant étudiant autonome connecté à vos cours et à la plateforme <strong>etu-aix.alwaysdata.net</strong>.</p>
-                <p class="etu-text">Que souhaitez-vous faire ?</p>
-                <ul class="etu-list">
-                  <li>« Quel est mon emploi du temps aujourd'hui ? »</li>
-                  <li>« Ajoute une révision d'algorithmique à mon agenda demain à 14h. »</li>
-                  <li>« Envoie une demande d'ami à Thomas sur etu-aix. »</li>
-                  <li>« Corrige et structure mon devoir de synthèse. »</li>
-                </ul>
-              </div>
-            </div>
+        <div class="chat-welcome">
+          <div class="welcome-orb" aria-hidden="true">✦</div>
+          <h2>Comment puis-je vous aider ?</h2>
+          <p>Un assistant local pour apprendre, coder et explorer vos idées.</p>
+          <div class="welcome-suggestions">
+            <button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button>
+            <button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button>
+            <button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button>
           </div>
         </div>
       </div>
@@ -396,12 +377,10 @@
               <span class="quick-caret">▾</span>
             </button>
           </div>
-          <div class="chat-shortcuts-hint">
-            <span>Tapez <kbd>/model</kbd> ou utilisez le sélecteur pour basculer instantanément</span>
-          </div>
+          <div class="chat-shortcuts-hint" id="chat-privacy-hint">Les réponses restent sur cet ordinateur.</div>
         </div>
         <form id="chat-form" class="input-box">
-          <textarea id="chat-input" placeholder="Posez une question ou demandez une action..." rows="1" required></textarea>
+          <textarea id="chat-input" placeholder="Écrivez votre message…" rows="1" required></textarea>
           <button type="submit" id="btn-send" class="send-btn" title="Envoyer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
           </button>
@@ -412,6 +391,88 @@
 
   <!-- Conteneur Toast Notifications -->
   <div id="toast-container" class="toast-container"></div>
+
+  <div id="modal-profiles" class="modal-overlay">
+    <div class="modal-content profile-dialog">
+      <div class="modal-header">
+        <h3>Mes assistants</h3>
+        <button class="modal-close" data-target="modal-profiles" aria-label="Fermer">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="profile-list" class="profile-list"></div>
+        <form id="profile-form" class="profile-form">
+          <input type="hidden" id="profile-id">
+          <div class="profile-form-heading">
+            <h4 id="profile-form-title">Créer un profil</h4>
+            <button type="button" id="profile-new" class="etu-btn etu-btn-secondary">Nouveau</button>
+          </div>
+          <label>Nom <input id="profile-name" maxlength="50" required placeholder="Ex. Mon tuteur de code"></label>
+          <label>Tête de l'IA <input id="profile-avatar" maxlength="20" placeholder="✦ ou un emoji"></label>
+          <div class="profile-image-row">
+            <span id="profile-image-preview" class="profile-image-preview">✦</span>
+            <label class="profile-upload-label">Choisir une image locale
+              <input id="profile-image-file" type="file" accept="image/png,image/jpeg,image/webp">
+            </label>
+          </div>
+          <label>Instructions personnelles <textarea id="profile-instructions" maxlength="3000" rows="5" placeholder="Ex. Explique les notions pas à pas, avec un exemple en Python."></textarea></label>
+          <p class="profile-hint">Ces instructions sont ajoutées aux conversations de ce profil. Restez concis pour économiser le contexte.</p>
+          <div class="profile-form-actions">
+            <button type="submit" class="etu-btn etu-btn-primary">Enregistrer</button>
+            <button type="button" id="profile-delete" class="etu-btn etu-btn-secondary">Supprimer</button>
+          </div>
+          <p id="profile-form-error" class="profile-error" role="alert"></p>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-api-settings" class="modal-overlay">
+    <div class="modal-content profile-dialog api-provider-dialog">
+      <div class="modal-header">
+        <div class="api-dialog-title"><span aria-hidden="true">✦</span><div><h3>Fournisseurs IA</h3><p>Connectez vos modèles préférés</p></div></div>
+        <button class="modal-close" data-target="modal-api-settings" aria-label="Fermer">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="api-key-intro"><span class="api-key-lock" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4.5" y="10" width="15" height="11" rx="2.5"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path><path d="M12 14.5v2.5"></path></svg></span><div><strong>Vos clés restent privées</strong><p>Stockées dans le coffre-fort de votre système. Elles ne sont jamais affichées après l’enregistrement.</p></div></div>
+        <form id="api-settings-form" class="profile-form">
+          <label><input id="api-provider-enabled" type="checkbox"> Utiliser un fournisseur distant</label>
+          <label for="api-provider-select">Fournisseur</label>
+          <select id="api-provider-select">
+            <optgroup label="API natives"><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option></optgroup>
+            <optgroup label="API compatibles OpenAI">
+              <option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option>
+              <option value="groq">Groq</option><option value="mistral">Mistral</option>
+              <option value="together">Together AI</option><option value="deepseek">DeepSeek</option>
+              <option value="xai">xAI</option><option value="cerebras">Cerebras</option>
+              <option value="fireworks">Fireworks AI</option><option value="perplexity">Perplexity</option>
+              <option value="nvidia">NVIDIA NIM</option><option value="sambanova">SambaNova</option>
+              <option value="deepinfra">DeepInfra</option><option value="github-models">GitHub Models</option>
+              <option value="openai-compatible">API compatible OpenAI (ancien réglage)</option>
+              <option value="custom">Autre compatible OpenAI</option>
+            </optgroup>
+          </select>
+          <div id="api-provider-brand" class="api-provider-brand" data-provider="mistral" aria-live="polite">
+            <span id="api-provider-mark" class="api-provider-mark" aria-hidden="true">M</span>
+            <span class="api-provider-brand-copy"><strong id="api-provider-brand-name">Mistral</strong><small id="api-provider-brand-detail">API compatible OpenAI · clé stockée localement</small></span>
+            <span id="api-provider-brand-state" class="api-provider-brand-state">À configurer</span>
+          </div>
+          <div id="api-provider-url-wrap">
+            <label for="api-provider-url">URL compatible OpenAI</label>
+            <input id="api-provider-url" type="url" value="https://api.openai.com/v1" autocomplete="url" required>
+          </div>
+          <label for="api-provider-model">Modèle</label>
+          <input id="api-provider-model" type="text" value="gpt-4o-mini" required>
+          <p class="api-model-hint">Vous pouvez remplacer cet identifiant par n’importe quel modèle disponible avec votre compte.</p>
+          <label for="api-provider-key">Clé API <span id="api-key-status"></span></label>
+          <input id="api-provider-key" type="password" placeholder="Collez votre clé (laissez vide pour conserver celle de ce fournisseur)" autocomplete="new-password">
+          <label><input id="api-provider-clear-key" type="checkbox"> Supprimer la clé enregistrée</label>
+          <div class="etu-text">Chaque fournisseur garde sa propre clé dans le coffre-fort. L’activation envoie vos conversations au fournisseur choisi. D’autres services compatibles OpenAI se configurent avec « Autre ».</div>
+          <button class="etu-btn etu-btn-primary" type="submit">Enregistrer</button>
+          <div id="api-settings-message" role="status" aria-live="polite"></div>
+        </form>
+      </div>
+    </div>
+  </div>
 
   <!-- Modale Gestionnaire de Modèles -->
   <div id="modal-models" class="modal-overlay">
@@ -434,7 +495,7 @@
         <!-- Onglet 1 : Catalogue Local & Recommandé -->
         <div id="tab-catalog" class="modal-tab-content active">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <p class="etu-text" style="margin: 0;">Modèles optimisés pour votre processeur, RAM et cartes d'accélération (GPU/NPU).</p>
+            <p class="etu-text" style="margin: 0;">Modèles suggérés selon la mémoire et le matériel détectés.</p>
             <button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary" style="margin: 0;">
               ⚡ Auto-Sélection Config PC
             </button>
@@ -448,7 +509,7 @@
         <div id="tab-hf-explorer" class="modal-tab-content">
           <p class="etu-text">
             Recherche en direct sur <strong>Hugging Face Hub</strong> via l'API publique sans compte ni token requis.
-            Chaque modèle est automatiquement testé contre la RAM et les puces graphiques/neurales de votre PC.
+            La mémoire nécessaire est estimée pour chaque modèle ; l'accélération réelle dépend du moteur chargé.
           </p>
 
           <div class="hf-search-container">
@@ -495,32 +556,6 @@
     </div>
   </div>
 
-  <!-- Modale Appairage etu-aix -->
-  <div id="modal-pairing" class="modal-overlay">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>Appairage etu-aix.alwaysdata.net</h3>
-        <button class="modal-close" data-target="modal-pairing">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p class="etu-text">Connectez ce serveur local à votre compte sur <strong>etu-aix.alwaysdata.net</strong> pour synchroniser vos devoirs, emplois du temps et interactions sociales.</p>
-        <div class="etu-card">
-          <form id="form-pairing" style="display: flex; flex-direction: column; gap: 12px;">
-            <div>
-              <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Jeton d'appairage étudiant (Pairing Token)</label>
-              <input type="text" id="pairing-token-input" placeholder="Collez votre jeton généré sur etu-aix..." style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
-            </div>
-            <div>
-              <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Identifiant étudiant (Optionnel)</label>
-              <input type="text" id="student-id-input" placeholder="ex: etu_12345" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;">
-            </div>
-            <button type="submit" class="etu-btn etu-btn-primary" style="align-self: flex-start;">Valider l'appairage</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=api-providers-2&interactive=2"></script>
 </body>
 </html>

@@ -71,20 +71,38 @@ class StorageManager:
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
+                CREATE TABLE IF NOT EXISTS assistant_profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    avatar TEXT NOT NULL,
+                    instructions TEXT NOT NULL DEFAULT '',
+                    model TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
             """)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
+            if "profile_id" not in columns:
+                conn.execute("ALTER TABLE conversations ADD COLUMN profile_id TEXT")
+            if not conn.execute("SELECT 1 FROM assistant_profiles LIMIT 1").fetchone():
+                now = datetime.now(timezone.utc).isoformat()
+                conn.execute(
+                    "INSERT INTO assistant_profiles VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("default", "ETU-AI", "✦", "", None, now, now),
+                )
 
     # -------------------------------------------------------------------------
     # Conversations
     # -------------------------------------------------------------------------
 
-    def create_conversation(self, title: str = "Nouvelle discussion", model_used: Optional[str] = None) -> str:
+    def create_conversation(self, title: str = "Nouvelle discussion", model_used: Optional[str] = None, profile_id: Optional[str] = None) -> str:
         """Crée une nouvelle discussion et renvoie son ID."""
         conv_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         with self._connection() as conn:
             conn.execute(
-                "INSERT INTO conversations (id, title, created_at, updated_at, model_used) VALUES (?, ?, ?, ?, ?)",
-                (conv_id, title, now, now, model_used or "default"),
+                "INSERT INTO conversations (id, title, created_at, updated_at, model_used, profile_id) VALUES (?, ?, ?, ?, ?, ?)",
+                (conv_id, title, now, now, model_used or "default", profile_id or "default"),
             )
         return conv_id
 
@@ -92,7 +110,7 @@ class StorageManager:
         """Liste les discussions récentes."""
         with self._connection() as conn:
             cursor = conn.execute(
-                "SELECT id, title, created_at, updated_at, model_used FROM conversations ORDER BY updated_at DESC LIMIT ?",
+                "SELECT id, title, created_at, updated_at, model_used, profile_id FROM conversations ORDER BY updated_at DESC LIMIT ?",
                 (limit,),
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -103,6 +121,43 @@ class StorageManager:
             cursor = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+    def set_conversation_profile(self, conv_id: str, profile_id: str) -> bool:
+        with self._connection() as conn:
+            result = conn.execute("UPDATE conversations SET profile_id = ? WHERE id = ?", (profile_id, conv_id))
+            return result.rowcount > 0
+
+    def list_profiles(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM assistant_profiles ORDER BY created_at, id"
+            )]
+
+    def get_profile(self, profile_id: str) -> Optional[dict[str, Any]]:
+        with self._connection() as conn:
+            row = conn.execute("SELECT * FROM assistant_profiles WHERE id = ?", (profile_id,)).fetchone()
+            return dict(row) if row else None
+
+    def save_profile(self, name: str, avatar: str, instructions: str, model: Optional[str] = None, profile_id: Optional[str] = None) -> dict[str, Any]:
+        profile_id = profile_id or str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO assistant_profiles (id, name, avatar, instructions, model, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name, avatar=excluded.avatar,
+                   instructions=excluded.instructions, model=excluded.model, updated_at=excluded.updated_at""",
+                (profile_id, name, avatar, instructions, model, now, now),
+            )
+        return self.get_profile(profile_id)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        if profile_id == "default":
+            return False
+        with self._connection() as conn:
+            conn.execute("UPDATE conversations SET profile_id = 'default' WHERE profile_id = ?", (profile_id,))
+            result = conn.execute("DELETE FROM assistant_profiles WHERE id = ?", (profile_id,))
+            return result.rowcount > 0
 
     def update_conversation_title(self, conv_id: str, new_title: str) -> bool:
         """Met à jour le titre d'une discussion."""
