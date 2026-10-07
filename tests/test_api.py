@@ -132,7 +132,11 @@ class TestAPIServer(unittest.TestCase):
         status_mock.read.return_value = b'{"status": "running", "active_model": "Ministral-3-3B-Instruct-2512-Q4_K_M"}'
         status_mock.__enter__.return_value = status_mock
 
-        with patch("urllib.request.urlopen", side_effect=[mock_resp, status_mock]), patch.object(api_server.downloader, "list_installed_models", return_value=["Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"]):
+        def beacon_response(request, **kwargs):
+            url = request if isinstance(request, str) else request.full_url
+            return mock_resp if url.endswith("/api/select") else status_mock
+
+        with patch("urllib.request.urlopen", side_effect=beacon_response), patch.object(api_server.downloader, "list_installed_models", return_value=["Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"]):
             sel_resp = self.client.post("/api/models/select", json={"model": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf"})
             self.assertEqual(sel_resp.status_code, 200)
             data = sel_resp.json()

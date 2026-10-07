@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-etu-preview-runtime'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>html,body{margin:0;min-height:1px;scrollbar-width:none}::-webkit-scrollbar{display:none}body{font:14px/1.5 Inter,system-ui,sans-serif;overflow-wrap:anywhere}#preview-root{display:flow-root}</style>
+  <style>html,body{margin:0;min-height:1px;scrollbar-width:none;background:transparent;color:var(--text-main)}::-webkit-scrollbar{display:none}body{font:14px/1.65 Inter,system-ui,sans-serif;overflow-wrap:anywhere}#preview-root{display:flow-root}input,select,textarea,button{font:inherit;color:inherit}input,select,textarea{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px}button{background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:8px;cursor:pointer}</style>
 </head>
 <body>
   <style id="authored-styles"></style>
   <div id="preview-root"></div>
+  <script nonce="etu-preview-runtime" src="./generated-layout.js"></script>
   <script nonce="etu-preview-runtime">
     (() => {
     const root = document.getElementById("preview-root");
@@ -16,6 +17,10 @@
     let previousMarkup = "";
     let appliedPatches = 0;
     let executedHtml = null;
+    let hasLocalScript = false;
+    const receivedPatches = new Map();
+    let submittedForm = null;
+    let interactionTime = 0;
     const reportError = (message) => parent.postMessage({ type: "etu-preview-error", message: String(message).slice(0, 300) }, "*");
     window.addEventListener("error", (event) => reportError(event.message));
     window.addEventListener("unhandledrejection", (event) => reportError(event.reason?.message || event.reason));
@@ -34,7 +39,7 @@
         for (const attr of [...node.attributes]) {
           const name = attr.name.toLowerCase();
           const value = attr.value.trim();
-          if (name.startsWith("on") || name === "srcdoc" || name === "formaction" ||
+          if (name.startsWith("on") || ["srcdoc", "formaction", "action", "target", "srcset", "poster", "background"].includes(name) ||
               (name === "href" && !value.startsWith("#")) ||
               (name === "src" && !/^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(value))) {
             node.removeAttribute(attr.name);
@@ -46,35 +51,34 @@
 
     function render(html, complete) {
       if (html === executedHtml) return;
-      const parsed = new DOMParser().parseFromString(String(html).slice(0, 200000), "text/html");
-      const scripts = [...parsed.querySelectorAll("script:not([src])")]
+      const parsed = parseMarkup(html);
+      const scripts = [...parsed.content.querySelectorAll("script:not([src])")]
         .filter((node) => !node.type || ["text/javascript", "application/javascript", "module"].includes(node.type))
         .map((node) => ({ code: node.textContent, type: node.type }));
-      const css = [...parsed.querySelectorAll("style")].map((node) => node.textContent).join("\n");
+      const css = [...parsed.content.querySelectorAll("style")].map((node) => node.textContent).join("\n");
       if (styles.textContent !== css) styles.textContent = css;
-      sanitize(parsed.body);
-      const patches = [...parsed.body.querySelectorAll("template[for]")].map((node) => {
+      sanitize(parsed.content);
+      const patches = [...parsed.content.querySelectorAll("template[for]")].map((node) => {
         const patch = { marker: node.getAttribute("for"), content: node.content.cloneNode(true) };
         node.remove();
         return patch;
       });
-      const markup = parsed.body.innerHTML;
+      const markup = parsed.innerHTML;
       if (markup !== previousMarkup) {
-        root.replaceChildren(...parsed.body.childNodes);
+        root.replaceChildren(...parsed.content.childNodes);
         previousMarkup = markup;
         appliedPatches = 0;
       }
       for (const patch of patches.slice(appliedPatches)) {
         const marker = patch.marker;
         if (!/^[\w-]{1,80}$/.test(marker || "")) continue;
-        const target = [...root.querySelectorAll("[data-update-marker]")]
-          .find((element) => element.getAttribute("data-update-marker") === marker);
-        if (target) target.replaceChildren(patch.content);
+        replaceMarker(marker, patch.content);
       }
       appliedPatches = patches.length;
       // Le code incomplet du flux reste inerte. Le programme du modèle démarre
       // une seule fois, sur le DOM final, dans l'origine opaque de cette iframe.
       if (complete) {
+        hasLocalScript = scripts.length > 0;
         executedHtml = html;
         for (const script of scripts) {
           const executable = document.createElement("script");
@@ -85,22 +89,97 @@
           executable.remove();
         }
       }
+      ETUGeneratedLayout.integrate(root);
       reportHeight();
     }
 
+    function parseMarkup(html) {
+      const parsed = document.createElement("template");
+      parsed.innerHTML = String(html).slice(0, 200000)
+        .replace(/<\?(marker|start)\s+name=["']([\w/-]{1,100})["']\s*\??>/gi, "<!--etu-$1:$2-->")
+        .replace(/<\?end\s*\??>/gi, "<!--etu-end-->");
+      return parsed;
+    }
+
+    function replaceMarker(marker, content) {
+      const target = [...root.querySelectorAll("[data-update-marker]")].find(node => node.dataset.updateMarker === marker);
+      if (target) { target.replaceChildren(content); return true; }
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+      let start = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.data === `etu-marker:${marker}`) {
+          const slot = document.createElement("div"); slot.dataset.updateMarker = marker;
+          slot.append(content); node.replaceWith(slot); return true;
+        }
+        if (node.data === `etu-start:${marker}`) start = node;
+        if (node.data === "etu-end" && start && start.parentNode === node.parentNode) {
+          const range = document.createRange(); range.setStartAfter(start); range.setEndBefore(node); range.deleteContents();
+          node.before(content); return true;
+        }
+      }
+      return false;
+    }
+
     window.addEventListener("message", (event) => {
-      if (event.source !== parent || event.data?.type !== "etu-preview-update") return;
-      render(event.data.html, event.data.complete === true);
+      if (event.source !== parent) return;
+      if (event.data?.type === "etu-preview-update") {
+        if (["light", "dark"].includes(event.data.colorScheme)) document.documentElement.style.colorScheme = event.data.colorScheme;
+        for (const [name, value] of Object.entries(event.data.theme || {})) {
+          if (/^--(?:text-main|text-muted|bg-primary|bg-secondary|bg-tertiary|border-color|accent-color)$/.test(name))
+            document.documentElement.style.setProperty(name, String(value));
+        }
+        render(event.data.html, event.data.complete === true);
+      } else if (event.data?.type === "etu-preview-patch") {
+        const { marker, html } = event.data;
+        if (!/^[\w/-]{1,100}$/.test(marker || "") || typeof html !== "string" || receivedPatches.get(marker) === html) return;
+        const parsed = parseMarkup(html);
+        sanitize(parsed.content);
+        if (!replaceMarker(marker, parsed.content)) return;
+        receivedPatches.set(marker, html);
+        ETUGeneratedLayout.integrate(root);
+        reportHeight();
+      }
     });
+    root.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const form = event.target;
+      if (!event.isTrusted || submittedForm !== form || Date.now() - interactionTime > 1000) return;
+      submittedForm = null;
+      const fields = [];
+      for (const field of form.elements) {
+        if (field.disabled || !/^(INPUT|SELECT|TEXTAREA)$/.test(field.tagName) || /^(submit|button|reset|file|password)$/i.test(field.type)) continue;
+        const name = field.name || field.id || field.labels?.[0]?.textContent?.trim();
+        if (!name || (field.type === "radio" && !field.checked)) continue;
+        if (field.type === "checkbox") fields.push([name, field.checked]);
+        else if (field.tagName === "SELECT" && field.multiple)
+          [...field.selectedOptions].forEach(option => fields.push([name, option.value]));
+        else fields.push([name, field.value]);
+      }
+      if (event.submitter?.name) fields.push([event.submitter.name, event.submitter.value]);
+      parent.postMessage({ type: "etu-preview-form", description: form.dataset.description || form.getAttribute("aria-label") || form.id || "Réponses au formulaire", fields }, "*");
+    }, true);
+    // requestSubmit() produit aussi un événement trusted : exiger un geste réel
+    // dans ce formulaire pour qu'un programme ne puisse pas lancer des requêtes.
+    for (const type of ["click", "keydown"]) root.addEventListener(type, (event) => {
+      if (!event.isTrusted || (type === "keydown" && event.key !== "Enter")) return;
+      submittedForm = event.target.closest("form");
+      interactionTime = Date.now();
+    }, true);
     root.addEventListener("click", (event) => {
       if (!event.isTrusted) return;
-      const button = event.target.closest("[data-copy],[data-action]");
+      const button = event.target.closest("[data-copy],[data-action],[data-chat-action]");
       if (!button) return;
+      if (button.closest("form") && button.type === "submit") return;
+      // Les programmes emploient parfois data-action comme sélecteur local.
+      // Une action IA dans un programme doit donc être explicitement marquée.
+      if (hasLocalScript && !button.hasAttribute("data-copy") && !button.hasAttribute("data-chat-action")) return;
+      if (event.defaultPrevented) return;
       event.preventDefault();
       if (button.hasAttribute("data-copy")) {
         parent.postMessage({ type: "etu-preview-copy", value: button.getAttribute("data-copy") }, "*");
       } else {
-        parent.postMessage({ type: "etu-preview-action", value: button.getAttribute("data-action") }, "*");
+        parent.postMessage({ type: "etu-preview-action", value: button.getAttribute("data-chat-action") ?? button.getAttribute("data-action") }, "*");
       }
     });
     parent.postMessage({ type: "etu-preview-ready" }, "*");

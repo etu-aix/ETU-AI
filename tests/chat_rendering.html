@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="fr"><meta charset="utf-8"><title>Régressions du chat</title>
+<style>:root{--text-main:#222;--bg-secondary:#eee;--border-color:#aaa;--accent-color:blue}#chat-messages{background:white}.authored-inline{contain:layout paint style}</style>
+<main id="chat-main"><div id="chat-messages"></div></main>
+<div id="chat-input-container"><form id="chat-form"><textarea id="chat-input"></textarea><button id="btn-send">Envoyer</button><button id="btn-attach" type="button">Fichier</button><input id="chat-file-input" type="file"></form></div>
+<button id="btn-stop" type="button" hidden>Arrêter</button><div id="chat-attachments"></div><div id="attachment-error"></div><pre id="results" role="status"></pre>
+<script src="../ui/generated-layout.js"></script>
+<script src="../ui/generative-ui.js"></script>
+<script>
+// Charger les fonctions de production avec le DOM réduit du banc de test.
+const addListener = document.addEventListener.bind(document);
+document.addEventListener = (type, ...args) => { if (type !== 'DOMContentLoaded') addListener(type, ...args); };
+</script>
+<script src="../ui/vendor/marked-18.0.14.umd.js"></script>
+<script src="../ui/vendor/highlight-11.12.0.min.js"></script>
+<script src="../ui/app.js"></script>
+<script>
+document.addEventListener = addListener;
+const results = document.getElementById('results');
+function assert(condition, label) { results.textContent += `${condition ? 'PASS' : 'FAIL'} ${label}\n`; }
+function bubble() { return renderMessage('assistant', '').querySelector('.message-bubble'); }
+const mixed = bubble();
+const markdown = bubble();
+streamMarkup.set(markdown, '## Résultat\n\n**Important** et *utile*.\n\n1. Premier\n2. Second\n\n| Champ | Valeur |\n| --- | --- |\n| Sujet | SQL |\n\n[Documentation](https://example.com/docs)\n\n> Une citation\n\n```python\ndef saluer(nom):\n    return "Bonjour " + nom\n');
+renderStreamMarkup(markdown);
+assert(!!markdown.querySelector('h2') && !!markdown.querySelector('strong') && markdown.querySelectorAll('ol li').length === 2 && !!markdown.querySelector('table') && !!markdown.querySelector('blockquote'), 'Markdown complet pendant le flux, avant finalisation');
+assert(markdown.querySelector('a').href === 'https://example.com/docs' && markdown.querySelector('a').rel.includes('noopener'), 'Liens Markdown utilisables et protégés');
+assert(!!markdown.querySelector('code .hljs-keyword') && !!markdown.querySelector('code .hljs-string') && !markdown.dataset.renderFinalized, 'Coloration Python avec un bloc encore ouvert');
+const codeBefore = markdown.querySelector('pre code').textContent;
+finalizeAssistantBubble(markdown);
+assert(markdown.querySelector('pre code').textContent === codeBefore && !!markdown.querySelector('code .hljs-keyword'), 'Même contenu et coloration après finalisation');
+const cpp = renderAssistantFragment('```c++\nint main() { return 0; }\n```');
+assert(cpp.querySelector('code').classList.contains('language-c++') && !!cpp.querySelector('.hljs-keyword'), 'Langage C++ conservé et coloré');
+const mixedHTML = renderAssistantFragment('<h4>Sources</h4><ul><li>[Documentation](https://example.com/docs) et **important**</li><li><strong>Python</strong> : `pandas`</li></ul><p>Conclusion *utile*.</p>');
+assert(mixedHTML.querySelector('li a')?.href === 'https://example.com/docs' && mixedHTML.querySelectorAll('strong').length === 2 && mixedHTML.querySelector('li code')?.textContent === 'pandas' && !!mixedHTML.querySelector('p em'), 'Markdown dans les listes et paragraphes HTML');
+const inlineHTML = renderAssistantFragment('Une <strong>phrase</strong> avec **Markdown** et un <span>mot</span>.');
+assert(inlineHTML.querySelector('strong')?.textContent === 'phrase' && inlineHTML.querySelectorAll('strong').length === 2 && inlineHTML.querySelector('span')?.textContent === 'mot', 'Balises HTML en ligne et Markdown conservés ensemble');
+const protectedHTML = renderAssistantFragment('<p>\\*\\*Littéral\\*\\* et [lien](javascript:alert(1))</p><pre><code>**code** [texte](https://example.com)</code></pre>');
+assert(!protectedHTML.querySelector('strong,a[href]') && protectedHTML.querySelector('code').textContent === '**code** [texte](https://example.com)', 'Code HTML intact, échappements et liens filtrés dans le Markdown mixte');
+const wrappedMD = renderAssistantFragment('<div>## Titre\n\n- Premier\n- Second\n\n~~~python\nprint("OK")\n~~~</div>');
+assert(!!wrappedMD.querySelector('h2') && wrappedMD.querySelectorAll('li').length === 2 && !!wrappedMD.querySelector('pre code .hljs-string'), 'Markdown complet enveloppé dans une balise HTML');
+const htmlThenMD = renderAssistantFragment('<p>Une réponse **utile**.</p>\n\n## Suite\n\n[Documentation](https://example.com)');
+assert(!!htmlThenMD.querySelector('p strong') && !!htmlThenMD.querySelector('h2') && !!htmlThenMD.querySelector('a'), 'Markdown après un bloc HTML en début de réponse');
+const literalTags = renderAssistantFragment('<p>La balise &lt;script&gt; et `&lt;div&gt;` restent du texte.</p>');
+assert(literalTags.textContent.includes('<script>') && literalTags.querySelector('code')?.textContent === '<div>' && !literalTags.querySelector('script,div'), 'Chevrons échappés conservés dans le texte HTML');
+const hostile = renderAssistantFragment('[dangereux](javascript:alert(1))\n\n<script>window.bad=true<\/script>\n\n```javascript\nconst exemple = "<img src=x onerror=alert(1)>";\n```\n\n\\*\\*Texte littéral\\*\\*');
+assert(!hostile.querySelector('script,img,a[href]') && hostile.querySelector('pre code').textContent.includes('<img src=x onerror=alert(1)>') && !hostile.querySelector('strong'), 'HTML et liens dangereux filtrés, code et Markdown échappé conservés');
+const sourceLive = bubble();
+streamMarkup.set(sourceLive, '```html\n<div style="display:grid"><button>OK</button></div>');
+renderStreamMarkup(sourceLive);
+assert(!!sourceLive.querySelector('.authored-preview-source code .hljs-tag') && !sourceLive.dataset.renderFinalized, 'Source HTML consultable et colorée pendant la génération');
+const response = 'Réponse principale **visible**.\n```html\n<button>Exemple</button>\n```\nConclusion conservée.';
+streamMarkup.set(mixed, response);
+renderStreamMarkup(mixed);
+assert(mixed.querySelector('.authored-text-before').textContent.includes('Réponse principale visible') && mixed.querySelector('.authored-text-after').textContent.includes('Conclusion conservée'), 'Texte autour du HTML conservé pendant le flux');
+finalizeAssistantBubble(mixed);
+handleStreamEvent({event:'done'}, mixed);
+assert(mixed.querySelector('.authored-text-before').textContent.includes('Réponse principale visible') && !!mixed.querySelector('.authored-inline'), 'Finalisation répétée sans disparition de la réponse');
+const previous = renderMessage('assistant', '```html\n<div data-update-marker="result">Ancien</div>\n```');
+const patchBubble = bubble();
+streamMarkup.set(patchBubble, '```html\n<template for="result"><input name="test" value="Après"></template>\n```');
+renderStreamMarkup(patchBubble);
+let root = previous.querySelector('.authored-inline').shadowRoot;
+assert(root.querySelector('[data-update-marker]').textContent === 'Ancien', 'Mise à jour différée jusqu’à la fin de la réponse');
+finalizeAssistantBubble(patchBubble);
+root.querySelector('input').value = 'Saisie conservée';
+handleStreamEvent({event:'done'}, patchBubble);
+assert(root.querySelector('input').value === 'Saisie conservée', 'Une mise à jour est appliquée une seule fois');
+const program = bubble();
+streamMarkup.set(program, '```html\n<button>Jeu</button><script>let count=0;<\/script>\n```');
+renderStreamMarkup(program);
+assert(!program.querySelector('iframe'), 'Programme inerte pendant la génération');
+finalizeAssistantBubble(program);
+assert(program.querySelectorAll('iframe').length === 1, 'Un seul programme créé à la finalisation');
+program.querySelector('iframe').src = '../ui/preview.html';
+
+(async () => {
+  // Le faux transport ignore volontairement l’annulation pour tester les gardes
+  // de contexte et le finally d’un flux ancien, sans appeler une API réelle.
+  const channels = [];
+  window.fetch = async url => url.endsWith('/stop') ? new Response('{}') : new Response(new ReadableStream({start(controller) { channels.push(controller); }}), {headers: {'Content-Type':'text/event-stream'}});
+  document.getElementById('chat-messages').replaceChildren();
+  initChatForm();
+  currentConversationId = 'ancien';
+  document.getElementById('chat-input').value = 'Ancienne demande';
+  document.getElementById('chat-form').requestSubmit();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const oldController = activeChatStream.controller;
+  cancelChatStream();
+  document.getElementById('chat-messages').replaceChildren();
+  currentConversationId = 'nouveau';
+  document.getElementById('chat-input').value = 'Nouvelle question';
+  document.getElementById('chat-form').requestSubmit();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const encode = new TextEncoder();
+  channels[0].enqueue(encode.encode('data: '+JSON.stringify({event:'token',html:'<template for="chat-canvas"><h2>Ancienne interface</h2></template>'})+'\n\n'));
+  channels[0].close();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert(oldController.signal.aborted && !document.querySelector('.generated-chat-canvas'), 'Ancien flux annulé et incapable de modifier la nouvelle discussion');
+  assert(document.getElementById('chat-form').dataset.busy === 'true' && document.getElementById('btn-send').disabled, 'Fin d’un ancien flux sans déverrouiller une nouvelle génération');
+  channels[1].enqueue(encode.encode('data: '+JSON.stringify({event:'token',html:'Nouvelle réponse.'})+'\n\ndata: {"event":"done"}\n\n'));
+  channels[1].close();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert(document.getElementById('chat-form').dataset.busy === 'false' && document.getElementById('chat-messages').textContent.includes('Nouvelle réponse.') && !document.getElementById('chat-messages').textContent.includes('Ancienne interface'), 'Nouvelle réponse isolée et envoi réactivé');
+})().catch(error => assert(false, error.stack));
+</script></html>

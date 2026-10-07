@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import threading
 from typing import Any
+from uuid import uuid4
 
 SERVICE_NAME = "ETU-AI"
 _LOGGER = logging.getLogger(__name__)
@@ -95,8 +96,28 @@ def _save_windows_secrets(secrets: dict[str, str]) -> None:
             temp_path.unlink(missing_ok=True)
 
 
+def _backup_unreadable_windows_vault() -> Path:
+    """Keep the original encrypted vault before replacing one this account cannot read."""
+    backup_path = SECRETS_PATH.with_name(f"api_secrets.unreadable-{uuid4().hex}.dpapi")
+    encrypted = SECRETS_PATH.read_bytes()
+    try:
+        with backup_path.open("xb") as backup:
+            backup.write(encrypted)
+            backup.flush()
+            os.fsync(backup.fileno())
+    except Exception:
+        backup_path.unlink(missing_ok=True)
+        raise
+    return backup_path
+
+
 def _username(provider: str) -> str:
     return f"llm-api-key:{provider}"
+
+
+def _fallback_username(provider: str) -> str:
+    """A DPAPI override kept in Windows Credential Manager if an old vault is unreadable."""
+    return f"llm-api-key:dpapi-fallback:{provider}"
 
 
 def _get_keyring_password(provider: str) -> str | None:
@@ -108,10 +129,46 @@ def _get_keyring_password(provider: str) -> str | None:
     return value
 
 
+def _get_windows_fallback(provider: str) -> str | None:
+    try:
+        import keyring
+
+        return keyring.get_password(SERVICE_NAME, _fallback_username(provider))
+    except Exception:
+        return None
+
+
+def _set_windows_fallback(value: str, provider: str) -> None:
+    import keyring
+
+    keyring.set_password(SERVICE_NAME, _fallback_username(provider), value)
+
+
+def _delete_windows_fallback(provider: str) -> None:
+    try:
+        import keyring
+
+        keyring.delete_password(SERVICE_NAME, _fallback_username(provider))
+    except Exception:
+        pass
+
+
 def get_api_key(provider: str = "openai-compatible") -> str | None:
     if os.name == "nt":
+        # A fallback entry takes precedence so a later recovery of an older DPAPI
+        # file cannot silently replace a key the user has just updated.
+        fallback = _get_windows_fallback(provider)
+        if fallback is not None:
+            return fallback
         with _LOCK:
-            value = _load_windows_secrets().get(provider)
+            try:
+                value = _load_windows_secrets().get(provider)
+            except Exception as exc:
+                _LOGGER.warning("DPAPI vault unavailable; checking Windows Credential Manager (provider=%s, error=%s)", provider, type(exc).__name__)
+                try:
+                    return _get_keyring_password(provider)
+                except Exception:
+                    return None
         if value is not None:
             return value
         # One-time migration for keys saved by the earlier keyring-only release.
@@ -120,18 +177,38 @@ def get_api_key(provider: str = "openai-compatible") -> str | None:
         except Exception:
             return None
         if value:
-            set_api_key(value, provider)
+            try:
+                set_api_key(value, provider)
+            except Exception:
+                return None
         return value
     return _get_keyring_password(provider)
 
 
 def set_api_key(value: str, provider: str = "openai-compatible") -> None:
     if os.name == "nt":
-        with _LOCK:
-            secrets = _load_windows_secrets()
-            secrets[provider] = value
-            _save_windows_secrets(secrets)
-        _LOGGER.info("Saved API credential for provider=%s with DPAPI (credential value redacted)", provider)
+        try:
+            with _LOCK:
+                try:
+                    secrets = _load_windows_secrets()
+                except (OSError, ValueError) as vault_error:
+                    if not SECRETS_PATH.exists():
+                        raise
+                    backup_path = _backup_unreadable_windows_vault()
+                    secrets = {}
+                    _LOGGER.warning(
+                        "Archived unreadable DPAPI vault as %s before creating a new vault (error=%s)",
+                        backup_path.name, type(vault_error).__name__,
+                    )
+                secrets[provider] = value
+                _save_windows_secrets(secrets)
+            _LOGGER.info("Saved API credential for provider=%s with DPAPI (credential value redacted)", provider)
+        except Exception as dpapi_error:
+            try:
+                _set_windows_fallback(value, provider)
+            except Exception as keyring_error:
+                raise OSError("Ni DPAPI ni le Gestionnaire d’identifiants Windows ne sont disponibles.") from keyring_error
+            _LOGGER.warning("Saved provider=%s credential in Windows Credential Manager because the existing DPAPI vault is unavailable (credential value redacted, error=%s)", provider, type(dpapi_error).__name__)
         return
     import keyring
 
@@ -141,10 +218,14 @@ def set_api_key(value: str, provider: str = "openai-compatible") -> None:
 
 def delete_api_key(provider: str = "openai-compatible") -> None:
     if os.name == "nt":
+        _delete_windows_fallback(provider)
         with _LOCK:
-            secrets = _load_windows_secrets()
-            secrets.pop(provider, None)
-            _save_windows_secrets(secrets)
+            try:
+                secrets = _load_windows_secrets()
+                secrets.pop(provider, None)
+                _save_windows_secrets(secrets)
+            except Exception as exc:
+                _LOGGER.warning("Could not update DPAPI vault while deleting provider=%s (error=%s)", provider, type(exc).__name__)
         _LOGGER.info("Deleted API credential for provider=%s (credential value redacted)", provider)
         try:
             import keyring

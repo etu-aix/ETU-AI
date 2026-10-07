@@ -8,7 +8,7 @@
 python run_launcher.py
 ```
 L'interface s'ouvre directement sur `http://127.0.0.1:8900`.
-Le serveur d'inférence MAIA-Beacon écoute quant à lui sur `http://127.0.0.1:11343`.
+Le serveur d'inférence MAIA-Beacon écoute sur `http://127.0.0.1:11343` par défaut. Le lanceur peut démarrer l'application en mode normal, local ou serveur ; seul le mode serveur lie Beacon à toutes les interfaces (`0.0.0.0:11343`) pour autoriser les connexions du réseau local. L'API Beacon n'a pas d'authentification : le mode serveur doit être limité à un réseau de confiance.
 
 
 ## Commandes

@@ -522,6 +522,7 @@ class HuggingFaceClient:
                 size_gib = round(size_bytes / (1024 ** 3), 2) if size_bytes else 0.0
                 quant = self._extract_quant(path)
                 gguf_files.append({
+                    "is_projector": any(word in path.lower() for word in ("mmproj", "projector")),
                     "filename": path,
                     "size_bytes": size_bytes,
                     "size_gib": size_gib,
@@ -674,7 +675,7 @@ class HuggingFaceClient:
             verified_file = False
             if not default_file:
                 # Récupération des fichiers du dépôt
-                files = self.get_model_files(repo)
+                files = [item for item in self.get_model_files(repo) if not item.get("is_projector")]
                 if not files:
                     continue
                 default_file = files[0]

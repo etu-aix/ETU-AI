@@ -5,20 +5,25 @@ du handshake avec etu-aix.alwaysdata.net et sert l'interface web statique.
 """
 
 import json
+import asyncio
+import hashlib
+import struct
 import base64
 import logging
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any, Optional
+from uuid import UUID, uuid4
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import sys
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,17 +32,21 @@ if str(AI_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(AI_SERVER_DIR))
 
 from chat.sse_handler import ChatStreamHandler
+from chat.attachments import prepare_attachments, load_attachments
 from configs import init_file_logger
 from install import scan_hardware
 
 init_file_logger("api_server.log")
 from models_mgr.catalog import get_catalog_with_status
 from models_mgr.downloader import ModelDownloader
+from models_mgr.projectors import ProjectorManager, is_projector, known_text_only
 from models_mgr.hf_client import hf_client
 from storage.db import StorageManager
 from storage.api_credentials import delete_api_key, get_api_key, set_api_key
 from storage.state_manager import state_manager
 from tools.executor import ToolExecutor
+from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
+from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
 
 from setup_wizard import wizard_manager
 
@@ -49,13 +58,16 @@ storage = StorageManager()
 tool_executor = ToolExecutor()
 downloader = ModelDownloader(storage=storage)
 stream_handler = ChatStreamHandler(storage=storage, tool_executor=tool_executor)
+_active_chat_conversations: set[str] = set()
 
 app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
+app.state.etu_storage = storage
 
 @app.on_event("startup")
 def on_startup():
     """Initialisation au démarrage du serveur : enregistre l'état et lance Beacon si setup déjà fait."""
     import threading
+    bridge.identity()
     try:
         state_manager.record_startup()
     except OSError as exc:
@@ -79,22 +91,92 @@ def on_startup():
     if wizard_manager.is_completed():
         threading.Thread(target=wizard_manager.ensure_beacon_running, daemon=True).start()
 
-# Configuration CORS pour etu-aix.alwaysdata.net, port 8900 et localhost
+# Les origines ETU accèdent uniquement au bridge /v1, jamais à l'administration.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://etu-aix.alwaysdata.net",
-        "http://etu-aix.alwaysdata.net",
-        "http://localhost:8900",
-        "http://127.0.0.1:8900",
-        "http://localhost:11343",
-        "http://127.0.0.1:11343",
-        "http://localhost:3000",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=sorted(ETU_ORIGINS | LOCAL_ORIGINS),
+    allow_origin_regex=LOCALHOST_ORIGIN_REGEX if ALLOW_LOCALHOST_ORIGINS else None,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def local_boundary(request: Request, call_next):
+    host = request.url.hostname
+    test_client = request.client and request.client.host == "testclient"
+    if host not in {"127.0.0.1", "localhost", "::1"} and not (test_client and host == "testserver"):
+        return JSONResponse({"detail": "Hôte local requis"}, status_code=400)
+    origin = request.headers.get("origin")
+    if origin and not (is_etu_origin(origin) or origin in LOCAL_ORIGINS):
+        return JSONResponse({"detail": "Origine non autorisée"}, status_code=403)
+    if is_etu_origin(origin) and origin not in LOCAL_ORIGINS and not request.url.path.startswith("/v1/"):
+        return JSONResponse({"detail": "ETU accède uniquement au bridge en lecture seule"}, status_code=403)
+    if request.url.path.startswith("/v1/") and request.method not in {"GET", "OPTIONS"}:
+        size = 0
+        chunks = []
+        limit = 24 * 1024 * 1024 + 131072 if request.method == "PUT" and request.url.path == "/v1/context" else 262144
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                return JSONResponse({"detail": {"code": "workspace_images_invalid"} if limit > 262144 else "Requête limitée à 256 Kio"}, status_code=413)
+            chunks.append(chunk)
+        request._body = b"".join(chunks)
+    response = await call_next(request)
+    if request.url.path.startswith(("/v1/", "/api/etu/")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+app.include_router(etu_router)
+
+
+@app.get("/api/launch-mode")
+def get_launch_mode():
+    mode = os.environ.get("ETU_LAUNCH_MODE", "normal").strip().lower()
+    if mode not in {"normal", "local", "server"}:
+        mode = "normal"
+    return {
+        "mode": mode,
+        "beacon_host": "0.0.0.0" if mode == "server" else "127.0.0.1",
+        "beacon_port": 11343,
+        "localhost_origins_allowed": ALLOW_LOCALHOST_ORIGINS,
+    }
+
+
+@app.get("/api/etu/remote-tools")
+def get_remote_tool_consent(request: Request):
+    require_local_admin(request)
+    return {"enabled": bool(storage.get_setting("etu_remote_tools_enabled", False))}
+
+
+@app.put("/api/etu/remote-tools")
+def set_remote_tool_consent(request: Request, body: dict[str, Any]):
+    require_local_admin(request)
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool) or set(body) != {"enabled"}:
+        raise HTTPException(status_code=422, detail="Valeur de consentement invalide.")
+    storage.set_setting("etu_remote_tools_enabled", enabled)
+    return {"enabled": enabled}
+
+
+@app.on_event("startup")
+async def start_bridge_cleanup():
+    async def cleanup():
+        while True:
+            await asyncio.sleep(15)
+            with bridge.lock:
+                bridge.prune()
+    app.state.bridge_cleanup = asyncio.create_task(cleanup())
+
+
+@app.on_event("shutdown")
+async def stop_bridge_cleanup():
+    task = getattr(app.state, "bridge_cleanup", None)
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 # -----------------------------------------------------------------------------
@@ -103,11 +185,18 @@ app.add_middleware(
 class SetupStartRequest(BaseModel):
     selected_models: list[dict[str, Any]]
 # -----------------------------------------------------------------------------
+class AttachmentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    data: str = Field(max_length=13981016)
+
+
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
-    message: str
+    message: str = ""
     model: Optional[str] = None
     profile_id: Optional[str] = None
+    attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=6)
+    request_id: Optional[UUID] = None
 
 
 class ProfileRequest(BaseModel):
@@ -122,8 +211,15 @@ class ProviderSettingsRequest(BaseModel):
     enabled: bool = False
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o-mini"
+    models: list[str] = Field(default_factory=list)
     api_key: Optional[str] = None
     clear_api_key: bool = False
+
+
+class ProviderModelsRequest(BaseModel):
+    provider: str
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 PROVIDER_PRESETS = {
@@ -182,6 +278,12 @@ class ModelSelectRequest(BaseModel):
     provider: Optional[str] = None
 
 
+class ProjectorRequest(BaseModel):
+    model: str
+    repo: str
+    filename: str
+
+
 class HandshakeRequest(BaseModel):
     pairing_token: str
     student_id: Optional[str] = None
@@ -193,6 +295,12 @@ class HandshakeRequest(BaseModel):
 @app.post("/api/chat/stream")
 async def chat_stream_endpoint(req: ChatRequest):
     """Point d'entrée du streaming SSE pour les réponses de l'IA."""
+    if not req.message.strip() and not req.attachments:
+        raise HTTPException(status_code=422, detail="Ajoutez un message ou un fichier.")
+    try:
+        attachments = await asyncio.to_thread(prepare_attachments, req.attachments)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     conv_id = req.conversation_id
     if conv_id:
         conversation = storage.get_conversation(conv_id)
@@ -203,17 +311,38 @@ async def chat_stream_endpoint(req: ChatRequest):
         profile_id = req.profile_id or storage.get_setting("active_profile", "default")
         if not storage.get_profile(profile_id):
             raise HTTPException(status_code=404, detail="Profil introuvable")
-        conv_id = storage.create_conversation(title=req.message[:30] + "...", profile_id=profile_id)
+        title = req.message.strip() or attachments[0]["name"]
+        conv_id = storage.create_conversation(title=title[:30] + "...", profile_id=profile_id)
     profile = storage.get_profile(profile_id) or storage.get_profile("default")
 
+    request_id = str(req.request_id or uuid4())
+    if request_id in stream_handler.active_requests:
+        raise HTTPException(status_code=409, detail="Cette génération est déjà active")
+    if conv_id in _active_chat_conversations:
+        raise HTTPException(status_code=409, detail="Une réponse est déjà en cours dans cette discussion.")
+    _active_chat_conversations.add(conv_id)
+
+    async def guarded_stream():
+        stream = stream_handler.stream_chat(conv_id, req.message, req.model or profile.get("model"), profile, attachments=attachments, request_id=request_id)
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            try:
+                await stream.aclose()
+            finally:
+                _active_chat_conversations.discard(conv_id)
+
     return StreamingResponse(
-        stream_handler.stream_chat(conv_id, req.message, req.model or profile.get("model"), profile),
+        guarded_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
             "X-Conversation-Id": conv_id,
+            "X-Request-Id": request_id,
+            "X-Attachment-Warnings": json.dumps([item["warning"].strip() for item in attachments if item["warning"]]),
         },
     )
 
@@ -221,6 +350,11 @@ async def chat_stream_endpoint(req: ChatRequest):
 # -----------------------------------------------------------------------------
 # Endpoints de Conversations (SQLite)
 # -----------------------------------------------------------------------------
+@app.post("/api/chat/requests/{request_id}/stop")
+async def stop_chat(request_id: UUID):
+    return {"cancelled": stream_handler.cancel(str(request_id))}
+
+
 @app.get("/api/conversations")
 def list_conversations():
     return {"conversations": storage.list_conversations()}
@@ -241,7 +375,11 @@ def get_messages(conv_id: str):
     conv = storage.get_conversation(conv_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation introuvable")
-    return {"conversation": conv, "messages": storage.get_messages(conv_id)}
+    messages = load_attachments(storage, storage.get_messages(conv_id))
+    for message in messages:
+        for attachment in message["attachments"]:
+            attachment.pop("text", None)
+    return {"conversation": conv, "messages": messages}
 
 
 @app.delete("/api/conversations/{conv_id}")
@@ -299,8 +437,13 @@ def get_configured_api_models() -> list[dict[str, Any]]:
         configs = {legacy.get("provider", "openai-compatible"): legacy}
     models = []
     for provider_id, config in configs.items():
-        model_name = str(config.get("model", "")).strip()
-        if not model_name:
+        selected_models = config.get("models") or [config.get("model", "")]
+        selected_models = [str(name).strip() for name in selected_models if str(name).strip()]
+        preferred_model = str(config.get("model", "")).strip()
+        if preferred_model in selected_models:
+            selected_models.remove(preferred_model)
+            selected_models.insert(0, preferred_model)
+        if not selected_models:
             continue
         try:
             has_key = bool(get_api_key(provider_id))
@@ -309,14 +452,15 @@ def get_configured_api_models() -> list[dict[str, Any]]:
         if not has_key:
             continue
         preset = PROVIDER_PRESETS.get(provider_id, {})
-        models.append({
-            "id": f"api:{provider_id}",
-            "model": model_name,
-            "name": model_name,
-            "provider": provider_id,
-            "provider_label": preset.get("label", provider_id),
-            "source": "api",
-        })
+        for model_name in selected_models:
+            models.append({
+                "id": f"api:{provider_id}:{model_name}",
+                "model": model_name,
+                "name": model_name,
+                "provider": provider_id,
+                "provider_label": preset.get("label", provider_id),
+                "source": "api",
+            })
     return models
 
 
@@ -327,6 +471,9 @@ def get_catalog():
     # Le catalogue local doit rester disponible même si Hugging Face est lent.
     # L'exploration distante possède son propre onglet et son propre endpoint.
     base_catalog = get_catalog_with_status(hw, list(installed))
+    projectors = ProjectorManager(storage, downloader, hf_client)
+    for item in base_catalog:
+        item["mmproj"] = projectors.describe(item["filename"])
 
     return {
         "catalog": base_catalog,
@@ -471,6 +618,8 @@ def download_model(req: DownloadRequest):
         downloader.validate_reference(req.repo, req.filename)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    if is_projector(req.filename):
+        raise HTTPException(status_code=422, detail="Ajoutez ce projecteur depuis la gestion Vision / mmproj du modèle concerné.")
     if req.filename in downloader.list_installed_models():
         raise HTTPException(status_code=409, detail="Ce fichier GGUF est déjà installé")
     files = hf_client.get_model_files(req.repo)
@@ -501,6 +650,73 @@ def cancel_download_task(task_id: str):
     return {"cancelled": True}
 
 
+@app.get("/api/models/mmproj")
+def get_model_projectors(model: str, repo: Optional[str] = None):
+    try:
+        downloader.validate_reference(repo or "local/models", model)
+        return ProjectorManager(storage, downloader, hf_client).discover(model, repo)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/models/mmproj/download")
+def install_model_projector(req: ProjectorRequest):
+    try:
+        downloader.validate_reference(req.repo, req.filename)
+        return ProjectorManager(storage, downloader, hf_client).install(req.model, req.repo, req.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.delete("/api/models/mmproj")
+def remove_model_projector(model: str):
+    try:
+        ProjectorManager(storage, downloader, hf_client).assign(model, None)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True}
+
+
+@app.post("/api/models/mmproj/import")
+async def import_model_projector(request: Request, model: str, filename: str):
+    """Stream a local GGUF without buffering gigabytes in the web client or API."""
+    try:
+        downloader.validate_reference("local/projectors", filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if model not in downloader.list_installed_models() or known_text_only(model) or not is_projector(filename):
+        raise HTTPException(status_code=422, detail="Choisissez un modèle vision installé et un fichier mmproj/projector GGUF.")
+    temporary = downloader.models_dir / f"mmproj-import-{uuid4().hex}.part"
+    limit = 8 * 1024 ** 3
+    size = 0
+    digest = hashlib.sha256()
+    header = bytearray()
+    try:
+        with temporary.open("wb") as output:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(status_code=413, detail="8 Go maximum par projecteur.")
+                header.extend(chunk[:max(0, 24 - len(header))])
+                digest.update(chunk)
+                await asyncio.to_thread(output.write, chunk)
+        if len(header) < 24 or header[:4] != b"GGUF" or struct.unpack_from("<I", header, 4)[0] not in {2, 3}:
+            raise HTTPException(status_code=422, detail="Projecteur GGUF invalide.")
+        local = f"mmproj-local-{digest.hexdigest()[:20]}.gguf"
+        destination = downloader.models_dir / local
+        if not destination.exists():
+            temporary.replace(destination)
+        manager = ProjectorManager(storage, downloader, hf_client)
+        manager.assign(model, {"filename": filename, "local_filename": local, "repo": "local", "manual": True})
+        return {"success": True, **manager.describe(model)}
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 @app.post("/api/models/select")
 def select_model(req: ModelSelectRequest):
     """Bascule à chaud du modèle via l'API de MAIA-Beacon."""
@@ -513,7 +729,8 @@ def select_model(req: ModelSelectRequest):
         if not configs and legacy:
             configs = {legacy.get("provider", "openai-compatible"): legacy}
         config = configs.get(req.provider)
-        if not config or config.get("model") != req.model:
+        allowed_models = config.get("models") or [config.get("model")]
+        if not config or req.model not in allowed_models:
             raise HTTPException(status_code=404, detail="Modèle API non configuré")
         try:
             if not get_api_key(req.provider):
@@ -522,16 +739,32 @@ def select_model(req: ModelSelectRequest):
             raise
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Coffre de clés indisponible") from exc
+        config["model"] = req.model
         storage.set_setting("api_providers", {"active_provider": req.provider, "configs": configs})
-        return {"success": True, "active_model": req.model, "active_model_id": f"api:{req.provider}", "active_provider": req.provider}
+        return {"success": True, "active_model": req.model, "active_model_id": f"api:{req.provider}:{req.model}", "active_provider": req.provider}
     if req.source != "local":
         raise HTTPException(status_code=400, detail="Source de modèle invalide")
+    if _active_chat_conversations:
+        raise HTTPException(status_code=409, detail="Arrêtez la génération avant de changer de modèle ou de projecteur.")
     clean_model = req.model[:-5] if req.model.lower().endswith(".gguf") else req.model
     if f"{clean_model}.gguf" not in downloader.list_installed_models():
         raise HTTPException(status_code=404, detail="Modèle non installé")
     try:
+        mmproj = ProjectorManager(storage, downloader, hf_client).selected(f"{clean_model}.gguf")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
         beacon_url = "http://127.0.0.1:11343/api/select"
         selection: dict[str, Any] = {"model": clean_model}
+        # A non-existent explicit path disables Beacon's broad family-based auto-detection.
+        # Exact projector associations are resolved and validated by this application.
+        selection["mmproj"] = mmproj or "__etu_no_mmproj__.gguf"
+        with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=3) as status_resp:
+            current = json.loads(status_resp.read().decode("utf-8"))
+        if current.get("active_model") == clean_model and current.get("status") == "running" and current.get("active_mmproj") != mmproj:
+            stop_request = urllib.request.Request("http://127.0.0.1:11343/api/stop", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(stop_request, timeout=10):
+                pass
         if req.context_size is not None:
             selection["context_size"] = req.context_size
         payload = json.dumps(selection).encode("utf-8")
@@ -551,7 +784,9 @@ def select_model(req: ModelSelectRequest):
                 status = json.loads(status_resp.read().decode("utf-8"))
             if status.get("status") == "error":
                 raise HTTPException(status_code=502, detail=status.get("error_message") or "Chargement du modèle échoué")
-            if status.get("status") == "running" and status.get("active_model") == clean_model:
+            if status.get("status") == "running" and status.get("active_model") == clean_model and status.get("active_mmproj") != mmproj:
+                raise HTTPException(status_code=502, detail="Le moteur n'a pas chargé le projecteur associé. Vérifiez sa compatibilité avec cette variante du modèle.")
+            if status.get("status") == "running" and status.get("active_model") == clean_model and status.get("active_mmproj") == mmproj:
                 storage.set_setting("selected_model", clean_model)
                 provider_state = storage.get_setting("api_providers", {}) or {}
                 if provider_state:
@@ -561,7 +796,7 @@ def select_model(req: ModelSelectRequest):
                 if legacy_provider.get("enabled"):
                     legacy_provider["enabled"] = False
                     storage.set_setting("api_provider", legacy_provider)
-                return {"success": True, "active_model": clean_model, "result": status}
+                return {"success": True, "active_model": clean_model, "active_mmproj": mmproj, "result": status}
             time.sleep(0.5)
         raise HTTPException(status_code=504, detail="Délai de chargement du modèle dépassé")
     except HTTPException:
@@ -614,6 +849,81 @@ def get_provider_settings(provider: Optional[str] = None):
     }
 
 
+@app.post("/api/settings/provider/models")
+def list_provider_models(req: ProviderModelsRequest, origin: Optional[str] = Header(default=None, alias="Origin")):
+    if origin:
+        try:
+            parsed_origin = urlsplit(origin)
+            local_origin = parsed_origin.scheme in {"http", "https"} and parsed_origin.hostname in {"127.0.0.1", "localhost", "::1"}
+        except ValueError:
+            local_origin = False
+        if not local_origin:
+            raise HTTPException(status_code=403, detail="La découverte des modèles est réservée à l’interface locale.")
+    preset = PROVIDER_PRESETS.get(req.provider)
+    if not preset:
+        raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
+    state = storage.get_setting("api_providers", {}) or {}
+    saved = (state.get("configs", {}) or {}).get(req.provider, {})
+    base_url = (req.base_url or saved.get("base_url") or preset["base_url"]).strip().rstrip("/")
+    try:
+        parsed = urlsplit(base_url)
+        local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        valid_url = (parsed.scheme == "https" and bool(parsed.hostname)) or local_http
+    except ValueError:
+        valid_url = False
+        parsed = None
+    if not valid_url or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise HTTPException(status_code=400, detail="L’URL du fournisseur doit utiliser HTTPS (sauf pour un serveur local).")
+    api_key = (req.api_key or "").strip()
+    if not api_key:
+        try:
+            api_key = get_api_key(req.provider) or ""
+        except Exception:
+            api_key = ""
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Saisissez ou enregistrez la clé API avant de charger les modèles.")
+
+    headers = {"Accept": "application/json", "User-Agent": "ETU-AI/1.0"}
+    endpoint = ""
+    if preset["type"] == "anthropic":
+        endpoint = f"{base_url}/v1/models?limit=1000"
+        headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+    elif preset["type"] == "gemini":
+        endpoint = f"{base_url}/v1beta/models?{urlencode({'pageSize': 1000})}"
+        headers["x-goog-api-key"] = api_key
+    else:
+        endpoint = f"{base_url}/models"
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        request = urllib.request.Request(endpoint, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read(2_000_000).decode("utf-8"))
+    except Exception as exc:
+        status = getattr(exc, "code", None)
+        if status in {401, 403}:
+            raise HTTPException(status_code=502, detail="Le fournisseur a refusé la clé API. Vérifiez la clé et ses droits.") from exc
+        if status:
+            raise HTTPException(status_code=502, detail=f"Le fournisseur a répondu avec le statut {status} lors du chargement des modèles.") from exc
+        raise HTTPException(status_code=502, detail="Impossible de joindre le fournisseur ou de lire sa réponse de modèles.") from exc
+    raw_models = payload.get("data", []) if isinstance(payload, dict) else []
+    if preset["type"] == "gemini":
+        raw_models = [item for item in payload.get("models", []) if "generateContent" in item.get("supportedGenerationMethods", [])]
+    models = []
+    for item in raw_models:
+        model_id = item.get("id") or item.get("name") if isinstance(item, dict) else None
+        capabilities = item.get("capabilities") if isinstance(item, dict) else None
+        if isinstance(capabilities, dict) and capabilities.get("completion_chat") is False:
+            continue
+        if isinstance(model_id, str):
+            model_id = model_id.removeprefix("models/").strip()
+            if model_id and len(model_id) <= 200:
+                models.append(model_id)
+    models = sorted(set(models), key=str.casefold)
+    if not models:
+        raise HTTPException(status_code=502, detail="La réponse du fournisseur ne contient aucun modèle utilisable.")
+    return {"models": models}
+
+
 @app.put("/api/settings/provider")
 def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str] = Header(default=None, alias="Origin")):
     if origin:
@@ -646,7 +956,10 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
             set_api_key(key, req.provider)
         except Exception as exc:
             logger.exception("Secure API credential save failed for provider=%s", req.provider)
-            raise HTTPException(status_code=503, detail="Le coffre-fort système n’est pas disponible.") from exc
+            raise HTTPException(
+                status_code=503,
+                detail="Impossible d’enregistrer la clé dans le coffre sécurisé Windows. Consultez le journal du serveur.",
+            ) from exc
     if req.clear_api_key:
         delete_api_key(req.provider)
     try:
@@ -660,7 +973,14 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
     legacy = storage.get_setting("api_provider", {}) or {}
     if not configs and legacy:
         configs[legacy.get("provider", "openai-compatible")] = legacy
-    configs[req.provider] = {"base_url": base_url, "model": model, "type": preset["type"]}
+    selected_models = list(dict.fromkeys(name.strip() for name in req.models if isinstance(name, str) and name.strip() and len(name.strip()) <= 200))
+    if not selected_models:
+        selected_models = [model]
+    if len(selected_models) > 500:
+        raise HTTPException(status_code=400, detail="Sélectionnez au maximum 500 modèles.")
+    if model not in selected_models:
+        model = selected_models[0]
+    configs[req.provider] = {"base_url": base_url, "model": model, "models": selected_models, "type": preset["type"]}
     active_provider = req.provider if req.enabled else (None if state.get("active_provider", legacy.get("provider")) == req.provider else state.get("active_provider"))
     storage.set_setting("api_providers", {"active_provider": active_provider, "configs": configs})
     return get_provider_settings(req.provider)
@@ -709,6 +1029,8 @@ def server_status():
 
     active_model = None
     active_engine = None
+    active_mmproj = None
+    active_context = None
     model_ready = False
     model_state = "offline"
     if beacon_online:
@@ -718,6 +1040,8 @@ def server_status():
                 bdata = json.loads(resp.read().decode("utf-8"))
                 active_model = bdata.get("active_model")
                 active_engine = bdata.get("active_engine")
+                active_mmproj = bdata.get("active_mmproj")
+                active_context = bdata.get("active_context")
                 model_state = bdata.get("status", "unknown")
                 model_ready = bdata.get("status") == "running" and bool(active_model)
         except Exception:
@@ -743,10 +1067,12 @@ def server_status():
         "active_model": active_model,
         "active_remote_model": active_remote_model,
         "active_engine": active_engine,
+        "active_mmproj": active_mmproj,
+        "active_context": active_context,
         "model_ready": model_ready,
         "model_state": model_state,
-        "paired_with_etu": False,
-        "etu2_available": False,
+        "paired_with_etu": bool(bridge.record and bridge.record["grants"]),
+        "etu2_available": True,
         "installed_models_count": len(installed),
         "installed_models": installed_catalog,
         "remote_models": get_configured_api_models(),
@@ -771,5 +1097,7 @@ if UI_DIR.exists():
 def serve_index():
     index_path = UI_DIR / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
+        response = FileResponse(index_path, headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"})
+        response.set_cookie("etu_local_admin", bridge.admin_token, httponly=True, samesite="strict")
+        return response
     return JSONResponse({"status": "ETU-AI API active", "ui": "loading"})

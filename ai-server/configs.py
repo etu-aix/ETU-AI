@@ -111,6 +111,12 @@ def load_config() -> dict[str, Any]:
     if unknown:
         raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
     config.update(user_config)
+    launch_mode = os.environ.get("ETU_LAUNCH_MODE", "normal").strip().lower()
+    if launch_mode not in {"normal", "local", "server"}:
+        raise ValueError("ETU_LAUNCH_MODE must be normal, local, or server")
+    # A network bind is possible only through the explicit server launch mode.
+    if launch_mode == "server":
+        config["beacon_host"] = "0.0.0.0"
     int_fields = (
         "beacon_port", "llama_port", "context_size",
         "idle_timeout_seconds", "startup_timeout_seconds", "vram_margin_mib",
@@ -145,6 +151,11 @@ def load_config() -> dict[str, Any]:
         val = config[name]
         if not isinstance(val, str) or not val.strip() or "\n" in val or "\r" in val:
             raise ValueError(f"Invalid {name}")
+    allowed_beacon_hosts = {"127.0.0.1", "::1", "localhost"}
+    if launch_mode == "server":
+        allowed_beacon_hosts.add("0.0.0.0")
+    if config["beacon_host"] not in allowed_beacon_hosts:
+        raise ValueError("beacon_host must be loopback, except 0.0.0.0 in server mode")
     filename = config["default_model_file"]
     if (
         not isinstance(filename, str)

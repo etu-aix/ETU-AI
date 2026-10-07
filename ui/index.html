@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="fr" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=api-providers-2&interactive=2">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
+  <link rel="stylesheet" href="/static/style.css?v=provider-model-checkboxes-2">
+  <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
 </head>
 <body>
 
@@ -271,11 +271,13 @@
   <!-- APPLICATION PRINCIPALE : CHAT ET INTERACTION                           -->
   <!-- ======================================================================= -->
   <div id="app-container" style="display: none;">
+    <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
     <!-- Sidebar -->
-    <aside id="sidebar">
+    <aside id="sidebar" aria-label="Navigation et historique">
       <div class="brand">
-        <div class="brand-icon">✦</div>
+        <img class="brand-logo" src="/static/logo_etu_ai.svg" alt="" width="34" height="34">
         <h1>ETU-AI</h1>
+        <button id="btn-close-sidebar" class="sidebar-close" type="button" aria-label="Fermer le menu" title="Fermer le menu">&times;</button>
       </div>
 
       <button id="btn-new-chat" class="btn-new-chat">
@@ -289,7 +291,12 @@
         <button id="btn-open-profiles" type="button" class="nav-btn">✦ Gérer les profils</button>
       </div>
 
-      <div class="conv-list" id="conv-list">
+      <div class="history-heading"><span>Discussions</span><span id="history-count" aria-live="polite"></span></div>
+      <label class="history-search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+        <input id="history-search" type="search" placeholder="Rechercher" aria-label="Rechercher une discussion" autocomplete="off">
+      </label>
+      <div class="conv-list" id="conv-list" aria-label="Historique des discussions">
         <!-- Rempli dynamiquement -->
       </div>
 
@@ -309,7 +316,12 @@
     <!-- Main Chat Area -->
     <main id="chat-main">
       <header>
-        <div class="chat-header-title">ETU-AI <span>· sur votre ordinateur</span></div>
+        <div class="chat-header-start">
+          <button id="btn-open-sidebar" class="sidebar-toggle" type="button" aria-label="Ouvrir le menu et l’historique" aria-controls="sidebar" aria-expanded="false" title="Ouvrir le menu">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+          </button>
+          <div class="chat-header-title">ETU-AI <span>· sur votre ordinateur</span></div>
+        </div>
         <div class="header-status">
           <div class="status-badge" id="backend-badge">
             <span class="status-dot"></span>
@@ -322,6 +334,7 @@
           <div class="status-badge" id="pairing-badge"><span id="pairing-text">Etu2 : à venir</span></div>
         </div>
         <div class="header-actions">
+          <button id="btn-chat-view" class="chat-view-toggle" type="button" hidden>Voir la discussion</button>
           <button id="btn-theme" class="theme-toggle" type="button" aria-label="Changer le thème" title="Changer le thème">☀</button>
           <div class="model-selector-wrapper" id="model-selector-wrapper">
             <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d'IA" type="button">
@@ -353,10 +366,20 @@
         </div>
       </header>
 
+      <div id="model-loading-overlay" class="model-loading-overlay" role="status" aria-live="polite" aria-hidden="true" hidden>
+        <div class="model-loading-card">
+          <div class="model-loading-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div>
+          <strong>Réveil de l’IA locale</strong>
+          <span id="model-loading-name">Chargement du modèle dans llama.cpp…</span>
+          <div class="model-loading-progress" aria-hidden="true"><span></span></div>
+          <small>La première réponse peut prendre quelques secondes.</small>
+        </div>
+      </div>
+
       <div id="chat-messages" aria-live="off">
         <!-- Message de bienvenue -->
         <div class="chat-welcome">
-          <div class="welcome-orb" aria-hidden="true">✦</div>
+          <div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div>
           <h2>Comment puis-je vous aider ?</h2>
           <p>Un assistant local pour apprendre, coder et explorer vos idées.</p>
           <div class="welcome-suggestions">
@@ -379,12 +402,18 @@
           </div>
           <div class="chat-shortcuts-hint" id="chat-privacy-hint">Les réponses restent sur cet ordinateur.</div>
         </div>
+        <div id="chat-attachments" class="attachment-list" aria-live="polite"></div>
+        <p id="attachment-error" class="attachment-error" role="alert"></p>
         <form id="chat-form" class="input-box">
-          <textarea id="chat-input" placeholder="Écrivez votre message…" rows="1" required></textarea>
+          <input type="file" id="chat-file-input" multiple hidden accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sql,.java,.c,.h,.cpp,.cs,.sh,.ps1,.toml,.ini,.rst,.tex,.png,.jpg,.jpeg,.webp,.gif">
+          <button type="button" id="btn-attach" class="attach-btn" title="Joindre des fichiers (6 maximum, 10 Mo par fichier)" aria-label="Joindre des fichiers">＋</button>
+          <textarea id="chat-input" placeholder="Écrivez votre message ou joignez un fichier…" rows="1"></textarea>
           <button type="submit" id="btn-send" class="send-btn" title="Envoyer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
           </button>
+          <button type="button" id="btn-stop" class="stop-btn" title="Arrêter la génération" aria-label="Arrêter la réflexion et la génération" hidden>■</button>
         </form>
+        <p class="attachment-hint">PDF, Word, Excel, texte/code et images · Images : modèle vision requis</p>
       </div>
     </main>
   </div>
@@ -426,6 +455,50 @@
     </div>
   </div>
 
+  <div id="modal-configuration" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="configuration-title" aria-hidden="true" inert>
+    <div class="modal-content configuration-dialog">
+      <div class="modal-header">
+        <h3 id="configuration-title">Configuration</h3>
+        <button class="modal-close" data-target="modal-configuration" aria-label="Fermer la configuration">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="etu-text">Choisissez ce que vous souhaitez configurer.</p>
+        <button id="btn-reinstall-app" class="configuration-choice" type="button">
+          <strong>Réinstaller</strong>
+          <span>Reprendre la configuration de l’application et le choix des modèles.</span>
+        </button>
+        <button id="btn-open-etu-connection" class="configuration-choice" type="button">
+          <strong>Connexion ETU 2</strong>
+          <span>Autoriser les outils de lecture du groupe et de l’emploi du temps dans le chat local.</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-etu-connection" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="etu-connection-title" aria-hidden="true" inert>
+    <div class="modal-content configuration-dialog">
+      <div class="modal-header">
+        <h3 id="etu-connection-title">Connexion ETU 2</h3>
+        <button class="modal-close" data-target="modal-etu-connection" aria-label="Fermer la connexion ETU 2">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="etu-text">Dans ETU 2, lancez la connexion à ETU-AI. La demande apparaîtra ici pour que vous puissiez l’autoriser ou la refuser.</p>
+        <p class="etu-text">Une fois connecté, ETU-AI peut demander la lecture de votre groupe ou de votre emploi du temps. Gardez ETU 2 ouvert. Avec un modèle local, les résultats restent sur votre ordinateur.</p>
+        <label class="etu-text" style="display:flex;gap:10px;align-items:flex-start;margin:16px 0">
+          <input id="etu-remote-tools-consent" type="checkbox" style="margin-top:4px">
+          <span>Autoriser l’envoi des résultats ETU (groupe et emploi du temps) au fournisseur distant actif, par exemple Mistral, afin que l’IA puisse les utiliser pour répondre. Désactivé par défaut.</span>
+        </label>
+        <p id="etu-remote-tools-status" role="status" aria-live="polite"></p>
+        <p id="etu-connection-status" role="status" aria-live="polite">Chargement des connexions…</p>
+        <div id="etu-connection-entries"></div>
+        <div class="etu-connection-actions">
+          <button id="btn-refresh-etu-connection" class="etu-btn etu-btn-secondary" type="button">Actualiser</button>
+          <button id="btn-back-configuration" class="etu-btn etu-btn-secondary" type="button">Retour</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="modal-api-settings" class="modal-overlay">
     <div class="modal-content profile-dialog api-provider-dialog">
       <div class="modal-header">
@@ -433,11 +506,16 @@
         <button class="modal-close" data-target="modal-api-settings" aria-label="Fermer">&times;</button>
       </div>
       <div class="modal-body">
+        <aside class="api-provider-sidebar" aria-label="Liste des fournisseurs">
+          <div class="api-provider-sidebar-heading"><strong>Fournisseurs</strong><span>Choisissez une connexion</span></div>
+          <nav id="api-provider-list" class="api-provider-list" aria-label="Fournisseurs IA"></nav>
+          <button id="api-provider-add" class="api-provider-add" type="button"><span aria-hidden="true">＋</span> Ajouter un fournisseur</button>
+        </aside>
+        <section class="api-provider-settings">
         <div class="api-key-intro"><span class="api-key-lock" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4.5" y="10" width="15" height="11" rx="2.5"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path><path d="M12 14.5v2.5"></path></svg></span><div><strong>Vos clés restent privées</strong><p>Stockées dans le coffre-fort de votre système. Elles ne sont jamais affichées après l’enregistrement.</p></div></div>
         <form id="api-settings-form" class="profile-form">
           <label><input id="api-provider-enabled" type="checkbox"> Utiliser un fournisseur distant</label>
-          <label for="api-provider-select">Fournisseur</label>
-          <select id="api-provider-select">
+          <select id="api-provider-select" aria-label="Fournisseur">
             <optgroup label="API natives"><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option></optgroup>
             <optgroup label="API compatibles OpenAI">
               <option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option>
@@ -460,9 +538,10 @@
             <label for="api-provider-url">URL compatible OpenAI</label>
             <input id="api-provider-url" type="url" value="https://api.openai.com/v1" autocomplete="url" required>
           </div>
-          <label for="api-provider-model">Modèle</label>
-          <input id="api-provider-model" type="text" value="gpt-4o-mini" required>
-          <p class="api-model-hint">Vous pouvez remplacer cet identifiant par n’importe quel modèle disponible avec votre compte.</p>
+          <label>Modèles disponibles</label>
+          <input id="api-provider-model-search" class="api-provider-model-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off" hidden>
+          <div id="api-provider-models" class="api-provider-models" aria-describedby="api-model-hint"><p class="api-model-empty">Les modèles se chargent à la sélection du fournisseur.</p></div>
+          <p id="api-model-hint" class="api-model-hint" role="status" aria-live="polite">Sélectionnez un fournisseur pour charger ses modèles.</p>
           <label for="api-provider-key">Clé API <span id="api-key-status"></span></label>
           <input id="api-provider-key" type="password" placeholder="Collez votre clé (laissez vide pour conserver celle de ce fournisseur)" autocomplete="new-password">
           <label><input id="api-provider-clear-key" type="checkbox"> Supprimer la clé enregistrée</label>
@@ -470,6 +549,7 @@
           <button class="etu-btn etu-btn-primary" type="submit">Enregistrer</button>
           <div id="api-settings-message" role="status" aria-live="polite"></div>
         </form>
+        </section>
       </div>
     </div>
   </div>
@@ -486,14 +566,26 @@
       </div>
       <div class="modal-body">
         <!-- Onglets du Gestionnaire de Modèles -->
-        <div class="modal-tabs">
-          <button type="button" class="modal-tab-btn active" data-tab="tab-catalog">Catalogue Local & Recommandé</button>
-          <button type="button" class="modal-tab-btn" data-tab="tab-hf-explorer">Explorer Hugging Face Hub</button>
-          <button type="button" class="modal-tab-btn" data-tab="tab-hf-custom">Téléchargement Direct</button>
+        <div class="modal-tabs" role="tablist" aria-label="Gestion des modèles">
+          <button type="button" id="tab-btn-catalog" class="modal-tab-btn active" data-tab="tab-catalog" role="tab" aria-controls="tab-catalog" aria-selected="true">Catalogue Local & Recommandé</button>
+          <button type="button" id="tab-btn-vision" class="modal-tab-btn" data-tab="tab-vision" role="tab" aria-controls="tab-vision" aria-selected="false">Vision / mmproj</button>
+          <button type="button" id="tab-btn-hf-explorer" class="modal-tab-btn" data-tab="tab-hf-explorer" role="tab" aria-controls="tab-hf-explorer" aria-selected="false">Explorer Hugging Face Hub</button>
+          <button type="button" id="tab-btn-hf-custom" class="modal-tab-btn" data-tab="tab-hf-custom" role="tab" aria-controls="tab-hf-custom" aria-selected="false">Téléchargement Direct</button>
+        </div>
+
+        <div id="tab-vision" class="modal-tab-content" role="tabpanel" aria-labelledby="tab-btn-vision">
+          <div class="vision-intro">
+            <h4>Ajouter la vision à un modèle compatible</h4>
+            <p>Choisissez un modèle vision déjà installé, puis importez son projecteur GGUF depuis votre ordinateur ou recherchez le fichier correspondant sur Hugging Face.</p>
+          </div>
+          <label class="vision-model-label" for="vision-model-select">Modèle installé</label>
+          <select id="vision-model-select" class="vision-model-select" aria-describedby="vision-model-help" disabled><option value="">Chargement des modèles installés…</option></select>
+          <p id="vision-model-help" class="vision-model-help">Le projecteur doit correspondre exactement à la variante du modèle.</p>
+          <section id="mmproj-panel" class="etu-card mmproj-panel" hidden aria-live="polite"></section>
         </div>
 
         <!-- Onglet 1 : Catalogue Local & Recommandé -->
-        <div id="tab-catalog" class="modal-tab-content active">
+        <div id="tab-catalog" class="modal-tab-content active" role="tabpanel" aria-labelledby="tab-btn-catalog">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <p class="etu-text" style="margin: 0;">Modèles suggérés selon la mémoire et le matériel détectés.</p>
             <button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary" style="margin: 0;">
@@ -506,7 +598,7 @@
         </div>
 
         <!-- Onglet 2 : Explorer Hugging Face (Public sans credential) -->
-        <div id="tab-hf-explorer" class="modal-tab-content">
+        <div id="tab-hf-explorer" class="modal-tab-content" role="tabpanel" aria-labelledby="tab-btn-hf-explorer">
           <p class="etu-text">
             Recherche en direct sur <strong>Hugging Face Hub</strong> via l'API publique sans compte ni token requis.
             La mémoire nécessaire est estimée pour chaque modèle ; l'accélération réelle dépend du moteur chargé.
@@ -514,7 +606,7 @@
 
           <div class="hf-search-container">
             <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-              <input type="text" id="modal-hf-search-input" placeholder="Rechercher sur Hugging Face (ex: Qwen, Gemma, Llama, Mistral, DeepSeek)..." style="flex: 1; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;">
+              <input type="text" id="modal-hf-search-input" placeholder="Rechercher sur Hugging Face (ex: Qwen, Gemma, Llama, Mistral, DeepSeek)..." style="flex: 1; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main);">
               <button type="button" id="btn-modal-hf-search" class="etu-btn etu-btn-primary" style="margin: 0;">Rechercher</button>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -532,18 +624,18 @@
         </div>
 
         <!-- Onglet 3 : Téléchargement direct HF -->
-        <div id="tab-hf-custom" class="modal-tab-content">
+        <div id="tab-hf-custom" class="modal-tab-content" role="tabpanel" aria-labelledby="tab-btn-hf-custom">
           <p class="etu-text">Téléchargez n'importe quel fichier GGUF depuis Hugging Face en spécifiant son dépôt et son nom de fichier.</p>
           <div class="etu-card">
             <h4>Téléchargement direct Hugging Face</h4>
             <form id="form-custom-download" style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
               <div>
                 <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Dépôt Hugging Face (Repo ID)</label>
-                <input type="text" id="hf-repo" placeholder="ex: bartowski/Llama-3.2-3B-Instruct-GGUF" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+                <input type="text" id="hf-repo" placeholder="ex: bartowski/Llama-3.2-3B-Instruct-GGUF" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main);" required>
               </div>
               <div>
                 <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Nom du fichier GGUF (Filename)</label>
-                <input type="text" id="hf-filename" placeholder="ex: Llama-3.2-3B-Instruct-Q4_K_M.gguf" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: #fff;" required>
+                <input type="text" id="hf-filename" placeholder="ex: Llama-3.2-3B-Instruct-Q4_K_M.gguf" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main);" required>
               </div>
               <button type="submit" class="etu-btn etu-btn-primary" style="align-self: flex-start; margin-top: 4px;">Lancer le Téléchargement</button>
             </form>
@@ -556,6 +648,12 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=api-providers-2&interactive=2"></script>
+  <script src="/static/generated-layout.js?v=chat-ui-5"></script>
+  <script src="/static/generative-ui.js?v=chat-ui-6"></script>
+  <script src="/static/vendor/marked-18.0.14.umd.js"></script>
+  <script src="/static/vendor/highlight-11.12.0.min.js"></script>
+  <script src="/static/svg-manager.js?v=first-request-loading-1"></script>
+  <script src="/static/app.js?v=provider-model-checkboxes-2"></script>
+  <script src="/static/etu-bridge.js?v=tool-consent-2"></script>
 </body>
 </html>

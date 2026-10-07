@@ -1,0 +1,58 @@
+<svg width="450" height="450" viewBox="0 0 1000 1000" fill="none" xmlns="http://www.w3.org/2000/svg" style="max-width: 100%; height: auto; display: block; margin: 0 auto;">
+  <defs>
+    <!-- Dégradé Anneau châssis (Cyan vers Bleu Roi ETU) -->
+    <linearGradient id="etu-ring-grad" x1="100" y1="100" x2="900" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="100%" stop-color="#0038FF"/>
+    </linearGradient>
+
+    <!-- Dégradé du ruban ETU d'origine -->
+    <linearGradient id="etu-ribbon" x1="100" y1="200" x2="900" y2="800" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00D2FF"/>
+      <stop offset="50%" stop-color="#0044FF"/>
+      <stop offset="100%" stop-color="#00188A"/>
+    </linearGradient>
+
+    <!-- Filtre de halo vaporeux pour la sensation de flottement -->
+    <filter id="soft-airy-halo" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="38"/>
+    </filter>
+
+    <!-- Découpe du verre intérieur -->
+    <clipPath id="inner-glass-clip">
+      <circle cx="500" cy="500" r="462"/>
+    </clipPath>
+  </defs>
+
+  <!-- 1. FOND BLEU FONCÉ ÉPURÉ -->
+  <circle cx="500" cy="500" r="462" fill="#1a234a"/>
+
+  <!-- 2. ANNEAU EXTÉRIEUR SOLIDE (Bleu ETU pur, sans dégradé) -->
+  <circle cx="500" cy="500" r="462" stroke="#002CFF" stroke-width="36" fill="none"/>
+
+  <g clip-path="url(#inner-glass-clip)">
+    <!-- 3. VAGUE ORIGINALE ETU (Sans bordure, forme pure en aplat) -->
+    <path d="M114.998 640C105.346 664.822 69.9984 755.296 69.9984 755.296C92.2147 792.635 119.156 826.835 149.998 857.07L194.998 741.774C200 730.5 220 640 320 640C420 640 474.998 797.5 600 810C725.002 822.5 787.234 727.907 749.998 565C735.141 500 705 425 709.998 390C714.997 355 734.353 327.522 765 300C816.804 253.48 938.743 260 938.743 260C917.73 221.668 891.84 186.39 861.907 155C765 135 665 180 644.998 260C624.997 340 744.783 425 689.998 565C660.65 640 615 729.378 469.998 675C405 650.625 395 615 330 555C265 495 149.998 550 114.998 640Z"
+          fill="#002CFF"
+          opacity="0.45"/>
+
+    <!-- 4. L'ARC SUPÉRIEUR SUBTIL -->
+    <path d="M 230 225 A 360 360 0 0 1 770 225"
+          stroke="#00E5FF"
+          stroke-width="10"
+          stroke-linecap="round"
+          opacity="0.12"
+          fill="none"/>
+
+    <!-- 5. HALO DE LUMINESCENCE AÉRIENNE -->
+    <circle cx="310" cy="455" r="118" fill="#00D2FF" opacity="0.22" filter="url(#soft-airy-halo)"/>
+    <circle cx="690" cy="455" r="118" fill="#00D2FF" opacity="0.22" filter="url(#soft-airy-halo)"/>
+
+    <!-- 6. LES DEUX YEUX SEMI-TRANSPARENTS POUR LE RELIEF -->
+    <!-- Œil gauche -->
+    <circle cx="310" cy="455" r="118" fill="#00E5FF" opacity="0.75"/>
+
+    <!-- Œil droit -->
+    <circle cx="690" cy="455" r="118" fill="#00E5FF" opacity="0.75"/>
+  </g>
+</svg>

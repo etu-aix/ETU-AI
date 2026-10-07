@@ -14,6 +14,7 @@ import urllib.request
 import uuid
 
 from storage.db import StorageManager
+from models_mgr.projectors import is_projector
 
 DEFAULT_MODELS_DIR = Path(__file__).resolve().parent.parent / "ai-server" / "models"
 
@@ -21,10 +22,11 @@ DEFAULT_MODELS_DIR = Path(__file__).resolve().parent.parent / "ai-server" / "mod
 class DownloadTask:
     """Représente une tâche active de téléchargement avec métriques en temps réel."""
 
-    def __init__(self, task_id: str, repo: str, filename: str, target_dir: Path, expected_sha256: Optional[str] = None):
+    def __init__(self, task_id: str, repo: str, filename: str, target_dir: Path, expected_sha256: Optional[str] = None, local_filename: Optional[str] = None):
         self.task_id = task_id
         self.repo = repo
         self.filename = filename
+        self.local_filename = local_filename or filename
         self.target_dir = target_dir
         self.status = "queued"  # queued, downloading, completed, cancelled, error
         self.cancel_event = threading.Event()
@@ -43,6 +45,7 @@ class DownloadTask:
             "task_id": self.task_id,
             "repo": self.repo,
             "filename": self.filename,
+            "local_filename": self.local_filename,
             "status": self.status,
             "downloaded_bytes": self.downloaded_bytes,
             "total_bytes": self.total_bytes,
@@ -71,17 +74,19 @@ class ModelDownloader:
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo) or not re.fullmatch(r"[A-Za-z0-9_.-]+\.gguf", filename, re.IGNORECASE):
             raise ValueError("Dépôt ou nom de fichier GGUF invalide")
 
-    def start_download(self, repo: str, filename: str, expected_sha256: Optional[str] = None) -> str:
+    def start_download(self, repo: str, filename: str, expected_sha256: Optional[str] = None, local_filename: Optional[str] = None) -> str:
         """Démarre le téléchargement d'un modèle et renvoie son identifiant de tâche."""
         self.validate_reference(repo, filename)
+        if local_filename:
+            self.validate_reference(repo, local_filename)
         task_id = str(uuid.uuid4())
         if expected_sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256):
             raise ValueError("Empreinte SHA256 invalide")
-        task = DownloadTask(task_id, repo, filename, self.models_dir, expected_sha256)
+        task = DownloadTask(task_id, repo, filename, self.models_dir, expected_sha256, local_filename)
 
         with self._lock:
             for active in self.active_tasks.values():
-                if active.filename == filename and active.status in ("queued", "downloading"):
+                if active.local_filename == task.local_filename and active.status in ("queued", "downloading"):
                     if active.repo == repo:
                         return active.task_id
                     raise ValueError("Un autre dépôt télécharge déjà ce nom de fichier")
@@ -114,15 +119,18 @@ class ModelDownloader:
         """Liste les fichiers de modèles GGUF présents localement."""
         if not self.models_dir.exists():
             return []
-        return [f.name for f in self.models_dir.glob("*.gguf") if f.is_file()]
+        return [f.name for f in self.models_dir.glob("*.gguf") if f.is_file() and not is_projector(f.name)]
+
+    def list_installed_projectors(self) -> list[str]:
+        return [f.name for f in self.models_dir.glob("*.gguf") if f.is_file() and is_projector(f.name)]
 
     def _run_download(self, task: DownloadTask) -> None:
         """Télécharge dans un fichier partiel réutilisable après interruption."""
         task.status = "downloading"
         url = f"https://huggingface.co/{task.repo}/resolve/main/{task.filename}"
-        dest_file = self.models_dir / task.filename
+        dest_file = self.models_dir / task.local_filename
         repo_tag = hashlib.sha256(task.repo.encode("utf-8")).hexdigest()[:12]
-        partial_file = self.models_dir / f"{task.filename}.{repo_tag}.part"
+        partial_file = self.models_dir / f"{task.local_filename}.{repo_tag}.part"
 
         try:
             offset = partial_file.stat().st_size if partial_file.exists() else 0
@@ -183,7 +191,7 @@ class ModelDownloader:
                 task.status = "completed"
                 task.percentage = 100.0
                 self.storage.register_model(
-                    filename=task.filename,
+                    filename=task.local_filename,
                     repo=task.repo,
                     size_bytes=task.downloaded_bytes,
                     sha256=task.sha256,

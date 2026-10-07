@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
@@ -13,25 +12,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from chat.sse_handler import ChatStreamHandler
 from storage.db import StorageManager
+from mock_sse import mock_sse
 
 
-class DelayedResponse:
-    def __init__(self):
-        self.lines = iter([
-            b'data: {"choices":[{"delta":{"content":"Bon"}}]}\n',
-            b'data: {"choices":[{"delta":{"content":"jour"}}]}\n',
-            b'data: [DONE]\n',
-        ])
-
-    def readline(self):
-        time.sleep(0.06)
-        return next(self.lines, b"")
-
-    def close(self):
-        pass
+DELAYED_LINES = [
+    b'data: {"choices":[{"delta":{"content":"Bon"}}]}\n',
+    b'data: {"choices":[{"delta":{"content":"jour"}}]}\n',
+    b'data: [DONE]\n',
+]
 
 
 class TestStreaming(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_provider_identity_is_in_the_system_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = StorageManager(Path(directory) / "chat.db")
+            conversation = storage.create_conversation("Limites API")
+            storage.set_setting("api_providers", {
+                "active_provider": "mistral", "configs": {
+                    "mistral": {"base_url": "https://api.mistral.ai/v1", "model": "ministral-test"}
+                }
+            })
+            with patch("chat.sse_handler.get_api_key", return_value="test-key"), mock_sse() as requests:
+                async for _ in ChatStreamHandler(storage=storage).stream_chat(conversation, "Y a-t-il des limites ?"):
+                    pass
+            payload = json.loads(requests[0].content)
+            system = payload["messages"][0]["content"]
+            self.assertIn("fournisseur mistral", system)
+            self.assertIn("modèle ministral-test", system)
+            self.assertIn("aucun accès aux quotas", system)
+            self.assertIn("Par défaut, réponds en texte Markdown", system)
+
     async def test_recent_interface_source_is_not_cut_inside_its_script(self):
         with tempfile.TemporaryDirectory() as directory:
             storage = StorageManager(Path(directory) / "chat.db")
@@ -40,10 +50,10 @@ class TestStreaming(unittest.IsolatedAsyncioTestCase):
             storage.add_message(conversation, "user", "Crée un jeu")
             storage.add_message(conversation, "assistant", interface)
             handler = ChatStreamHandler(storage=storage)
-            with patch("urllib.request.urlopen", return_value=DelayedResponse()) as request:
+            with mock_sse() as requests:
                 async for _ in handler.stream_chat(conversation, "Ajoute un bouton Recommencer"):
                     pass
-                payload = json.loads(request.call_args.args[0].data)
+                payload = json.loads(requests[0].content)
                 previous = next(message for message in payload["messages"] if message["role"] == "assistant")
                 self.assertEqual(previous["content"], interface)
 
@@ -52,7 +62,7 @@ class TestStreaming(unittest.IsolatedAsyncioTestCase):
             storage = StorageManager(Path(directory) / "chat.db")
             conversation = storage.create_conversation("Test flux")
             handler = ChatStreamHandler(storage=storage)
-            with patch("urllib.request.urlopen", return_value=DelayedResponse()):
+            with mock_sse(DELAYED_LINES, delay=0.06):
                 stream = handler.stream_chat(conversation, "Salut")
                 first = json.loads((await anext(stream)).split("data: ", 1)[1])
                 self.assertEqual(first["event"], "status")

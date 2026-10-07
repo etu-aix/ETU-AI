@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr"><meta charset="utf-8"><title>Tests du rendu génératif</title>
+<style>:root{--text-main:#202020;--bg-secondary:#eee;--bg-tertiary:#ddd;--border-color:#aaa;--accent-color:blue}#sidebar{color:rgb(0,128,0)}.authored-inline{contain:layout paint style}</style>
+<aside id="sidebar">Sidebar témoin</aside><main id="chat-messages"></main><pre id="results"></pre>
+<script src="../ui/generated-layout.js"></script>
+<script src="../ui/generative-ui.js"></script>
+<script>
+const results = document.getElementById("results");
+const chat = document.getElementById("chat-messages");
+function assert(condition, label) { results.textContent += `${condition ? 'PASS' : 'FAIL'} ${label}\n`; }
+const palette = document.createElement('div'); chat.append(palette);
+ETUChatUI.render(palette, '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:15px;background:#f8f8f8;border:1px solid gray;border-radius:8px;box-shadow:0 2px 4px gray"><div style="background:#FD6C9E;padding:12px;border-radius:4px">Rose</div><div style="background:#FFC0CB">Clair</div></div>');
+const paletteRoot = palette.querySelector('.authored-inline').shadowRoot.querySelector('div');
+const layoutStyle = getComputedStyle(paletteRoot);
+assert(layoutStyle.backgroundColor === 'rgba(0, 0, 0, 0)' && layoutStyle.padding === '0px' && layoutStyle.borderTopWidth === '0px' && layoutStyle.boxShadow === 'none' && layoutStyle.gap === '10px', 'Palette intégrée sans cadre, grille et espacement conservés');
+assert(getComputedStyle(paletteRoot.children[0]).backgroundColor === 'rgb(253, 108, 158)' && getComputedStyle(paletteRoot.children[0]).padding === '12px' && getComputedStyle(paletteRoot.children[0]).borderRadius === '4px', 'Couleurs et habillage des éléments de la palette conservés');
+const panel = document.createElement('div'); chat.append(panel);
+ETUChatUI.render(panel, '<section data-surface="panel" style="display:flex;background:white;padding:16px;border-radius:12px"><p>Carte demandée</p><button>Action</button></section>');
+const panelStyle = getComputedStyle(panel.querySelector('.authored-inline').shadowRoot.querySelector('section'));
+assert(panelStyle.backgroundColor === 'rgb(255, 255, 255)' && panelStyle.padding === '16px' && panelStyle.borderRadius === '12px', 'Un panneau explicitement demandé conserve son fond');
+ETUChatUI.configure({submit: value => { document.getElementById('submission').textContent = value; return true; }});
+const bubble = document.createElement('div'); chat.append(bubble);
+ETUChatUI.render(bubble, `<style>form{gap:8px}</style><div data-update-marker="resultat">Avant</div><form data-description="Test formulaires"><label for="subject">Matière</label><input id="subject" name="matiere" required value="SQL"><label><input name="exercices" type="checkbox">Exercices</label><select name="jour" multiple><option selected>Lundi</option><option selected>Mardi</option></select><button name="choix" value="valider" type="submit">Soumettre le test</button></form>`);
+assert(!bubble.querySelector('iframe') && !!bubble.querySelector('.authored-inline').shadowRoot.querySelector('form'), 'HTML natif sans iframe');
+ETUChatUI.patch('resultat', '<strong>Après</strong>');
+const root = bubble.querySelector('.authored-inline').shadowRoot;
+assert(root.querySelector('[data-update-marker]').textContent === 'Après', 'Mise à jour d’une réponse précédente');
+const values = ETUChatUI.formPrompt(root.querySelector('form'), root.querySelector('button')).fields;
+assert(JSON.stringify(values) === JSON.stringify([['matiere','SQL'],['exercices',false],['jour','Lundi'],['jour','Mardi'],['choix','valider']]), 'Champs, case décochée, valeurs multiples et bouton');
+const malicious = document.createElement('div'); chat.append(malicious);
+ETUChatUI.render(malicious, '<style>@import "https://example.com/a.css"; body{color:red}</style><script>window.bad=true</'+'script><img src="https://example.com/pixel" srcset="https://example.com/pixel 2x"><button onclick="bad()">Inerte</button><form action="https://example.com"><input form="external"></form>');
+const clean = malicious.querySelector('.authored-inline').shadowRoot;
+assert(!clean.querySelector('script,[onclick],[src],[srcset],[action],[form]') && !clean.textContent.includes('@import'), 'Suppression scripts, handlers et ressources externes');
+ETUChatUI.patch('chat-style','<style>body{color:rgb(255,0,0)} .message{border:1px solid red}</style>');
+assert(getComputedStyle(chat).color === 'rgb(255, 0, 0)' && getComputedStyle(document.getElementById('sidebar')).color === 'rgb(0, 128, 0)', 'Styles limités au chat, sidebar intacte');
+ETUChatUI.patch('chat-canvas', '<h2>Vue 1</h2>'); ETUChatUI.patch('chat-canvas', '<h2>Vue 2</h2>');
+assert(chat.querySelectorAll('.generated-chat-canvas').length === 1 && chat.querySelector('.generated-chat-canvas .authored-inline').shadowRoot.textContent.includes('Vue 2'), 'Réutilisation de la vue du chat');
+assert(chat.classList.contains('generated-view'), 'La vue occupe la conversation');
+ETUChatUI.toggleView(); assert(!chat.classList.contains('generated-view') && chat.querySelector('.generated-chat-canvas').hidden, 'Retour à la discussion');
+ETUChatUI.toggleView(); assert(chat.classList.contains('generated-view') && !chat.querySelector('.generated-chat-canvas').hidden, 'Retour à la vue générée');
+const marker = document.createElement('div'); chat.append(marker);
+ETUChatUI.render(marker, '<?start name="range">Ancien<?end>'); ETUChatUI.patch('range','<p>Nouveau</p>');
+assert(marker.querySelector('.authored-inline').shadowRoot.querySelector('p').textContent === 'Nouveau', 'Marqueurs start/end ui-beta');
+ETUChatUI.reset(); assert(!chat.querySelector('.generated-chat-style,.generated-chat-canvas'), 'Réinitialisation de la vue');
+const contrast = document.createElement('div'); chat.append(contrast);
+ETUChatUI.render(contrast, '<div style="background:linear-gradient(#f5f5ff,#ffffff);color:white"><h3>Texte lisible</h3><p style="background:white;color:white">Même sur fond blanc</p></div>');
+const readable = contrast.querySelector('.authored-inline').shadowRoot;
+assert(getComputedStyle(readable.querySelector('h3')).color === 'rgb(17, 17, 17)' && getComputedStyle(readable.querySelector('p')).color === 'rgb(17, 17, 17)', 'Contraste des couleurs générées');
+</script><pre id="submission" role="status"></pre>
+<h2>Vérification du JavaScript isolé</h2><iframe id="program" title="Programme de test" style="width:100%;height:420px" sandbox="allow-scripts allow-forms" src="../ui/preview.html"></iframe>
+<pre id="program-result" role="status"></pre>
+<script>
+const program = document.getElementById('program');
+const programHTML = `<button id="count" type="button">Compteur 0</button><div data-update-marker="program-status">Avant mise à jour</div><form data-description="Formulaire JavaScript"><label for="minutes">Minutes</label><input id="minutes" name="minutes" value="29"><label><input type="checkbox" name="exercices">Exercices</label><button type="submit" name="decision" value="ok">Envoyer depuis le programme</button></form><script>let count=0;document.getElementById('count').addEventListener('click',()=>{document.getElementById('count').textContent='Compteur '+(++count)});document.querySelector('form').requestSubmit();<\/script>`;
+const integratedProgramHTML = '<div id="program-layout" style="display:grid;gap:12px;background:white;padding:18px;border:1px solid gray;box-shadow:0 2px 4px gray">' + programHTML.replace('id="count"', 'id="count" data-action="local-counter"') + '<button type="button" data-chat-action="Explique le compteur">Demander à l’IA</button></div>';
+window.addEventListener('message', event => {
+  if (event.source !== program.contentWindow) return;
+  if (event.data.type === 'etu-preview-action') {
+    const output = document.getElementById('program-result');
+    output.dataset.actions = String(Number(output.dataset.actions || 0) + 1);
+    assert(event.data.value === 'Explique le compteur', 'Seule une action IA explicite déclenche un tour de chat');
+  }
+  if (event.data.type === 'etu-preview-ready') {
+    program.contentWindow.postMessage({type:'etu-preview-update',html:integratedProgramHTML,complete:true}, '*');
+    program.contentWindow.postMessage({type:'etu-preview-update',html:integratedProgramHTML,complete:true}, '*');
+  }
+  if (event.data.type === 'etu-preview-form') {
+    const correct = JSON.stringify(event.data.fields) === JSON.stringify([['minutes','29'],['exercices',false],['decision','ok']]);
+    document.getElementById('program-result').textContent = `${correct ? 'PASS' : 'FAIL'} Transmission formulaire iframe\n` + JSON.stringify(event.data.fields);
+    program.contentWindow.postMessage({type:'etu-preview-patch',marker:'program-status',html:'<strong>Après mise à jour</strong>'}, '*');
+  }
+});
+</script></html>

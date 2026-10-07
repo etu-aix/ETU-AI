@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Any, Optional
 
-STATE_FILE = Path(__file__).resolve().parent / "app_state.json"
+STATE_FILE = Path(os.environ["ETU_AI_STATE_FILE"]) if os.environ.get("ETU_AI_STATE_FILE") else Path(__file__).resolve().parent / "app_state.json"
 
 
 class StateManager:

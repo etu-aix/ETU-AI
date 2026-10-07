@@ -14,21 +14,76 @@ let assistantProfiles = [];
 let activeProfileId = "default";
 let preferredProfileId = "default";
 let pendingAvatarData = null;
+let currentContextLimit = null;
+let currentModelReady = null;
+let currentModelState = "unknown";
+let localModelHasResponded = false;
 const streamMarkup = new WeakMap();
 const streamFrames = new WeakMap();
 const appliedStreamTemplates = new WeakMap();
+let activeChatStream = null;
+let chatViewVersion = 0;
+
+function cancelChatStream() {
+  chatViewVersion++;
+  if (activeChatStream) {
+    const { controller, bubble, requestId, accepted, rawMessage, userBubble } = activeChatStream;
+    if (!accepted) {
+      document.getElementById("chat-input").value = rawMessage;
+      userBubble.remove();
+    }
+    fetch(`/api/chat/requests/${requestId}/stop`, { method: "POST" }).catch(() => {});
+    controller.abort();
+    finishStreamRender(bubble);
+    const message = bubble.closest(".message");
+    message.classList.remove("streaming");
+    setAssistantActivity(message, "stopped", "Génération interrompue");
+    if (!bubble.textContent.trim()) bubble.textContent = "Génération interrompue.";
+    const timer = streamFrames.get(bubble);
+    if (timer) clearTimeout(timer);
+    streamFrames.delete(bubble);
+    activeChatStream = null;
+  }
+  document.getElementById("chat-form").dataset.busy = "false";
+  document.getElementById("btn-send").disabled = false;
+  const attach = document.getElementById("btn-attach");
+  if (attach) attach.disabled = false;
+  document.getElementById("btn-stop").hidden = true;
+}
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.documentElement.dataset.theme = localStorage.getItem("etu-theme") || "dark";
+  document.documentElement.dataset.theme = localStorage.getItem("etu-theme") || "light";
+  const themeButton = document.getElementById("btn-theme");
+  const updateThemeButton = () => {
+    const light = document.documentElement.dataset.theme === "light";
+    themeButton.textContent = light ? "☾" : "☀";
+    themeButton.setAttribute("aria-label", light ? "Activer le thème sombre" : "Activer le thème clair");
+    themeButton.title = themeButton.getAttribute("aria-label");
+  };
+  updateThemeButton();
   document.getElementById("btn-theme").addEventListener("click", () => {
     const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("etu-theme", theme);
+    updateThemeButton();
+    ETUChatUI.refreshTheme();
+    document.querySelectorAll(".authored-preview-frame").forEach(sendAuthoredPreview);
   });
   initSetupWizard();
   initModals();
   initModelSelector();
   initChatForm();
+  ETUChatUI.configure({
+    submit: submitGeneratedPrompt,
+    renderProgram: (container, html) => renderAuthoredPreview(container, html, true),
+    copy: value => navigator.clipboard.writeText(String(value).slice(0, 10000)).catch(() => {}),
+    viewChanged: (available, active) => {
+      const button = document.getElementById("btn-chat-view");
+      button.hidden = !available;
+      button.textContent = active ? "Voir la discussion" : "Afficher la vue";
+    },
+  });
+  document.getElementById("btn-chat-view").addEventListener("click", () => { ETUChatUI.toggleView(); scrollToBottom(); });
   document.getElementById("chat-messages").addEventListener("click", (event) => {
     const suggestion = event.target.closest("[data-prompt]");
     if (!suggestion) return;
@@ -40,6 +95,29 @@ document.addEventListener("DOMContentLoaded", () => {
   loadConversations();
   loadServerStatus();
 
+  const sidebar = document.getElementById("sidebar");
+  const sidebarToggle = document.getElementById("btn-open-sidebar");
+  const closeSidebar = () => {
+    sidebar.classList.remove("is-open");
+    sidebarToggle.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("sidebar-open");
+  };
+  sidebarToggle.addEventListener("click", () => {
+    const isOpen = sidebar.classList.toggle("is-open");
+    sidebarToggle.setAttribute("aria-expanded", String(isOpen));
+    document.body.classList.toggle("sidebar-open", isOpen);
+    if (isOpen) document.getElementById("history-search").focus();
+  });
+  document.getElementById("btn-close-sidebar").addEventListener("click", closeSidebar);
+  document.getElementById("sidebar-backdrop").addEventListener("click", closeSidebar);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && sidebar.classList.contains("is-open")) {
+      closeSidebar();
+      sidebarToggle.focus();
+    }
+  });
+  document.getElementById("history-search").addEventListener("input", renderConversationHistory);
+
   const newChatBtn = document.getElementById("btn-new-chat");
   if (newChatBtn) {
     newChatBtn.addEventListener("click", () => {
@@ -47,9 +125,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  const reopenWizardBtn = document.getElementById("btn-reopen-wizard");
+  const reopenWizardBtn = document.getElementById("btn-reinstall-app");
   if (reopenWizardBtn) {
     reopenWizardBtn.addEventListener("click", () => {
+      closeModal("modal-configuration");
+      cancelChatStream();
       document.getElementById("app-container").style.display = "none";
       const wz = document.getElementById("wizard-container");
       wz.style.display = "flex";
@@ -69,12 +149,103 @@ async function initApiSettings() {
   const form = document.getElementById("api-settings-form");
   if (!open || !form) return;
   const providerSelect = document.getElementById("api-provider-select");
+  const modelsContainer = document.getElementById("api-provider-models");
+  const modelSearch = document.getElementById("api-provider-model-search");
+  const modelHint = document.getElementById("api-model-hint");
+  let savedModelSelection = "";
   let presets = {};
+  let currentConfig = {};
+  const providerLabels = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral", openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek", xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity", nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models", "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé" };
+  const providerMarks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
+  const providerSvg = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models"]);
+  const setProviderMark = (element, id) => {
+    element.replaceChildren();
+    if (providerSvg.has(id)) {
+      const image = document.createElement("img");
+      image.src = `/static/provider-icons/${id}.svg`;
+      image.alt = "";
+      image.setAttribute("aria-hidden", "true");
+      element.append(image);
+    } else {
+      element.textContent = providerMarks[id] || "AI";
+    }
+  };
+  const renderProviderList = (selected = providerSelect.value) => {
+    const list = document.getElementById("api-provider-list");
+    if (!list) return;
+    list.replaceChildren();
+    Object.entries(presets).forEach(([id, preset]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "api-provider-nav-item";
+      button.setAttribute("aria-current", String(id === selected));
+      const mark = document.createElement("span"); mark.className = "api-provider-nav-mark"; setProviderMark(mark, id);
+      const copy = document.createElement("span"); copy.className = "api-provider-nav-copy"; copy.textContent = id === "custom" ? "Personnalisé" : id === "openai-compatible" ? "Autre API compatible" : (preset.label || providerLabels[id] || id);
+      const state = document.createElement("span"); state.className = "api-provider-nav-state";
+      if (currentConfig.configured?.[id]?.has_api_key) state.classList.add("is-configured");
+      if (currentConfig.active_provider === id) state.classList.add("is-active");
+      button.append(mark, copy, state);
+      button.addEventListener("click", () => { providerSelect.value = id; providerSelect.dispatchEvent(new Event("change")); });
+      list.append(button);
+    });
+  };
   const setKeyStatus = (hasKey) => {
     const status = document.getElementById("api-key-status");
     status.textContent = hasKey ? "Clé enregistrée" : "Aucune clé";
     status.dataset.hasKey = String(Boolean(hasKey));
   };
+  let loadSequence = 0;
+  const loadProviderModels = async ({ hasSavedKey = false, selected = [] } = {}) => {
+    const sequence = ++loadSequence;
+    modelHint.textContent = "Chargement des modèles depuis le fournisseur…";
+    modelsContainer.replaceChildren(Object.assign(document.createElement("p"), { className: "api-model-empty", textContent: "Chargement des modèles…" }));
+    try {
+      const response = await fetch("/api/settings/provider/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: providerSelect.value,
+          base_url: document.getElementById("api-provider-url").value,
+          api_key: document.getElementById("api-provider-key").value,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Impossible de charger les modèles.");
+      if (sequence !== loadSequence) return;
+      modelsContainer.replaceChildren();
+      modelSearch.hidden = false;
+      modelSearch.value = "";
+      result.models.forEach((id) => {
+        const label = document.createElement("label"); label.className = "api-provider-model-option";
+        const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.name = "api-provider-model-choice"; checkbox.value = id;
+        checkbox.checked = selected.includes(id) || (!selected.length && id === savedModelSelection);
+        const mark = document.createElement("span"); mark.className = "api-model-provider-mark"; setProviderMark(mark, providerSelect.value);
+        const text = document.createElement("span"); text.className = "api-provider-model-name"; text.textContent = id;
+        label.append(mark, text, checkbox); modelsContainer.append(label);
+      });
+      modelHint.textContent = `${result.models.length} modèles reçus. Cochez ceux à afficher dans le sélecteur du chat.`;
+    } catch (error) {
+      if (sequence !== loadSequence) return;
+      const empty = document.createElement("p"); empty.className = "api-model-empty"; empty.textContent = error.message || (hasSavedKey ? "Échec du chargement des modèles." : "Saisissez une clé API pour charger les modèles.");
+      modelsContainer.replaceChildren(empty);
+      modelSearch.hidden = true;
+      modelHint.textContent = "La liste sera rechargée automatiquement après la saisie de la clé API.";
+    }
+  };
+  modelSearch.addEventListener("input", () => {
+    const query = modelSearch.value.trim().toLocaleLowerCase();
+    let visibleCount = 0;
+    modelsContainer.querySelectorAll(".api-provider-model-option").forEach((option) => {
+      const matches = option.querySelector(".api-provider-model-name").textContent.toLocaleLowerCase().includes(query);
+      option.hidden = !matches;
+      if (matches) visibleCount++;
+    });
+    const total = modelsContainer.querySelectorAll(".api-provider-model-option").length;
+    modelHint.textContent = query
+      ? `${visibleCount} modèle${visibleCount > 1 ? "s" : ""} correspondant${visibleCount > 1 ? "s" : ""} sur ${total}.`
+      : `${total} modèles reçus. Cochez ceux à afficher dans le sélecteur du chat.`;
+  });
+  const checkedModels = () => [...modelsContainer.querySelectorAll('input[name="api-provider-model-choice"]:checked')].map((input) => input.value);
   const renderProviderBrand = (id, config = {}) => {
     const provider = presets[id] || {};
     const labels = {
@@ -87,7 +258,7 @@ async function initApiSettings() {
     const marks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
     const card = document.getElementById("api-provider-brand");
     card.dataset.provider = id;
-    document.getElementById("api-provider-mark").textContent = marks[id] || "AI";
+    setProviderMark(document.getElementById("api-provider-mark"), id);
     document.getElementById("api-provider-brand-name").textContent = provider.label || labels[id] || id;
     document.getElementById("api-provider-brand-detail").textContent = `${provider.type === "openai" ? "API compatible OpenAI" : "Connexion API native"} · clé stockée localement`;
     document.getElementById("api-provider-brand-state").textContent = config.enabled ? "Actif" : (config.has_api_key ? "Clé enregistrée" : "À configurer");
@@ -107,7 +278,6 @@ async function initApiSettings() {
     document.getElementById("api-provider-url").required = !nativeProvider;
     if (!preserveValues) {
       document.getElementById("api-provider-url").value = preset.base_url;
-      document.getElementById("api-provider-model").value = preset.model || "";
     }
   };
   providerSelect.addEventListener("change", async () => {
@@ -118,14 +288,24 @@ async function initApiSettings() {
       const response = await fetch(`/api/settings/provider?provider=${encodeURIComponent(providerSelect.value)}`);
       if (!response.ok) throw new Error("Impossible de charger les réglages de ce fournisseur.");
       const config = await response.json();
+      currentConfig = { ...currentConfig, ...config };
+      savedModelSelection = config.model || presets[providerSelect.value]?.model || "";
+      renderProviderList(providerSelect.value);
       renderProviderBrand(providerSelect.value, config);
       document.getElementById("api-provider-url").value = config.base_url || presets[providerSelect.value]?.base_url || "";
-      document.getElementById("api-provider-model").value = config.model || presets[providerSelect.value]?.model || "";
+      modelsContainer.replaceChildren();
+      modelSearch.hidden = true;
+      modelSearch.value = "";
       document.getElementById("api-provider-enabled").checked = Boolean(config.enabled);
       setKeyStatus(config.has_api_key);
+      await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
     } catch (error) {
       document.getElementById("api-settings-message").textContent = error.message;
     }
+  });
+  document.getElementById("api-provider-add")?.addEventListener("click", () => {
+    providerSelect.value = "custom";
+    providerSelect.dispatchEvent(new Event("change"));
   });
   fetch("/api/settings/provider").then((response) => response.ok ? response.json() : null).then(updatePrivacyHint).catch(() => {});
   open.addEventListener("click", async () => {
@@ -135,18 +315,24 @@ async function initApiSettings() {
       const response = await fetch("/api/settings/provider");
       if (!response.ok) throw new Error("Impossible de charger la configuration.");
       const config = await response.json();
+      currentConfig = config;
       presets = config.providers || {};
       providerSelect.value = config.provider || "openai-compatible";
       if (!providerSelect.value) providerSelect.value = "custom";
+      savedModelSelection = config.model || presets[providerSelect.value]?.model || "";
       renderProviderBrand(providerSelect.value, config);
       applyProviderPreset(providerSelect.value, true);
       document.getElementById("api-provider-enabled").checked = Boolean(config.enabled);
       document.getElementById("api-provider-url").value = config.base_url || presets[providerSelect.value]?.base_url || "https://api.openai.com/v1";
-      document.getElementById("api-provider-model").value = config.model || presets[providerSelect.value]?.model || "";
+      modelsContainer.replaceChildren();
+      modelSearch.hidden = true;
+      modelSearch.value = "";
       document.getElementById("api-provider-key").value = "";
       document.getElementById("api-provider-clear-key").checked = false;
       setKeyStatus(config.has_api_key);
+      renderProviderList(providerSelect.value);
       openModal("modal-api-settings");
+      await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
     } catch (error) { message.textContent = error.message; }
   });
   form.addEventListener("submit", async (event) => {
@@ -156,11 +342,16 @@ async function initApiSettings() {
     const payload = {
       enabled: document.getElementById("api-provider-enabled").checked,
       base_url: document.getElementById("api-provider-url").value,
-      model: document.getElementById("api-provider-model").value,
+      model: checkedModels()[0] || savedModelSelection,
+      models: checkedModels(),
       api_key: document.getElementById("api-provider-key").value,
       clear_api_key: document.getElementById("api-provider-clear-key").checked,
       provider: providerSelect.value,
     };
+    if (!payload.models.length) {
+      message.textContent = "Cochez au moins un modèle à afficher dans le sélecteur du chat.";
+      return;
+    }
     try {
       const response = await fetch("/api/settings/provider", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
@@ -168,12 +359,21 @@ async function initApiSettings() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Enregistrement impossible.");
       document.getElementById("api-provider-key").value = "";
+      currentConfig = { ...currentConfig, ...result, configured: { ...currentConfig.configured, [providerSelect.value]: { has_api_key: result.has_api_key } } };
+      savedModelSelection = result.model || payload.model;
+      renderProviderList(providerSelect.value);
       setKeyStatus(result.has_api_key);
       renderProviderBrand(providerSelect.value, result);
       updatePrivacyHint(result);
       message.textContent = result.enabled ? "Fournisseur activé et configuration enregistrée." : "Configuration enregistrée.";
       loadServerStatus();
     } catch (error) { message.textContent = error.message; }
+  });
+  let keyLoadTimer;
+  document.getElementById("api-provider-key").addEventListener("input", () => {
+    clearTimeout(keyLoadTimer);
+    if (!document.getElementById("api-provider-key").value.trim()) return;
+    keyLoadTimer = setTimeout(() => loadProviderModels({ selected: checkedModels() }), 700);
   });
 }
 
@@ -1032,19 +1232,25 @@ function initModals() {
   document.querySelectorAll(".modal-tab-btn").forEach((tabBtn) => {
     tabBtn.addEventListener("click", () => {
       const targetTabId = tabBtn.dataset.tab;
-      document.querySelectorAll(".modal-tab-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".modal-tab-content").forEach((c) => c.classList.remove("active"));
-      tabBtn.classList.add("active");
-      const targetContent = document.getElementById(targetTabId);
-      if (targetContent) targetContent.classList.add("active");
-
-      if (targetTabId === "tab-hf-explorer") {
-        const resultsEl = document.getElementById("hf-search-results");
-        if (resultsEl && (!resultsEl.children.length || resultsEl.textContent.includes("Prêt"))) {
-          loadHfExplorerResults();
-        }
+      showModelsTab(targetTabId);
+      if (targetTabId === "tab-vision") {
+        const selected = document.getElementById("vision-model-select").value;
+        const item = modelCatalogItems.find(model => model.filename === selected);
+        if (item && document.getElementById("mmproj-panel").dataset.model !== selected) openProjectorManager(item);
       }
     });
+    tabBtn.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const tabs = [...document.querySelectorAll(".modal-tab-btn")];
+      const next = tabs[(tabs.indexOf(tabBtn) + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
+      next.click();
+      next.focus();
+    });
+  });
+  document.getElementById("vision-model-select").addEventListener("change", (event) => {
+    const item = modelCatalogItems.find(model => model.filename === event.target.value);
+    if (item) openProjectorManager(item);
   });
 
   // Recherche Hugging Face dans la modale
@@ -1230,6 +1436,9 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true) {
 
 function openModal(id) {
   const el = document.getElementById(id);
+  document.getElementById("sidebar")?.classList.remove("is-open");
+  document.getElementById("btn-open-sidebar")?.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("sidebar-open");
   if (el) el.classList.add("active");
 }
 
@@ -1433,6 +1642,14 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
   const indicator = document.getElementById("model-status-indicator");
   if (indicator) indicator.classList.add("loading");
 
+  const loadingOverlay = document.getElementById("model-loading-overlay");
+  if (source === "local" && loadingOverlay) {
+    const loadingName = document.getElementById("model-loading-name");
+    if (loadingName) loadingName.textContent = `Chargement de ${friendlyName} dans llama.cpp…`;
+    loadingOverlay.hidden = false;
+    loadingOverlay.setAttribute("aria-hidden", "false");
+  }
+
   showToast(`🔄 Activation du modèle <strong>${escapeHtml(friendlyName)}</strong>...`, "info", 2500);
 
   try {
@@ -1446,7 +1663,9 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
 
     if (data.success) {
       currentActiveModel = data.active_model_id || data.active_model || cleanStem;
+      if (source === "local") localModelHasResponded = false;
       updateModelUI(currentActiveModel, availableInstalledModels);
+      loadServerStatus();
       showToast(`✅ Modèle <strong>${escapeHtml(friendlyName)}</strong> activé et prêt !`, "success", 3500);
     } else {
       showToast(`⚠️ Avertissement : ${data.error || "Impossible de basculer"}`, "warning", 4000);
@@ -1455,6 +1674,10 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
     showToast(`❌ Erreur de basculement : ${err}`, "warning", 4000);
   } finally {
     if (indicator) indicator.classList.remove("loading");
+    if (loadingOverlay) {
+      loadingOverlay.hidden = true;
+      loadingOverlay.setAttribute("aria-hidden", "true");
+    }
   }
 }
 
@@ -1470,6 +1693,9 @@ async function loadServerStatus() {
     const beaconText = document.getElementById("beacon-text");
     const beaconDot = document.getElementById("beacon-dot");
     const modelIndicator = document.getElementById("model-status-indicator");
+    currentContextLimit = Number(data.active_context) || null;
+    currentModelReady = Boolean(data.active_remote_model) || Boolean(data.model_ready);
+    currentModelState = data.active_remote_model ? "running" : (data.model_state || "unknown");
     if (modelIndicator) {
       modelIndicator.style.background = data.active_remote_model ? "var(--accent-color)" : (data.model_ready ? "var(--success)" : "var(--warning)");
       modelIndicator.title = data.active_remote_model ? "Modèle API sélectionné" : (data.model_ready ? "Modèle prêt" : (data.model_state === "sleeping" ? "Modèle en veille" : "Modèle non prêt"));
@@ -1515,50 +1741,89 @@ async function loadServerStatus() {
 /* -------------------------------------------------------------------------- */
 /* Gestion des Conversations                                                  */
 /* -------------------------------------------------------------------------- */
+let conversationHistory = [];
+
+function renderConversationHistory() {
+  const listEl = document.getElementById("conv-list");
+  if (!listEl) return;
+  const search = document.getElementById("history-search").value.trim().toLocaleLowerCase("fr");
+  const matches = conversationHistory.filter(conv => (conv.title || "").toLocaleLowerCase("fr").includes(search));
+  document.getElementById("history-count").textContent = String(conversationHistory.length);
+  listEl.replaceChildren();
+  if (!matches.length) {
+    const empty = document.createElement("p");
+    empty.className = "history-empty";
+    empty.textContent = search ? "Aucune discussion trouvée" : "Vos discussions apparaîtront ici";
+    listEl.appendChild(empty);
+    return;
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let previousGroup = "";
+  for (const conv of matches) {
+    const updated = new Date(conv.updated_at);
+    const age = Number.isNaN(updated.getTime()) ? Infinity : (today - updated) / 86400000;
+    const group = age <= 0 ? "Aujourd’hui" : age < 7 ? "7 derniers jours" : "Plus ancien";
+    if (group !== previousGroup) {
+      const heading = document.createElement("div");
+      heading.className = "history-group";
+      heading.textContent = group;
+      listEl.appendChild(heading);
+      previousGroup = group;
+    }
+    const item = document.createElement("div");
+    item.className = "conv-item" + (conv.id === currentConversationId ? " active" : "");
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "conv-title";
+    title.textContent = conv.title || "Nouvelle discussion";
+    title.title = title.textContent;
+    title.addEventListener("click", () => {
+      selectConversation(conv.id);
+      document.getElementById("btn-close-sidebar").click();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "delete-btn";
+    remove.setAttribute("aria-label", `Supprimer ${title.textContent}`);
+    remove.title = "Supprimer cette discussion";
+    remove.textContent = "×";
+    remove.addEventListener("click", () => deleteConversation(conv.id));
+    item.append(title, remove);
+    listEl.appendChild(item);
+  }
+}
+
 async function loadConversations() {
   try {
     const resp = await fetch("/api/conversations");
     const data = await resp.json();
-    const listEl = document.getElementById("conv-list");
-    if (!listEl) return;
-    listEl.innerHTML = "";
-
-    data.conversations.forEach((conv) => {
-      const item = document.createElement("div");
-      item.className = "conv-item" + (conv.id === currentConversationId ? " active" : "");
-      item.innerHTML = `
-        <span class="conv-title">${escapeHtml(conv.title)}</span>
-        <span class="delete-btn" title="Supprimer">&times;</span>
-      `;
-      item.querySelector(".conv-title").addEventListener("click", () => {
-        selectConversation(conv.id);
-      });
-      item.querySelector(".delete-btn").addEventListener("click", (e) => {
-        e.stopPropagation();
-        deleteConversation(conv.id);
-      });
-      listEl.appendChild(item);
-    });
+    conversationHistory = data.conversations || [];
+    renderConversationHistory();
   } catch (err) {
     console.error("Erreur chargement conversations :", err);
   }
 }
 
 async function selectConversation(convId) {
+  cancelChatStream();
+  const viewVersion = chatViewVersion;
   currentConversationId = convId;
   loadConversations();
   try {
     if (!assistantProfiles.length) await loadProfiles();
     const resp = await fetch(`/api/conversations/${convId}/messages`);
     const data = await resp.json();
+    if (viewVersion !== chatViewVersion || currentConversationId !== convId) return;
     const profileId = data.conversation.profile_id || "default";
     setDisplayedProfile(profileId);
     const container = document.getElementById("chat-messages");
     if (!container) return;
+    ETUChatUI.reset();
     container.innerHTML = "";
 
     data.messages.forEach((msg) => {
-      renderMessage(msg.role, msg.content);
+      renderMessage(msg.role, msg.content, msg.attachments || []);
     });
   } catch (err) {
     console.error("Erreur affichage messages :", err);
@@ -1566,11 +1831,16 @@ async function selectConversation(convId) {
 }
 
 function startNewConversation() {
+  cancelChatStream();
+  pendingChatFiles = [];
+  renderAttachments(document.getElementById("chat-attachments"), [], true);
+  document.getElementById("attachment-error").textContent = "";
+  ETUChatUI.reset();
   currentConversationId = null;
   setDisplayedProfile(preferredProfileId);
   const container = document.getElementById("chat-messages");
   if (container) {
-    container.innerHTML = '<div class="chat-welcome"><div class="welcome-orb" aria-hidden="true">✦</div><h2>Comment puis-je vous aider ?</h2><p>Un assistant local pour apprendre, coder et explorer vos idées.</p><div class="welcome-suggestions"><button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button><button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button><button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button></div></div>';
+    container.innerHTML = '<div class="chat-welcome"><div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div><h2>Comment puis-je vous aider ?</h2><p>Un assistant local pour apprendre, coder et explorer vos idées.</p><div class="welcome-suggestions"><button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button><button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button><button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button></div></div>';
   }
   loadConversations();
 }
@@ -1588,10 +1858,94 @@ async function deleteConversation(convId) {
 /* -------------------------------------------------------------------------- */
 /* Chat & Streaming SSE avec Generative UI                                    */
 /* -------------------------------------------------------------------------- */
+let pendingChatFiles = [];
+
+function renderAttachments(container, attachments, removable = false) {
+  container.replaceChildren();
+  attachments.forEach((file, index) => {
+    const chip = document.createElement("span");
+    chip.className = "attachment-chip";
+    if ((file.kind === "image" && file.data) || (file instanceof File && file.type.startsWith("image/"))) {
+      const image = document.createElement("img");
+      if (file instanceof File) {
+        const previewUrl = URL.createObjectURL(file);
+        image.onload = image.onerror = () => URL.revokeObjectURL(previewUrl);
+        image.src = previewUrl;
+      } else {
+        image.src = `data:image/jpeg;base64,${file.data}`;
+      }
+      image.alt = file.name;
+      chip.appendChild(image);
+    }
+    const label = document.createElement("span");
+    label.textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} Ko`;
+    chip.appendChild(label);
+    if (file.warning) chip.title = file.warning;
+    if (removable) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Retirer ${file.name}`);
+      remove.addEventListener("click", () => {
+        if (document.getElementById("chat-form").dataset.busy === "true") return;
+        pendingChatFiles.splice(index, 1);
+        renderAttachments(container, pendingChatFiles, true);
+      });
+      chip.appendChild(remove);
+    }
+    container.appendChild(chip);
+  });
+}
+
+async function addChatFiles(files) {
+  if (document.getElementById("chat-form").dataset.busy === "true") return;
+  const error = document.getElementById("attachment-error");
+  const additions = Array.from(files);
+  const total = [...pendingChatFiles, ...additions];
+  error.textContent = "";
+  if (total.length > 6 || additions.some((file) => !file.size || file.size > 10 * 1024 * 1024) || total.reduce((size, file) => size + file.size, 0) > 20 * 1024 * 1024) {
+    error.textContent = "6 fichiers maximum, 10 Mo par fichier et 20 Mo au total. Les fichiers vides ne sont pas acceptés.";
+    return;
+  }
+  pendingChatFiles.push(...additions);
+  renderAttachments(document.getElementById("chat-attachments"), pendingChatFiles, true);
+}
+
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, data: String(reader.result).split(",", 2)[1] });
+    reader.onerror = () => reject(new Error(`Impossible de lire ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 function initChatForm() {
   const form = document.getElementById("chat-form");
   const input = document.getElementById("chat-input");
   if (!form || !input) return;
+  document.getElementById("btn-stop").addEventListener("click", cancelChatStream);
+  const picker = document.getElementById("chat-file-input");
+  document.getElementById("btn-attach").addEventListener("click", () => picker.click());
+  picker.addEventListener("change", () => {
+    addChatFiles(picker.files);
+    picker.value = "";
+  });
+  const dropZone = document.getElementById("chat-input-container");
+  dropZone.addEventListener("dragover", (event) => {
+    if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+  });
+  dropZone.addEventListener("drop", (event) => {
+    if (!event.dataTransfer.files.length) return;
+    event.preventDefault();
+    addChatFiles(event.dataTransfer.files);
+  });
+  input.addEventListener("paste", (event) => {
+    if (event.clipboardData.files.length) {
+      event.preventDefault();
+      addChatFiles(event.clipboardData.files);
+    }
+  });
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1603,47 +1957,78 @@ function initChatForm() {
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const rawMessage = input.value.trim();
-    if (!rawMessage) return;
+    if (!rawMessage && !pendingChatFiles.length) return;
     if (form.dataset.busy === "true") return;
     form.dataset.busy = "true";
     document.getElementById("btn-send").disabled = true;
+    document.getElementById("btn-attach").disabled = true;
+    const submittedFiles = [...pendingChatFiles];
+    let accepted = false;
+    document.getElementById("attachment-error").textContent = "";
     input.value = "";
 
     // Commande slash pour changer de modèle : /model ou /models
-    if (rawMessage.startsWith("/model") || rawMessage.startsWith("/switch")) {
+    if (!submittedFiles.length && (rawMessage.startsWith("/model") || rawMessage.startsWith("/switch"))) {
       handleModelSlashCommand(rawMessage);
       form.dataset.busy = "false";
       document.getElementById("btn-send").disabled = false;
+      document.getElementById("btn-attach").disabled = false;
       return;
     }
 
     // 1. Afficher le message utilisateur
     document.querySelector("#chat-messages .chat-welcome")?.remove();
-    renderMessage("user", rawMessage);
+    const userBubble = renderMessage("user", rawMessage, submittedFiles);
 
     // 2. Créer la bulle assistant pour le streaming
     const assistantBubble = renderMessage("assistant", "");
     assistantBubble.classList.add("streaming");
     const bubbleContent = assistantBubble.querySelector(".message-bubble");
-    setAssistantActivity(assistantBubble, "thinking", "Réflexion en cours");
+    const controller = new AbortController();
+    const requestId = crypto.randomUUID();
+    const requestConversationId = currentConversationId;
+    const requestViewVersion = chatViewVersion;
+    activeChatStream = { controller, bubble: bubbleContent, requestId, accepted: false, rawMessage, userBubble };
+    document.getElementById("btn-stop").hidden = false;
+    const localModelMayNeedWarmup = !String(currentActiveModel || "").startsWith("api:") && (
+      !localModelHasResponded || currentModelReady !== true || ["sleeping", "loading", "offline", "unknown"].includes(currentModelState)
+    );
+    setAssistantActivity(
+      assistantBubble,
+      localModelMayNeedWarmup ? "model-loading" : "thinking",
+      localModelMayNeedWarmup ? "Réveil du modèle local…" : "Réflexion en cours",
+    );
 
     // 3. Appel au flux SSE avec le modèle sélectionné
     try {
+      const encodedAttachments = await Promise.all(submittedFiles.map(fileBase64));
+      bubbleContent.dataset.generationStarted = String(performance.now());
       const resp = await fetch("/api/chat/stream", {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          conversation_id: currentConversationId,
+          conversation_id: requestConversationId,
           message: rawMessage,
           model: currentActiveModel,
           profile_id: activeProfileId,
+          attachments: encodedAttachments,
+          request_id: requestId,
         }),
       });
 
+      if (controller.signal.aborted || requestViewVersion !== chatViewVersion) return;
+
       if (!resp.ok) {
         const failure = await resp.json();
-        throw new Error(failure.detail || "Réponse du serveur indisponible");
+        throw new Error(typeof failure.detail === "string" ? failure.detail : "Fichiers ou message invalides");
       }
+      accepted = true;
+      if (activeChatStream?.controller === controller) activeChatStream.accepted = true;
+      pendingChatFiles = [];
+      renderAttachments(document.getElementById("chat-attachments"), pendingChatFiles, true);
+      const warnings = JSON.parse(resp.headers.get("X-Attachment-Warnings") || "[]");
+      if (warnings.length) document.getElementById("attachment-error").textContent = warnings.join(" ");
 
       const convHeader = resp.headers.get("X-Conversation-Id");
       if (convHeader && !currentConversationId) {
@@ -1657,6 +2042,7 @@ function initChatForm() {
 
       while (true) {
         const { value, done } = await reader.read();
+        if (controller.signal.aborted || requestViewVersion !== chatViewVersion) return;
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -1688,6 +2074,12 @@ function initChatForm() {
       }
       setAssistantActivity(assistantBubble, "done", "");
     } catch (err) {
+      if (controller.signal.aborted || requestViewVersion !== chatViewVersion) return;
+      if (!accepted) {
+        input.value = rawMessage;
+        userBubble.remove();
+        document.getElementById("attachment-error").textContent = err.message;
+      }
       finishStreamRender(bubbleContent);
       setAssistantActivity(assistantBubble, "error", "Erreur de réponse");
       assistantBubble.classList.remove("streaming");
@@ -1696,8 +2088,15 @@ function initChatForm() {
       error.textContent = `Erreur de connexion au serveur : ${err}`;
       bubbleContent.appendChild(error);
     } finally {
-      form.dataset.busy = "false";
-      document.getElementById("btn-send").disabled = false;
+      bubbleContent.dataset.generationMs = String(Math.round(performance.now() - Number(bubbleContent.dataset.generationStarted)));
+      updateAssistantTelemetry(bubbleContent, true);
+      if (activeChatStream?.controller === controller) {
+        activeChatStream = null;
+        form.dataset.busy = "false";
+        document.getElementById("btn-send").disabled = false;
+        document.getElementById("btn-attach").disabled = false;
+        document.getElementById("btn-stop").hidden = true;
+      }
     }
   });
 }
@@ -1741,7 +2140,8 @@ function handleModelSlashCommand(commandStr) {
       </div>
     `;
     const msgEl = renderMessage("assistant", cardHtml);
-    msgEl.querySelectorAll(".model-switch-btn").forEach((btn) => {
+    const modelControls = msgEl.querySelector(".authored-inline")?.shadowRoot || msgEl;
+    modelControls.querySelectorAll(".model-switch-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const mFile = btn.dataset.model;
         const mName = btn.dataset.name;
@@ -1773,7 +2173,10 @@ function handleModelSlashCommand(commandStr) {
 }
 
 function handleStreamEvent(data, bubbleEl) {
+  if (bubbleEl.dataset.renderFinalized === "true") return;
   if (data.event === "token" && data.html) {
+    if (!bubbleEl.dataset.firstTokenMs) bubbleEl.dataset.firstTokenMs = String(Math.round(performance.now() - Number(bubbleEl.dataset.generationStarted)));
+    if (!String(currentActiveModel || "").startsWith("api:")) localModelHasResponded = true;
     const html = (streamMarkup.get(bubbleEl) || "") + data.html;
     streamMarkup.set(bubbleEl, html);
     setAssistantActivity(bubbleEl.closest(".message"), "writing", "Rédaction en cours");
@@ -1787,15 +2190,31 @@ function handleStreamEvent(data, bubbleEl) {
     setAssistantActivity(bubbleEl.closest(".message"), "tool", "Consultation en cours");
   } else if (data.event === "tool_result") {
     setAssistantActivity(bubbleEl.closest(".message"), "thinking", "Analyse du résultat");
+  } else if (data.event === "metrics") {
+    if (data.prompt_tokens !== null && data.prompt_tokens !== undefined && Number.isFinite(Number(data.prompt_tokens))) bubbleEl.dataset.promptTokens = String(data.prompt_tokens);
+    if (data.completion_tokens !== null && data.completion_tokens !== undefined && Number.isFinite(Number(data.completion_tokens))) bubbleEl.dataset.completionTokens = String(data.completion_tokens);
+    if (data.total_tokens !== null && data.total_tokens !== undefined && Number.isFinite(Number(data.total_tokens))) bubbleEl.dataset.totalTokens = String(data.total_tokens);
+    if (data.generation_tps !== null && data.generation_tps !== undefined && Number.isFinite(Number(data.generation_tps))) bubbleEl.dataset.generationTps = String(data.generation_tps);
+    updateAssistantTelemetry(bubbleEl, true);
   } else if (data.event === "done") {
     finishStreamRender(bubbleEl);
     bubbleEl.closest(".message")?.classList.remove("streaming");
     setAssistantActivity(bubbleEl.closest(".message"), "done", "");
     finalizeAssistantBubble(bubbleEl);
+    updateAssistantTelemetry(bubbleEl, true);
   } else if (data.event === "status") {
-    setAssistantActivity(bubbleEl.closest(".message"), "thinking", data.message || "Réflexion en cours");
+    const state = data.state === "loading_model" ? "model-loading" : "thinking";
+    const activity = bubbleEl.closest(".message")?.querySelector(".assistant-activity");
+    // Le serveur signale d'abord qu'il a reçu la requête : garder l'animation de
+    // réveil jusqu'au premier token si la page a détecté un modèle froid.
+    if (state === "model-loading" || activity?.dataset.state !== "model-loading") {
+      setAssistantActivity(bubbleEl.closest(".message"), state, data.message || (state === "model-loading" ? "Réveil du modèle local…" : "Réflexion en cours"));
+    }
   } else if (data.event === "error") {
+    ETUChatUI.showConversation();
     finishStreamRender(bubbleEl);
+    streamMarkup.delete(bubbleEl);
+    bubbleEl.dataset.streamError = "true";
     bubbleEl.innerHTML = `<p class="etu-text etu-badge-warning">${escapeHtml(data.message || "La requête a échoué.")}</p>`;
   }
 }
@@ -1829,22 +2248,29 @@ function renderStreamMarkup(bubble) {
       live.className = "stream-live-text";
       bubble.appendChild(live);
     }
-    const visible = raw.replace(/<template\b[\s\S]*?(?:<\/template>|$)/gi, "")
-      .replace(/<\?(?:marker|start|end)\b[^>]*>?/gi, "")
-      .replace(/<[^>]*>?/g, "")
-      .replace(/^\s*```(?:html|markdown)?\s*/i, "");
-    live.textContent = visible;
-    applyCompletedStreamTemplates(bubble, raw);
+    live.replaceChildren(renderAssistantFragment(raw));
   }
   scrollToBottom();
 }
 
 function applyCompletedStreamTemplates(bubble, raw) {
-  const matches = raw.match(/<template\s+for=["'][\w-]{1,80}["']\s*>[\s\S]*?<\/template>/gi) || [];
+  const matches = [];
+  let start = 0;
+  let depth = 0;
+  for (const tag of raw.matchAll(/<\/?template\b[^>]*>/gi)) {
+    if (!tag[0].startsWith("</")) {
+      if (depth++ === 0) start = tag.index;
+    } else if (depth > 0 && --depth === 0) {
+      const markup = raw.slice(start, tag.index + tag[0].length);
+      if (/^<template\b[^>]*\bfor=["'][\w/-]{1,100}["']/i.test(markup)) matches.push(markup);
+    }
+  }
   const applied = appliedStreamTemplates.get(bubble) || 0;
   for (const markup of matches.slice(applied)) {
-    bubble.appendChild(safeFragment(markup));
-    applyPartialUpdates(bubble);
+    const parsed = document.createElement("template");
+    parsed.innerHTML = markup;
+    const template = parsed.content.querySelector("template[for]");
+    ETUChatUI.patch(template.getAttribute("for"), template.innerHTML);
   }
   appliedStreamTemplates.set(bubble, matches.length);
 }
@@ -1854,10 +2280,14 @@ function authoredDocument(raw) {
   if (fence) {
     const start = fence.index + fence[0].length;
     const end = raw.indexOf("```", start);
-    return { html: raw.slice(start, end < 0 ? undefined : end), source: raw, complete: end >= 0 };
+    return {
+      html: raw.slice(start, end < 0 ? undefined : end), source: raw, complete: end >= 0,
+      before: raw.slice(0, fence.index), after: end < 0 ? "" : raw.slice(end + 3),
+    };
   }
-  if (/^\s*(?:<!doctype|<html\b|<style\b)/i.test(raw) ||
-      /^\s*<(?:div|section|main|article)\b[^>]*\b(?:style|class)=/i.test(raw)) {
+  if (/^\s*(?:<!doctype|<html\b|<style\b|<template\b|<form\b|<section\b|<article\b|<main\b)/i.test(raw) ||
+      /^\s*<div\b[^>]*\b(?:style|class|data-update-marker)=/i.test(raw) ||
+      (/^\s*</.test(raw) && /<(?:form|style|script|template|svg)\b/i.test(raw))) {
     return { html: raw, source: raw, complete: true };
   }
   return null;
@@ -1866,35 +2296,83 @@ function authoredDocument(raw) {
 function renderAuthoredPreview(bubble, raw, complete) {
   const authored = authoredDocument(raw);
   if (!authored) return false;
-  let frame = bubble.querySelector(".authored-preview-frame");
-  if (!frame) {
+  let content = bubble.querySelector(":scope > .authored-response-content");
+  if (!content) {
     bubble.replaceChildren();
+    const before = document.createElement("div");
+    before.className = "authored-text-before";
+    content = document.createElement("div");
+    content.className = "authored-response-content";
+    const after = document.createElement("div");
+    after.className = "authored-text-after";
+    bubble.append(before, content, after);
+  }
+  for (const position of ["before", "after"]) {
+    const text = bubble.querySelector(`:scope > .authored-text-${position}`);
+    text.replaceChildren(renderAssistantFragment(authored[position] || ""));
+    text.hidden = !(authored[position] || "").trim();
+  }
+  // HTML/CSS et formulaires sont des éléments natifs de la conversation.
+  // Seuls les programmes JavaScript ont besoin d'une origine isolée.
+  let hasScript = false;
+  if (/<script\b/i.test(authored.html)) {
+    const inspection = document.createElement("template");
+    inspection.innerHTML = authored.html;
+    // Les scripts dans les templates appartiennent à la zone mise à jour,
+    // pas à cette réponse : ils sont traités quand le patch est appliqué.
+    hasScript = !!inspection.content.querySelector("script");
+  }
+  if (!hasScript || !complete) {
+    const hasContent = ETUChatUI.render(content, authored.html, complete);
+    if (complete && hasContent) ETUChatUI.showConversation();
+    if (complete) applyCompletedStreamTemplates(bubble, authored.html);
+    showAuthoredSource(bubble, authored.html);
+    return true;
+  }
+  let frame = content.querySelector(".authored-preview-frame");
+  if (complete) ETUChatUI.showConversation();
+  if (!frame) {
+    content.replaceChildren();
     frame = document.createElement("iframe");
     frame.className = "authored-preview-frame";
     frame.title = "Interface créée par l’IA";
-    frame.setAttribute("sandbox", "allow-scripts");
-    frame.src = "/static/preview.html?v=interactive-programs-1";
+    // allow-forms autorise l'événement submit ; la CSP interdit toute navigation.
+    frame.setAttribute("sandbox", "allow-scripts allow-forms");
+    frame.src = "/static/preview.html?v=chat-ui-6";
     frame.addEventListener("load", () => sendAuthoredPreview(frame));
-    bubble.appendChild(frame);
+    content.appendChild(frame);
   }
   frame.previewHtml = authored.html;
   frame.previewComplete = complete;
   sendAuthoredPreview(frame);
+  applyCompletedStreamTemplates(bubble, authored.html);
   if (complete) {
-    let details = bubble.querySelector(".authored-preview-source");
+    showAuthoredSource(bubble, authored.html);
+  }
+  return true;
+}
+
+function showAuthoredSource(bubble, html) {
+    let details = bubble.querySelector(":scope > .authored-preview-source");
     if (!details) {
       details = document.createElement("details");
       details.className = "authored-preview-source";
       details.innerHTML = '<summary>Voir le code de l’interface</summary><pre><code></code></pre>';
       bubble.appendChild(details);
     }
-    details.querySelector("code").textContent = authored.html;
-  }
-  return true;
+    const code = details.querySelector("code");
+    code.className = "language-html";
+    code.textContent = html;
+    highlightCode(details);
 }
 
 function sendAuthoredPreview(frame) {
-  frame.contentWindow?.postMessage({ type: "etu-preview-update", html: frame.previewHtml || "", complete: frame.previewComplete === true }, "*");
+  const theme = getComputedStyle(document.documentElement);
+  frame.contentWindow?.postMessage({ type: "etu-preview-update", html: frame.previewHtml || "", complete: frame.previewComplete === true,
+    colorScheme: document.documentElement.dataset.theme || "dark",
+    theme: Object.fromEntries(["--text-main", "--text-muted", "--bg-primary", "--bg-secondary", "--bg-tertiary", "--border-color", "--accent-color"].map(name => [name, theme.getPropertyValue(name)])) }, "*");
+  for (const patch of frame.previewPatches || [])
+    frame.contentWindow?.postMessage({ type: "etu-preview-patch", ...patch }, "*");
 }
 
 window.addEventListener("message", async (event) => {
@@ -1927,7 +2405,7 @@ window.addEventListener("message", async (event) => {
     }
   } else if (event.data.type === "etu-preview-height") {
     const height = Number(event.data.height);
-    if (Number.isFinite(height)) frame.style.height = `${Math.max(100, Math.min(680, height))}px`;
+    if (Number.isFinite(height)) frame.style.height = `${Math.max(40, Math.min(4000, height))}px`;
   } else if (event.data.type === "etu-preview-copy" && typeof event.data.value === "string") {
     if (!navigator.userActivation.isActive) return;
     const value = event.data.value.slice(0, 500);
@@ -1935,11 +2413,24 @@ window.addEventListener("message", async (event) => {
     catch { /* Clipboard may require browser permission. */ }
   } else if (event.data.type === "etu-preview-action" && typeof event.data.value === "string") {
     if (!navigator.userActivation.isActive) return;
-    const input = document.getElementById("chat-input");
-    input.value = event.data.value.slice(0, 500);
-    document.getElementById("chat-form").requestSubmit();
+    submitGeneratedPrompt(event.data.value.slice(0, 10000));
+  } else if (event.data.type === "etu-preview-form" && typeof event.data.description === "string" && Array.isArray(event.data.fields)) {
+    if (!navigator.userActivation.isActive || event.data.fields.length > 100) return;
+    const fields = event.data.fields.filter(field => Array.isArray(field) && field.length === 2 && typeof field[0] === "string" && ["string", "boolean"].includes(typeof field[1]));
+    submitGeneratedPrompt(`[formulaire] ${event.data.description.slice(0, 500)}\n${JSON.stringify(fields).slice(0, 12000)}`);
   }
 });
+
+function submitGeneratedPrompt(value) {
+  const form = document.getElementById("chat-form");
+  if (form.dataset.busy === "true" || !value) return false;
+  const input = document.getElementById("chat-input");
+  const draft = input.value;
+  input.value = String(value).slice(0, 14000);
+  form.requestSubmit();
+  input.value = draft;
+  return true;
+}
 
 function finishStreamRender(bubble) {
   const frame = streamFrames.get(bubble);
@@ -1949,41 +2440,148 @@ function finishStreamRender(bubble) {
 }
 
 function finalizeAssistantBubble(bubble) {
+  if (bubble.dataset.streamError === "true" || bubble.dataset.renderFinalized === "true") return;
   const raw = streamMarkup.get(bubble) || "";
   if (!renderAuthoredPreview(bubble, raw, true)) {
-    bubble.replaceChildren(safeFragment(formatAssistantMarkup(raw)));
+    ETUChatUI.showConversation();
+    bubble.replaceChildren(renderAssistantFragment(raw));
     applyPartialUpdates(bubble);
   }
   streamMarkup.delete(bubble);
-  appliedStreamTemplates.delete(bubble);
+  bubble.dataset.copyText = raw;
+  bubble.dataset.renderFinalized = "true";
+}
+
+function updateAssistantTelemetry(bubble, completed = false) {
+  const message = bubble.closest(".message");
+  const panel = message?.querySelector(".assistant-telemetry-panel");
+  if (!panel) return;
+
+  if (!bubble.dataset.generationStarted) {
+    const list = panel.querySelector(".assistant-telemetry-values");
+    list.replaceChildren();
+    for (const label of ["Temps total", "TTFT", "Tokens générés", "Vitesse", "Contexte utilisé"]) {
+      const row = document.createElement("div");
+      row.className = "assistant-telemetry-row";
+      const key = document.createElement("dt");
+      key.textContent = label;
+      const val = document.createElement("dd");
+      val.textContent = "Non enregistrée pour cette réponse";
+      row.append(key, val);
+      list.appendChild(row);
+    }
+    panel.querySelector(".assistant-context-progress").hidden = true;
+    return;
+  }
+
+  const elapsedMs = Number(bubble.dataset.generationMs || (completed ? 0 : performance.now() - Number(bubble.dataset.generationStarted)));
+  const firstTokenMs = Number(bubble.dataset.firstTokenMs || 0);
+  const exactTokens = Number(bubble.dataset.completionTokens);
+  const hasExactTokens = bubble.dataset.completionTokens !== undefined && Number.isFinite(exactTokens);
+  const outputText = bubble.innerText || bubble.textContent || "";
+  const estimatedTokens = outputText.trim() ? Math.max(1, Math.round(outputText.trim().length / 4)) : null;
+  const generatedTokens = hasExactTokens ? exactTokens : estimatedTokens;
+  const generationMs = Math.max(0, elapsedMs - firstTokenMs);
+  const serverTokensPerSecond = Number(bubble.dataset.generationTps);
+  const hasServerTokensPerSecond = bubble.dataset.generationTps !== undefined && Number.isFinite(serverTokensPerSecond) && serverTokensPerSecond > 0;
+  const tokensPerSecond = hasServerTokensPerSecond ? serverTokensPerSecond : (generationMs > 0 && generatedTokens !== null && generatedTokens > 0 ? generatedTokens / (generationMs / 1000) : null);
+  const promptTokens = Number(bubble.dataset.promptTokens);
+  const hasPromptTokens = Number.isFinite(promptTokens) && promptTokens >= 0;
+
+  const values = [
+    ["Temps total", completed ? `${(elapsedMs / 1000).toFixed(2)} s` : "En cours…"],
+    ["TTFT", firstTokenMs ? `${(firstTokenMs / 1000).toFixed(2)} s` : "En attente du premier token"],
+    ["Tokens générés", completed ? (generatedTokens === null ? "Indisponible" : `${hasExactTokens ? "" : "≈ "}${generatedTokens}`) : "En cours…"],
+    ["Vitesse", tokensPerSecond ? `${tokensPerSecond.toFixed(1)} tokens/s${hasServerTokensPerSecond ? "" : " · estimée"}` : "—"],
+    ["Contexte utilisé", hasPromptTokens ? `${promptTokens.toLocaleString("fr-FR")} / ${currentContextLimit ? currentContextLimit.toLocaleString("fr-FR") : "—"} tokens` : "Indisponible pour cette réponse"],
+  ];
+
+  const list = panel.querySelector(".assistant-telemetry-values");
+  list.replaceChildren();
+  for (const [label, value] of values) {
+    const row = document.createElement("div");
+    row.className = "assistant-telemetry-row";
+    const key = document.createElement("dt");
+    key.textContent = label;
+    const val = document.createElement("dd");
+    val.textContent = value;
+    row.append(key, val);
+    list.appendChild(row);
+  }
+
+  const progress = panel.querySelector(".assistant-context-progress");
+  const ratio = hasPromptTokens && currentContextLimit ? Math.min(100, Math.round(promptTokens / currentContextLimit * 100)) : 0;
+  progress.hidden = !hasPromptTokens || !currentContextLimit;
+  progress.value = ratio;
+  progress.setAttribute("aria-label", `Contexte utilisé : ${ratio} %`);
+}
+
+function addAssistantActions(message, bubble) {
+  const actions = document.createElement("div");
+  actions.className = "assistant-message-actions";
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "assistant-action-button assistant-copy-button";
+  copy.setAttribute("aria-label", "Copier la réponse");
+  copy.innerHTML = `${window.ETUSVG?.icon("copy", "assistant-action-icon") || ""}<span>Copier</span>`;
+  copy.addEventListener("click", async () => {
+    const visibleText = (bubble.innerText || bubble.textContent || "").trim();
+    const text = visibleText || (bubble.dataset.copyText || "").trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      copy.innerHTML = `${window.ETUSVG?.icon("check", "assistant-action-icon") || ""}<span>Copié</span>`;
+      showToast("Réponse copiée", "success", 1600);
+      setTimeout(() => { copy.innerHTML = `${window.ETUSVG?.icon("copy", "assistant-action-icon") || ""}<span>Copier</span>`; }, 1400);
+    } catch {
+      showToast("Impossible d’accéder au presse-papiers", "warning", 2500);
+    }
+  });
+
+  const details = document.createElement("details");
+  details.className = "assistant-telemetry";
+  const summary = document.createElement("summary");
+  summary.innerHTML = `${window.ETUSVG?.icon("telemetry", "assistant-action-icon") || ""}<span>Télémétrie</span>`;
+  const panel = document.createElement("div");
+  panel.className = "assistant-telemetry-panel";
+  const list = document.createElement("dl");
+  list.className = "assistant-telemetry-values";
+  const progress = document.createElement("progress");
+  progress.className = "assistant-context-progress";
+  progress.max = 100;
+  progress.value = 0;
+  progress.hidden = true;
+  panel.append(list, progress);
+  details.append(summary, panel);
+  actions.append(copy, details);
+  message.appendChild(actions);
+  updateAssistantTelemetry(bubble, true);
 }
 
 function attachInteractiveButtons(container) {
-  container.querySelectorAll(".etu-btn[data-action]").forEach((btn) => {
+  container.querySelectorAll("button[data-action],button[data-chat-action]").forEach((btn) => {
     if (!btn.dataset.bound) {
       btn.dataset.bound = "true";
       btn.addEventListener("click", () => {
-        const action = btn.dataset.action;
-        const input = document.getElementById("chat-input");
-        input.value = action;
-        document.getElementById("chat-form").requestSubmit();
+        const action = btn.dataset.chatAction ?? btn.dataset.action;
+        if (btn.closest("form") && btn.type === "submit") return;
+        submitGeneratedPrompt(action);
       });
     }
   });
-  container.querySelectorAll("form[data-description]").forEach((form) => {
+  container.querySelectorAll("form").forEach((form) => {
     if (form.dataset.bound) return;
     form.dataset.bound = "true";
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const fields = [...new FormData(form)].map(([key, value]) => `${key}: ${value}`).join("\n");
-      const input = document.getElementById("chat-input");
-      input.value = `${form.dataset.description}\n${fields}`.trim();
-      document.getElementById("chat-form").requestSubmit();
+      if (!event.isTrusted) return;
+      const prompt = ETUChatUI.formPrompt(form, event.submitter);
+      submitGeneratedPrompt(`[formulaire] ${prompt.description}\n${JSON.stringify(prompt.fields)}`);
     });
   });
 }
 
-function renderMessage(role, contentHtml) {
+function renderMessage(role, contentHtml, attachments = []) {
   const container = document.getElementById("chat-messages");
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${role}`;
@@ -1995,13 +2593,24 @@ function renderMessage(role, contentHtml) {
     <div class="message-bubble"></div>
   `;
   const bubble = msgDiv.querySelector(".message-bubble");
+  container.appendChild(msgDiv);
   if (isUser) bubble.textContent = contentHtml;
   else {
-    if (!renderAuthoredPreview(bubble, contentHtml, true))
-      bubble.appendChild(safeFragment(formatAssistantMarkup(contentHtml)));
+    if (!renderAuthoredPreview(bubble, contentHtml, true)) {
+      if (contentHtml.trim()) ETUChatUI.showConversation();
+      bubble.appendChild(renderAssistantFragment(contentHtml));
+    }
   }
-  container.appendChild(msgDiv);
-  if (!isUser) applyPartialUpdates(bubble);
+  if (attachments.length) {
+    const files = document.createElement("div");
+    files.className = "attachment-list message-attachments";
+    renderAttachments(files, attachments);
+    bubble.appendChild(files);
+  }
+  if (!isUser) {
+    addAssistantActions(msgDiv, bubble);
+    applyPartialUpdates(bubble);
+  }
   attachInteractiveButtons(msgDiv);
   scrollToBottom();
   return msgDiv;
@@ -2013,55 +2622,66 @@ function formatAssistantMarkup(raw) {
   if (/^\s*<p\b[^>]*>/i.test(text) && /(?:```|\n#{2,5}\s)/.test(text)) {
     text = text.replace(/^\s*<p\b[^>]*>/i, "").replace(/<\/p>\s*$/i, "");
   }
-  if (/^\s*<(?:p|div|span|ul|ol|table|pre|blockquote|button|form|template|\?marker|\?start)/i.test(text)) return text;
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const result = [];
-  let inCode = false;
-  let inList = false;
-  let paragraph = [];
-  const inline = (value) => escapeHtml(value)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  const flush = () => {
-    if (paragraph.length) result.push(`<p>${inline(paragraph.join(" "))}</p>`);
-    paragraph = [];
-  };
-  for (const line of lines) {
-    if (/^\s*```/.test(line)) {
-      flush();
-      if (inList) { result.push("</ul>"); inList = false; }
-      result.push(inCode ? "</code></pre>" : '<pre class="etu-code"><code>');
-      inCode = !inCode;
-    } else if (inCode) {
-      result.push(`${escapeHtml(line)}\n`);
-    } else if (/^\s*#{1,5}\s+/.test(line)) {
-      flush();
-      if (inList) { result.push("</ul>"); inList = false; }
-      const match = line.match(/^\s*(#{1,5})\s+(.*)$/);
-      result.push(`<h${Math.min(match[1].length + 1, 5)}>${inline(match[2])}</h${Math.min(match[1].length + 1, 5)}>`);
-    } else if (/^\s*[-*]\s+/.test(line)) {
-      flush();
-      if (!inList) { result.push("<ul>"); inList = true; }
-      result.push(`<li>${inline(line.replace(/^\s*[-*]\s+/, ""))}</li>`);
-    } else if (!line.trim()) {
-      flush();
-      if (inList) { result.push("</ul>"); inList = false; }
-    } else if (!/^\s*---+\s*$/.test(line)) {
-      paragraph.push(line.trim());
+  const renderer = new marked.Renderer();
+  renderer.html = ({ text: html, block }) => block ? formatEmbeddedMarkdown(html) : html;
+  return marked.parse(text, { gfm: true, breaks: true, renderer });
+}
+
+function formatEmbeddedMarkdown(html) {
+  // Les modèles mélangent parfois des listes HTML avec des liens ou du gras MD.
+  // Traiter uniquement leurs textes, jamais les attributs ni le contenu du code.
+  const source = document.createElement("template");
+  source.innerHTML = html;
+  const textRenderer = new marked.Renderer();
+  // Les chevrons décodés depuis &lt; restent du texte, pas de nouvelles balises.
+  textRenderer.html = ({ text }) => escapeHtml(text);
+  function format(parent) {
+    for (const node of [...parent.childNodes]) {
+      if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+        const inline = document.createElement("template");
+        inline.innerHTML = marked.parseInline(node.textContent, { gfm: true, breaks: true, renderer: textRenderer });
+        node.replaceWith(inline.content);
+      } else if (node.nodeType === Node.ELEMENT_NODE &&
+                 !["PRE", "CODE", "SCRIPT", "STYLE", "TEXTAREA", "TEMPLATE"].includes(node.tagName)) {
+        if (["P", "DIV"].includes(node.tagName) &&
+            [...node.childNodes].every(child => child.nodeType === Node.TEXT_NODE) &&
+            /(?:^|\n)\s*(?:#{1,6}\s|`{3,}|~{3,}|[-*+]\s|\d+[.)]\s|>\s)/.test(node.textContent)) {
+          const block = document.createElement("template");
+          block.innerHTML = marked.parse(node.textContent, { gfm: true, breaks: true, renderer: textRenderer });
+          node.replaceWith(block.content);
+        } else format(node);
+      }
     }
   }
-  flush();
-  if (inList) result.push("</ul>");
-  if (inCode) result.push("</code></pre>");
-  return result.join("");
+  format(source.content);
+  return source.innerHTML;
+}
+
+function highlightCode(root) {
+  for (const code of root.querySelectorAll("pre > code")) {
+    const language = code.className.match(/(?:^|\s)language-([\w+#-]+)/)?.[1]?.toLowerCase();
+    const source = code.textContent;
+    code.classList.add("hljs");
+    if (source.length > 30000) continue;
+    if (language && !hljs.getLanguage(language)) continue;
+    const result = language
+      ? hljs.highlight(source, { language, ignoreIllegals: true })
+      : hljs.highlightAuto(source, ["javascript", "typescript", "python", "sql", "json", "css", "xml", "bash"]);
+    code.innerHTML = result.value;
+  }
+}
+
+function renderAssistantFragment(raw) {
+  const fragment = safeFragment(formatAssistantMarkup(raw));
+  highlightCode(fragment);
+  return fragment;
 }
 
 function safeFragment(html) {
-  const allowed = new Set(["P", "DIV", "SPAN", "STRONG", "EM", "B", "I", "BR", "UL", "OL", "LI", "H2", "H3", "H4", "H5", "PRE", "CODE", "BLOCKQUOTE", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD", "BUTTON", "FORM", "LABEL", "INPUT", "TEXTAREA", "SELECT", "OPTION", "TEMPLATE"]);
+  const allowed = new Set(["P", "DIV", "SPAN", "STRONG", "EM", "B", "I", "BR", "HR", "S", "DEL", "A", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "H5", "H6", "PRE", "CODE", "BLOCKQUOTE", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD", "BUTTON", "FORM", "LABEL", "INPUT", "TEXTAREA", "SELECT", "OPTION", "TEMPLATE"]);
   const source = document.createElement("template");
-  source.innerHTML = String(html).replace(/<\?(marker|start)\s+name=["']?([\w-]{1,80})["']?\s*\?>/gi, "<!--etu-$1:$2-->")
-    .replace(/<\?end\s*\?>/gi, "<!--etu-end-->");
+  source.innerHTML = String(html).replace(/<\?(marker|start)\s+name=["']?([\w-]{1,80})["']?\s*\??>/gi, "<!--etu-$1:$2-->")
+    .replace(/<\?end\s*\??>/gi, "<!--etu-end-->");
   function clean(parent) {
     for (const node of [...parent.childNodes]) {
       if (node.nodeType === Node.TEXT_NODE) continue;
@@ -2074,8 +2694,10 @@ function safeFragment(html) {
       for (const attr of [...node.attributes]) {
         const name = attr.name.toLowerCase();
         const value = attr.value;
-        const valid = (name === "class" && /^[\w\s-]{0,120}$/.test(value)) ||
-          (name === "data-action" && node.tagName === "BUTTON" && value.length <= 500) ||
+        const valid = (name === "class" && /^[\w\s+#-]{0,120}$/.test(value)) ||
+          (name === "href" && node.tagName === "A" && safeMarkdownLink(value)) ||
+          (name === "start" && node.tagName === "OL" && /^\d{1,9}$/.test(value)) ||
+          (["data-action", "data-chat-action"].includes(name) && node.tagName === "BUTTON" && value.length <= 500) ||
           (["data-model", "data-name"].includes(name) && node.tagName === "BUTTON" && value.length <= 200) ||
           (name === "data-description" && node.tagName === "FORM" && value.length <= 500) ||
           (name === "data-update-marker" && /^[\w-]{1,80}$/.test(value)) ||
@@ -2087,34 +2709,20 @@ function safeFragment(html) {
           (["checked", "selected", "required", "disabled"].includes(name));
         if (!valid) node.removeAttribute(attr.name);
       }
+      if (node.tagName === "A" && node.hasAttribute("href")) {
+        node.setAttribute("target", "_blank");
+        node.setAttribute("rel", "noopener noreferrer");
+      }
       clean(node.tagName === "TEMPLATE" ? node.content : node);
     }
   }
   clean(source.content);
-  const walker = document.createTreeWalker(source.content, NodeFilter.SHOW_TEXT);
-  const markdownNodes = [];
-  while (walker.nextNode()) {
-    const node = walker.currentNode;
-    if (node.parentElement?.closest("pre, code, textarea")) continue;
-    if (/\*\*[^*]+\*\*|`[^`]+`/.test(node.textContent)) markdownNodes.push(node);
-  }
-  markdownNodes.forEach((node) => {
-    const parts = node.textContent.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
-    node.replaceWith(...parts.map((part) => {
-      if (part.startsWith("**") && part.endsWith("**")) {
-        const strong = document.createElement("strong");
-        strong.textContent = part.slice(2, -2);
-        return strong;
-      }
-      if (part.startsWith("`") && part.endsWith("`")) {
-        const code = document.createElement("code");
-        code.textContent = part.slice(1, -1);
-        return code;
-      }
-      return document.createTextNode(part);
-    }));
-  });
   return source.content;
+}
+
+function safeMarkdownLink(value) {
+  try { return ["http:", "https:", "mailto:"].includes(new URL(value, window.location.href).protocol); }
+  catch { return false; }
 }
 
 function applyPartialUpdates(bubble) {
@@ -2314,12 +2922,32 @@ function initProfiles() {
 
 function scrollToBottom() {
   const container = document.getElementById("chat-messages");
-  if (container) container.scrollTop = container.scrollHeight;
+  if (container) container.scrollTop = container.classList.contains("generated-view") ? 0 : container.scrollHeight;
 }
 
 /* -------------------------------------------------------------------------- */
 /* Catalogue & Téléchargement Hugging Face                                    */
 /* -------------------------------------------------------------------------- */
+let modelCatalogItems = [];
+
+function isTextOnlyModel(model) {
+  return Boolean(model.mmproj?.text_only || /(?:^|[-_.])text[-_.]instruct(?:[-_.]|$)/i.test(model.filename || ""));
+}
+
+function showModelsTab(targetTabId) {
+  document.querySelectorAll(".modal-tab-btn").forEach(button => {
+    const active = button.dataset.tab === targetTabId;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  document.querySelectorAll(".modal-tab-content").forEach(content => content.classList.toggle("active", content.id === targetTabId));
+  document.querySelector("#modal-models .modal-body").scrollTop = 0;
+  if (targetTabId === "tab-hf-explorer") {
+    const resultsEl = document.getElementById("hf-search-results");
+    if (resultsEl && (!resultsEl.children.length || resultsEl.textContent.includes("Prêt"))) loadHfExplorerResults();
+  }
+}
+
 async function loadModelCatalog() {
   try {
     const resp = await fetch("/api/models/catalog");
@@ -2329,6 +2957,23 @@ async function loadModelCatalog() {
     catalogList.innerHTML = "";
 
     const installed = data.catalog.filter((m) => m.is_installed);
+    modelCatalogItems = data.catalog;
+    const visionSelect = document.getElementById("vision-model-select");
+    const previousSelection = visionSelect.value;
+    visionSelect.replaceChildren();
+    const visionModels = installed.filter(model => !isTextOnlyModel(model));
+    if (!visionModels.length) {
+      visionSelect.add(new Option("Aucun modèle vision installé", ""));
+      visionSelect.disabled = true;
+      document.getElementById("mmproj-panel").hidden = true;
+    } else {
+      visionSelect.disabled = false;
+      visionModels.forEach(model => visionSelect.add(new Option(model.name, model.filename)));
+      visionSelect.value = visionModels.some(model => model.filename === previousSelection) ? previousSelection : visionModels[0].filename;
+      if (document.getElementById("tab-vision").classList.contains("active") && document.getElementById("mmproj-panel").dataset.model !== visionSelect.value) {
+        openProjectorManager(visionModels.find(model => model.filename === visionSelect.value));
+      }
+    }
     availableInstalledModels = installed;
     remoteApiModels = Array.isArray(data.remote_models) ? data.remote_models : [];
     updateModelUI(currentActiveModel, availableInstalledModels);
@@ -2380,10 +3025,156 @@ async function loadModelCatalog() {
       }
 
       catalogList.appendChild(card);
+      if (item.is_installed) {
+        const projectorButton = document.createElement("button");
+        projectorButton.type = "button";
+        projectorButton.className = "etu-btn etu-btn-secondary catalog-vision-btn";
+        const info = item.mmproj || {};
+        const textOnly = isTextOnlyModel(item);
+        projectorButton.textContent = textOnly ? "Vision indisponible · modèle textuel" : (info.installed ? "Gérer le projecteur vision" : "Ajouter un projecteur vision");
+        projectorButton.disabled = textOnly;
+        if (!textOnly) projectorButton.addEventListener("click", () => openProjectorManager(item));
+        card.appendChild(projectorButton);
+      }
     });
   } catch (err) {
     console.error("Erreur chargement catalogue :", err);
   }
+}
+
+async function openProjectorManager(item) {
+  const panel = document.getElementById("mmproj-panel");
+  showModelsTab("tab-vision");
+  document.getElementById("vision-model-select").value = item.filename;
+  panel.hidden = false;
+  panel.dataset.model = item.filename;
+  panel.innerHTML = `<h4>Projecteur pour ${escapeHtml(item.name || item.filename)}</h4>
+    <p class="mmproj-association"></p>
+    <div class="mmproj-import-box">
+      <strong>Importer depuis cet ordinateur</strong>
+      <p>Fichier GGUF nommé mmproj ou projector, correspondant exactement à ce modèle. 8 Go maximum.</p>
+      <input class="mmproj-local" type="file" accept=".gguf" hidden>
+      <button type="button" class="etu-btn etu-btn-primary mmproj-pick">Choisir un fichier .gguf</button>
+    </div>
+    <details class="mmproj-online">
+      <summary>Rechercher sur Hugging Face</summary>
+      <label>Dépôt exact du modèle <input class="mmproj-repo" type="text" placeholder="auteur/modèle-GGUF"></label>
+      <button type="button" class="etu-btn etu-btn-secondary mmproj-search">Rechercher le bon projecteur</button>
+      <div class="mmproj-candidates"></div>
+    </details>
+    <div class="mmproj-actions">
+      <button type="button" class="etu-btn etu-btn-primary mmproj-apply">Charger / recharger le modèle</button>
+      <button type="button" class="etu-btn etu-btn-secondary mmproj-remove">Retirer l'association</button>
+    </div>
+    <p class="mmproj-status" role="status"></p>`;
+  const model = item.filename;
+  const repoInput = panel.querySelector(".mmproj-repo");
+  repoInput.value = item.mmproj?.repo || (item.repo !== "local" ? item.repo : "") || "";
+  const status = panel.querySelector(".mmproj-status");
+  const setStatus = (message, type = "info") => {
+    status.textContent = message;
+    status.dataset.type = type;
+  };
+  const showAssociation = (data) => {
+    const association = data.association;
+    panel.dataset.association = association?.local_filename || "";
+    panel.querySelector(".mmproj-association").textContent = association
+      ? `${association.filename} · ${data.installed ? "installé" : "fichier à télécharger"}${association.manual ? " · association manuelle" : ""}`
+      : "Aucun projecteur associé.";
+    panel.querySelector(".mmproj-pick").disabled = Boolean(data.text_only);
+    panel.querySelector(".mmproj-remove").disabled = !association;
+    const apply = panel.querySelector(".mmproj-apply");
+    apply.disabled = Boolean(association && !data.installed);
+    apply.textContent = association ? "Charger le modèle avec ce projecteur" : "Charger le modèle sans projecteur";
+  };
+  showAssociation(item.mmproj || {});
+  const search = async () => {
+    setStatus("Vérification du dépôt et de la variante du modèle…");
+    const params = new URLSearchParams({ model });
+    if (repoInput.value.trim()) params.set("repo", repoInput.value.trim());
+    try {
+      const response = await fetch(`/api/models/mmproj?${params}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Recherche impossible");
+      if (panel.dataset.model !== model) return;
+      showAssociation(data);
+      setStatus(data.message);
+      const list = panel.querySelector(".mmproj-candidates");
+      list.replaceChildren();
+      data.candidates.forEach((candidate, index) => {
+        const row = document.createElement("div");
+        row.className = "mmproj-candidate";
+        const label = document.createElement("span");
+        label.textContent = `${candidate.filename} · ${candidate.size_gib} Go${index === 0 ? " · conseillé" : ""}`;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "etu-btn etu-btn-secondary";
+        button.textContent = candidate.is_installed ? "Associer" : "Télécharger et associer";
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const result = await fetch("/api/models/mmproj/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, repo: candidate.repo, filename: candidate.filename }) });
+            const saved = await result.json();
+            if (!result.ok) throw new Error(saved.detail || "Association impossible");
+            if (saved.task_id) pollDownloadProgress(saved.task_id, candidate.filename, () => {
+              if (panel.dataset.model === model && panel.dataset.association === saved.association.local_filename) {
+                showAssociation({ ...saved, installed: true });
+                setStatus("Projecteur téléchargé et associé. Rechargez le modèle pour l'utiliser.", "success");
+              }
+            });
+            if (panel.dataset.model === model) {
+              showAssociation(saved);
+              setStatus(saved.installed ? "Projecteur associé. Rechargez le modèle pour l'utiliser." : "Téléchargement lancé. Attendez sa fin, puis rechargez le modèle.", saved.installed ? "success" : "info");
+            }
+            loadModelCatalog();
+          } catch (error) {
+            setStatus(error.message, "error");
+          } finally {
+            button.disabled = false;
+          }
+        });
+        row.append(label, button);
+        list.appendChild(row);
+      });
+    } catch (error) {
+      setStatus(error.message, "error");
+    }
+  };
+  panel.querySelector(".mmproj-search").addEventListener("click", search);
+  panel.querySelector(".mmproj-pick").addEventListener("click", () => panel.querySelector(".mmproj-local").click());
+  panel.querySelector(".mmproj-local").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const pick = panel.querySelector(".mmproj-pick");
+    pick.disabled = true;
+    setStatus(`Import de ${file.name} en cours… Gardez cette fenêtre ouverte.`);
+    try {
+      if (file.size > 8 * 1024 ** 3) throw new Error("8 Go maximum par projecteur.");
+      if (!/\.gguf$/i.test(file.name) || !/(mmproj|projector)/i.test(file.name)) throw new Error("Choisissez un fichier .gguf dont le nom contient mmproj ou projector.");
+      const params = new URLSearchParams({ model, filename: file.name });
+      const response = await fetch(`/api/models/mmproj/import?${params}`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Import impossible");
+      if (panel.dataset.model === model) {
+        showAssociation(data);
+        setStatus("Projecteur importé et associé. Chargez le modèle pour vérifier la vision.", "success");
+      }
+      loadModelCatalog();
+    } catch (error) {
+      setStatus(error.message, "error");
+    } finally {
+      pick.disabled = false;
+      event.target.value = "";
+    }
+  });
+  panel.querySelector(".mmproj-remove").addEventListener("click", async () => {
+    const response = await fetch(`/api/models/mmproj?${new URLSearchParams({ model })}`, { method: "DELETE" });
+    if (!response.ok) { setStatus("Suppression de l'association impossible.", "error"); return; }
+    showAssociation({ association: null });
+    setStatus("Association retirée. Rechargez le modèle pour appliquer le changement.", "success");
+    loadModelCatalog();
+  });
+  panel.querySelector(".mmproj-apply").addEventListener("click", () => switchActiveModel(model, item.name || model));
 }
 
 async function triggerDownload(repo, filename) {
@@ -2403,7 +3194,7 @@ async function triggerDownload(repo, filename) {
   }
 }
 
-function pollDownloadProgress(taskId, filename) {
+function pollDownloadProgress(taskId, filename, onComplete = null) {
   const container = document.getElementById("active-tasks-container");
   if (!container) return;
   const taskBox = document.createElement("div");
@@ -2447,6 +3238,7 @@ function pollDownloadProgress(taskId, filename) {
 
       if (t.status === "completed") {
         clearInterval(poller);
+        if (onComplete) onComplete();
         cancelButton.remove();
         if (statusEl) {
           statusEl.textContent = "Téléchargé avec succès !";

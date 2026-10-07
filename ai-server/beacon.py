@@ -236,7 +236,13 @@ def wait_for_healthcheck(process: subprocess.Popen, config: dict[str, Any]) -> N
     else:
         raise RuntimeError("Beacon HTTP startup timed out")
     model = Path(config["default_model_file"]).stem
-    local_json(base + "/api/select", {"model": model, "context_size": config["context_size"]})
+    models_dir = (ROOT_DIR / config["models_dir"]).resolve()
+    associations = read_json(models_dir / ".etu-mmproj.json") or {}
+    association = associations.get(model + ".gguf", {})
+    mmproj = association.get("local_filename")
+    if mmproj and (Path(mmproj).name != mmproj or not (models_dir / mmproj).is_file()):
+        mmproj = None
+    local_json(base + "/api/select", {"model": model, "context_size": config["context_size"], "mmproj": mmproj or "__etu_no_mmproj__.gguf"})
     deadline = time.monotonic() + config["startup_timeout_seconds"]
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -244,7 +250,7 @@ def wait_for_healthcheck(process: subprocess.Popen, config: dict[str, Any]) -> N
         status = local_json(base + "/api/status")
         if status.get("status") == "error":
             raise RuntimeError(status.get("error_message") or "Beacon model loading failed")
-        if status.get("status") == "running" and status.get("active_model") == model:
+        if status.get("status") == "running" and status.get("active_model") == model and status.get("active_mmproj") == mmproj:
             break
         time.sleep(0.25)
     else:

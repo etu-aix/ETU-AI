@@ -108,7 +108,7 @@ def detect_local_models(models_dir: Optional[Path] = None) -> list[dict[str, Any
 
     local_models = []
     for f in target.glob("*.gguf"):
-        if f.is_file() and f.stat().st_size > 1024 * 1024:
+        if f.is_file() and f.stat().st_size > 1024 * 1024 and not any(word in f.name.lower() for word in ("mmproj", "projector")):
             size_gib = round(f.stat().st_size / (1024 ** 3), 2)
             local_models.append({
                 "filename": f.name,

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="fr">
+<meta charset="utf-8">
+<title>Vérification arrêt et projecteurs</title>
+<link rel="stylesheet" href="../ui/style.css">
+<style>body{display:block;overflow:auto;padding:24px}main{max-width:900px;margin:auto}#results{white-space:pre-wrap}.message{margin:14px 0}#mmproj-panel{max-width:900px}</style>
+<main id="chat-main">
+  <h1>Vérification des commandes du chat</h1>
+  <div id="chat-messages"></div>
+  <div id="chat-input-container">
+    <form id="chat-form" class="input-box">
+      <input id="chat-file-input" type="file" hidden multiple>
+      <button id="btn-attach" type="button">＋</button>
+      <textarea id="chat-input"></textarea>
+      <button id="btn-send" type="submit">Envoyer</button>
+      <button id="btn-stop" type="button" class="stop-btn" hidden>■</button>
+    </form>
+    <div id="chat-attachments"></div><div id="attachment-error"></div>
+  </div>
+  <section id="mmproj-panel" class="etu-card mmproj-panel" hidden></section>
+  <div id="active-tasks-container"></div><div id="toast-container"></div>
+  <pre id="results" role="status"></pre>
+</main>
+<script src="../ui/generated-layout.js"></script>
+<script src="../ui/generative-ui.js"></script>
+<script>
+const originalListener = document.addEventListener.bind(document);
+document.addEventListener = (type, ...args) => { if (type !== "DOMContentLoaded") originalListener(type, ...args); };
+</script>
+<script src="../ui/vendor/marked-18.0.14.umd.js"></script>
+<script src="../ui/vendor/highlight-11.12.0.min.js"></script>
+<script src="../ui/app.js"></script>
+<script>
+document.addEventListener = originalListener;
+loadModelCatalog = async () => {};
+const results = document.getElementById("results");
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+const waitUntil = predicate => new Promise((resolve, reject) => {
+  if (predicate()) { resolve(); return; }
+  const timer = setTimeout(() => { observer.disconnect(); reject(new Error("Changement d'interface attendu")); }, 2000);
+  const observer = new MutationObserver(() => { if (predicate()) { clearTimeout(timer); observer.disconnect(); resolve(); } });
+  observer.observe(document.body, {subtree:true,childList:true,characterData:true,attributes:true});
+});
+const assert = (condition, label) => { results.textContent += `${condition ? "PASS" : "FAIL"} ${label}\n`; };
+const model = "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf";
+const repo = "mistralai/Ministral-3-3B-Instruct-2512-GGUF";
+const candidate = {filename:"Ministral-3-3B-Instruct-2512-BF16-mmproj.gguf",repo,size_gib:.78,is_installed:false};
+const association = {filename:candidate.filename,local_filename:"mmproj-test.gguf"};
+let stopRequests = [], downloads = [], imports = [], streamChannel;
+const json = data => new Response(JSON.stringify(data), {headers:{"Content-Type":"application/json"}});
+window.fetch = async (url, options = {}) => {
+  if (url === "/api/chat/stream") return new Response(new ReadableStream({start(controller) {
+    streamChannel = controller;
+    controller.enqueue(new TextEncoder().encode('data: {"event":"status","state":"thinking"}\n\n'));
+  }}));
+  if (url.endsWith("/stop")) { stopRequests.push(url); return json({cancelled:true}); }
+  if (url === "/api/models/mmproj/download") { downloads.push(JSON.parse(options.body)); return json({association,installed:true}); }
+  if (url.startsWith("/api/models/mmproj/import")) { imports.push(options.body); return json({association:{...association,manual:true},installed:true}); }
+  if (options.method === "DELETE") return json({success:true});
+  if (url.includes("mmproj")) return json({repo,association:null,installed:false,text_only:false,message:"Correspondance vérifiée",candidates:[candidate]});
+  return json({conversations:[]});
+};
+(async () => {
+  initChatForm();
+  currentConversationId = "conversation-test";
+  document.getElementById("chat-input").value = "Une question";
+  document.getElementById("chat-form").requestSubmit();
+  await tick();
+  const stream = activeChatStream;
+  assert(!document.getElementById("btn-stop").hidden, "Bouton Arrêter visible pendant la réflexion");
+  streamChannel.enqueue(new TextEncoder().encode('data: {"event":"token","html":"Réponse partielle"}\n\n'));
+  await tick();
+  document.getElementById("btn-stop").click();
+  assert(stream.controller.signal.aborted && stopRequests.length === 1, "Arrêt du flux et demande d'arrêt au serveur");
+  assert(document.getElementById("chat-messages").textContent.includes("Réponse partielle"), "Réponse partielle conservée à l'arrêt");
+  assert(document.getElementById("btn-stop").hidden && !document.getElementById("btn-send").disabled, "Formulaire à nouveau disponible");
+  streamChannel.close();
+  await tick();
+  await openProjectorManager({filename:model,name:"Ministral 3B",repo});
+  const panel = document.getElementById("mmproj-panel");
+  assert(panel.querySelector(".mmproj-candidate").textContent.includes(candidate.filename), "Le gestionnaire affiche le projecteur exact proposé");
+  panel.querySelector(".mmproj-candidate button").click();
+  await waitUntil(() => panel.querySelector(".mmproj-association").textContent.includes("installé"));
+  assert(downloads[0]?.model === model && downloads[0]?.filename === candidate.filename, "Téléchargement associé au modèle choisi");
+  assert(panel.querySelector(".mmproj-association").textContent.includes("installé"), "Association installée affichée");
+  const transfer = new DataTransfer();
+  transfer.items.add(new File(["GGUF"], "mmproj-local.gguf"));
+  const picker = panel.querySelector(".mmproj-local");
+  picker.files = transfer.files;
+  picker.dispatchEvent(new Event("change"));
+  await waitUntil(() => panel.querySelector(".mmproj-association").textContent.includes("manuelle"));
+  assert(imports[0] instanceof File && panel.querySelector(".mmproj-association").textContent.includes("manuelle"), "Import local transmis en fichier et identifié comme manuel");
+  panel.querySelector(".mmproj-remove").click();
+  await waitUntil(() => panel.querySelector(".mmproj-association").textContent === "Aucun projecteur associé.");
+  assert(panel.querySelector(".mmproj-association").textContent === "Aucun projecteur associé.", "Retrait de l'association affiché");
+})().catch(error => { results.textContent += `FAIL ${error.stack}`; });
+</script>
+</html>

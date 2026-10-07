@@ -1,0 +1,103 @@
+"""Volatile, read-only tool calls relayed through an approved ETU browser."""
+import asyncio
+import json
+import threading
+import time
+from uuid import uuid4
+from fastapi import HTTPException
+
+TOOLS = {
+    "profile.group": ("etu.profile.group", "etu_profile_group", "Lire le groupe du compte ETU connecté.", {}),
+    "schedule.read": ("etu.schedule.read", "etu_schedule_read", "Lire les cours sur 1 à 31 jours. Dates YYYY-MM-DD, fin exclusive, fuseau Europe/Paris.", {"from": {"type": "string", "format": "date"}, "to": {"type": "string", "format": "date"}}),
+}
+
+
+class ToolRelay:
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.providers = {}
+
+    def _live(self, provider):
+        with provider["bridge"].lock:
+            provider["bridge"].prune()
+            return provider["key"] in provider["bridge"].sessions and time.monotonic() - provider["seen"] < 30
+
+    def register(self, bridge, key, session, catalog):
+        names = [value.get("name") for value in catalog]
+        if any(not isinstance(name, str) for name in names) or len(names) != len(set(names)) or any(name not in TOOLS or TOOLS[name][0] not in session["permissions"] for name in names):
+            raise HTTPException(403, "Outils non autorisés")
+        with self.lock:
+            self.providers = {key: value for key, value in self.providers.items() if self._live(value)}
+            existing = self.providers.get(key)
+            self.providers[key] = {"key": key, "bridge": bridge, "pair_id": session["pair_id"], "origin": session["origin"], "seen": time.monotonic(), "names": names, "pending": existing["pending"] if existing else {}}
+
+    def binding(self):
+        with self.lock:
+            available = [value for value in self.providers.values() if self._live(value)]
+            # Never choose arbitrarily between two different accounts/installations.
+            if not available or len({(value["origin"], value["pair_id"]) for value in available}) != 1:
+                return None
+            return max(available, key=lambda value: value["seen"])["key"]
+
+    def tools(self, key):
+        with self.lock:
+            provider = self.providers.get(key)
+            if not provider or not self._live(provider):
+                return []
+            result = []
+            for name in provider["names"]:
+                _, function, description, properties = TOOLS[name]
+                result.append({"type": "function", "function": {"name": function, "description": description, "parameters": {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}}})
+            return result
+
+    def poll(self, key):
+        with self.lock:
+            provider = self.providers.get(key)
+            if not provider or not self._live(provider):
+                raise HTTPException(409, "Reconnectez les outils ETU")
+            provider["seen"] = time.monotonic()
+            return [{"request_id": request_id, "tool": value["tool"], "arguments": value["arguments"]} for request_id, value in provider["pending"].items() if not value["future"].done() and not value.get("answered")]
+
+    def result(self, key, request_id, result):
+        if len(json.dumps(result).encode()) > 131072 or not isinstance(result.get("success"), bool) or set(result) - {"success", "data", "message"}:
+            raise HTTPException(422, "Résultat invalide ou trop volumineux")
+        with self.lock:
+            provider = self.providers.get(key)
+            pending = provider["pending"].get(request_id) if provider and self._live(provider) else None
+            if not pending or pending["future"].done() or pending.get("answered"):
+                raise HTTPException(404, "Demande absente ou terminée")
+            pending["answered"] = True
+            def complete():
+                if not pending["future"].done():
+                    pending["future"].set_result(result)
+            pending["loop"].call_soon_threadsafe(complete)
+
+    def unregister(self, key):
+        with self.lock:
+            self.providers.pop(key, None)
+
+    async def call(self, key, function, arguments):
+        name = next((name for name, value in TOOLS.items() if value[1] == function), None)
+        with self.lock:
+            provider = self.providers.get(key)
+            if not provider or not self._live(provider) or name not in provider["names"]:
+                return {"success": False, "message": "Outil ETU non disponible ou non autorisé."}
+            expected = TOOLS[name][3]
+            if not isinstance(arguments, dict) or set(arguments) != set(expected) or len(json.dumps(arguments).encode()) > 4096:
+                return {"success": False, "message": "Paramètres ETU invalides."}
+            if len(provider["pending"]) >= 20:
+                return {"success": False, "message": "Trop de demandes ETU."}
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            request_id = uuid4().hex
+            provider["pending"][request_id] = {"tool": name, "arguments": arguments, "future": future, "loop": loop}
+        try:
+            return await asyncio.wait_for(future, 15)
+        except asyncio.TimeoutError:
+            return {"success": False, "message": "ETU 2 ne répond pas. Gardez un onglet ouvert et connecté."}
+        finally:
+            with self.lock:
+                provider["pending"].pop(request_id, None)
+
+
+tool_relay = ToolRelay()
