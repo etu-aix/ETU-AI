@@ -256,6 +256,11 @@ class ChatStreamHandler:
         try:
             async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
                 async with client.stream("POST", endpoint, json=payload, headers=headers) as resp:
+                    if resp.is_error:
+                        # Streaming responses do not have a readable JSON body
+                        # until it is consumed. Keep provider errors available
+                        # after leaving this context so the UI receives an error.
+                        await resp.aread()
                     resp.raise_for_status()
                     async for decoded in resp.aiter_lines():
                         decoded = decoded.strip()
@@ -313,7 +318,30 @@ class ChatStreamHandler:
                 yield self._sse_event("done", {"status": "error"})
                 return
             if use_remote:
-                message = "Le fournisseur distant est injoignable ou a refusé la requête. Vérifiez l’URL, le modèle et la clé API."
+                if isinstance(e, httpx.HTTPStatusError):
+                    status_code = e.response.status_code
+                    try:
+                        error_body = e.response.json()
+                        if isinstance(error_body, dict):
+                            provider_error = error_body.get("error")
+                            detail = error_body.get("message") or error_body.get("detail")
+                            if not detail and isinstance(provider_error, dict):
+                                detail = provider_error.get("message")
+                        else:
+                            detail = None
+                    except (ValueError, TypeError):
+                        detail = None
+                    detail = " ".join(str(detail or "").split()).replace(api_key, "[clé masquée]")[:240]
+                    if status_code == 429:
+                        message = "Le fournisseur limite les requêtes ou le quota disponible (HTTP 429). Réessayez plus tard ou vérifiez les limites de votre compte API."
+                    else:
+                        message = f"Le fournisseur distant a refusé la requête (HTTP {status_code})."
+                    if detail:
+                        message += f" {detail}"
+                    else:
+                        message += " Vérifiez le modèle et les droits de la clé API."
+                else:
+                    message = "Impossible de joindre le fournisseur distant. Vérifiez votre connexion et l’URL du fournisseur."
                 self.storage.add_message(conversation_id, "assistant", message)
                 yield self._sse_event("error", {"message": message})
                 yield self._sse_event("done", {"status": "error"})
@@ -419,6 +447,12 @@ class ChatStreamHandler:
                 yield self._sse_event("token", {"html": err_html})
 
         # 5. Persistance du message assistant complet généré
+        if not assistant_full_html.strip():
+            message = "Le modèle a terminé la requête sans renvoyer de texte. Réessayez ou choisissez un autre modèle."
+            self.storage.add_message(conversation_id, "assistant", message)
+            yield self._sse_event("error", {"message": message})
+            yield self._sse_event("done", {"status": "error"})
+            return
         self.storage.add_message(conversation_id, "assistant", assistant_full_html)
         if not use_remote and usage_data:
             yield self._sse_event("metrics", {

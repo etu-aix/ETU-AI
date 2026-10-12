@@ -71,7 +71,12 @@ class WorkspaceBridgeTest(TestBridge):
         self.assertNotIn('BEGIN_SELECTED_BLOCK', json.dumps(payload))
         self.assertNotIn('private-profile', json.dumps(payload))
         self.assertIn('Current document', json.dumps(payload))
+        self.assertEqual(payload['response_format']['type'], 'json_object')
+        self.assertEqual(payload['response_format']['schema'], routes.CHAT_SCHEMA)
         self.assertEqual([item for item in payload['messages'] if item['role'] != 'system'], history)
+        self.assertEqual([item['role'] for item in payload['messages']], ['system', 'user', 'assistant', 'user'])
+        self.assertIn('Documents ETU 2, source externe, lecture seule', payload['messages'][0]['content'])
+        self.assertIn('Current document', payload['messages'][0]['content'])
         self.assertIn('block_id', payload['messages'][0]['content'])
         self.assertIn('Assistant choisi', payload['messages'][0]['content'])
         self.assertIn('Private profile preference', payload['messages'][0]['content'])
@@ -86,6 +91,35 @@ class WorkspaceBridgeTest(TestBridge):
                 result = self.client.post('/v1/chat/completions', headers=headers, json={**body, 'workspace_mode': 'chat'})
                 self.assertEqual(result.status_code, 422, result.text)
         post.assert_not_called()
+
+    def test_ministral_stream_receives_one_initial_system_message_and_the_question_last(self):
+        headers = self.session(self.pair())
+        self.client.put('/v1/context', headers=headers, json={'workspace': {'document': {'content': 'Current fixture document'}}})
+        captured = []
+        class EngineResponse:
+            status_code = 200
+            headers = {'content-type': 'text/event-stream'}
+            def raise_for_status(self): pass
+            async def aiter_lines(self):
+                yield 'data: {"choices":[{"delta":{"content":"{\\\"message\\\":\\\"Bonjour\\\",\\\"edits\\\":[]}"},"finish_reason":"stop"}]}'
+                yield 'data: [DONE]'
+        class Stream:
+            async def __aenter__(self): return EngineResponse()
+            async def __aexit__(self, *args): pass
+        def engine(method, url, **kwargs):
+            messages = kwargs['json']['messages']
+            # The Ministral template rejects trailing/additional system turns.
+            self.assertEqual([message['role'] for message in messages], ['system', 'user'])
+            self.assertIn('Current fixture document', messages[0]['content'])
+            self.assertEqual(messages[-1]['content'], 'Salut')
+            captured.append(kwargs['json'])
+            return Stream()
+        with patch.object(api_server.app.state, 'etu_storage', Settings({'selected_model':'Ministral-3-3B-Instruct-2512-Q4_K_M'})), patch.object(routes.httpx.AsyncClient, 'stream', side_effect=engine):
+            result = self.client.post('/v1/chat/completions', headers=headers, json={'model':'selected', 'workspace_mode':'chat', 'stream':True, 'messages':[{'role':'user','content':'Salut'}]})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertIn('Bonjour', result.text)
+        self.assertIn('data: [DONE]', result.text)
+        self.assertEqual(len(captured), 1)
 
     def test_mistral_chat_requests_strict_json_schema_without_tools_or_history_storage(self):
         headers = self.session(self.pair())

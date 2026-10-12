@@ -1,6 +1,7 @@
 """Transactional installation helpers. No network or installation on import."""
 from contextlib import contextmanager
 import hashlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,8 @@ def file_lock(path: Union[str, Path]) -> Generator[None, None, None]:
             stream.write(b"\0")
             stream.flush()
         stream.seek(0)
+        lock_stream = stream
+        fallback_stream = None
         try:
             if os.name == "nt":
                 import msvcrt
@@ -98,17 +101,34 @@ def file_lock(path: Union[str, Path]) -> Generator[None, None, None]:
                 import fcntl
                 fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise RuntimeError(f"Another instance owns {path_obj}") from exc
+            if os.name == "nt" or exc.errno not in {
+                errno.EPERM, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP,
+            }:
+                raise RuntimeError(f"Another instance owns {path_obj}") from exc
+            # NTFS mounts can reject Linux flock(). Use a stable Linux-local lock
+            # keyed by the shared path so the manager remains safe on dual-boot data.
+            lock_root = Path(tempfile.gettempdir()) / "maia-locks"
+            lock_root.mkdir(parents=True, exist_ok=True)
+            fallback_path = lock_root / (hashlib.sha256(str(path_obj.resolve()).encode()).hexdigest() + ".lock")
+            fallback_stream = open(fallback_path, "a+b")
+            lock_stream = fallback_stream
+            try:
+                fcntl.flock(lock_stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as fallback_exc:
+                fallback_stream.close()
+                raise RuntimeError(f"Another instance owns {path_obj}") from fallback_exc
         try:
             yield
         finally:
-            stream.seek(0)
+            lock_stream.seek(0)
             if os.name == "nt":
                 import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(lock_stream.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
-                fcntl.flock(stream, fcntl.LOCK_UN)
+                fcntl.flock(lock_stream, fcntl.LOCK_UN)
+            if fallback_stream is not None:
+                fallback_stream.close()
 
 
 def download(url: str, destination: Union[str, Path], expected_sha256: Optional[str] = None) -> None:

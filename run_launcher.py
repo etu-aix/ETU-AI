@@ -19,7 +19,7 @@ import webbrowser
 
 ROOT_DIR = Path(__file__).resolve().parent
 SERVER_URL = "http://127.0.0.1:8900"
-BRIDGE_URL = "http://127.0.0.1:11346"
+BRIDGE_URL = "http://127.0.0.1:8901"
 LAUNCH_MODES = ("normal", "local", "server")
 
 
@@ -112,8 +112,9 @@ def start_server(mode: str = "normal") -> subprocess.Popen:
     env["PYTHONPATH"] = str(ROOT_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
     # One process serves both the UI and ETU 2 bridge, sharing pairing state.
+    project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     cmd = [
-        sys.executable,
+        str(project_python) if project_python.is_file() else sys.executable,
         str(ROOT_DIR / "serve.py"),
     ]
 

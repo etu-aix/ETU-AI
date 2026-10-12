@@ -79,7 +79,7 @@
     dialog.addEventListener('keydown', event => {
       if (event.key === 'Escape') { event.preventDefault(); close(dialog); }
       if (event.key === 'Tab') {
-        const buttons = [...dialog.querySelectorAll('button:not(:disabled)')];
+        const buttons = [...dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, a[href]')].filter(element => element.getClientRects().length && !element.closest('[inert]'));
         const first = buttons[0], last = buttons[buttons.length - 1];
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
@@ -126,7 +126,8 @@
       const data = await response.json();
       const newPending = data.pending.some(entry => !pendingIds.has(entry.pair_id));
       pendingIds = new Set(data.pending.map(entry => entry.pair_id));
-      if (newPending) open(connection);
+      document.getElementById('etu-local-connection').hidden = !data.pending.length && !data.grants.length;
+      if (newPending) { document.getElementById('etu-local-connection').open = true; open(connection); }
       status.textContent = data.pending.length ? 'Une demande attend votre autorisation.' : data.grants.length ? 'ETU 2 est autorisé à se connecter.' : 'Aucune connexion autorisée. En attente d’une demande depuis ETU 2.';
       const fingerprint = JSON.stringify(data);
       if (!force && previous === fingerprint) return;
@@ -145,7 +146,7 @@
           actions.className = 'etu-connection-actions';
           const path = '/api/etu/pairings/' + encodeURIComponent(entry.pair_id);
           if (pending) actions.append(button('Autoriser', () => action(path, 'POST', {approve: true}, card)), button('Refuser', () => action(path, 'POST', {approve: false}, card)));
-          else actions.append(button('Révoquer', () => action(path, 'DELETE', null, card)));
+          else actions.append(button('Retirer cette autorisation', () => action(path, 'DELETE', null, card)));
           card.append(actions);
           content.append(card);
         }

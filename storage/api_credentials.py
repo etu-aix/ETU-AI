@@ -202,6 +202,10 @@ def set_api_key(value: str, provider: str = "openai-compatible") -> None:
                     )
                 secrets[provider] = value
                 _save_windows_secrets(secrets)
+                # A fallback can remain from an earlier save made while the
+                # DPAPI vault was unavailable. Since reads prefer that entry,
+                # remove it after the new DPAPI value has been committed.
+                _delete_windows_fallback(provider)
             _LOGGER.info("Saved API credential for provider=%s with DPAPI (credential value redacted)", provider)
         except Exception as dpapi_error:
             try:

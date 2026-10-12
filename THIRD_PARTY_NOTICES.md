@@ -2,7 +2,7 @@
 
 Le rendu Markdown utilise [Marked](https://marked.js.org/) 18.0.14, distribué sous licence MIT. La coloration syntaxique utilise [highlight.js](https://highlightjs.org/) 11.12.0, distribué sous licence BSD à trois clauses. Les versions navigateur sont incluses dans `ui/vendor` et servies localement, avec leurs licences originales : [`marked.LICENSE`](ui/vendor/marked.LICENSE) et [`highlight.LICENSE`](ui/vendor/highlight.LICENSE).
 
-L'interface `ui-beta` fournie avec le projet, créée par Phil Holden (2026), a servi de référence pour l'identité visuelle, les marqueurs de mise à jour partielle et l'interface de chat. Le travail d'interface d'ETU-AI reprend ces idées dans une implémentation locale avec rendu contrôlé.
+L'ancien prototype `ui-beta`, créé par Phil Holden (2026), a servi de référence pour l'identité visuelle, les marqueurs de mise à jour partielle et l'interface de chat. Il ne fait pas partie de l'application active. Le travail d'interface d'ETU-AI reprend ces idées dans une implémentation locale avec rendu contrôlé.
 
 Copyright (c) 2026 Phil Holden
 

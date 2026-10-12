@@ -33,6 +33,13 @@ class PendingSSE(httpx.AsyncByteStream):
 
 
 class TestGenerationStop(unittest.IsolatedAsyncioTestCase):
+    def pending_transport(self, upstream):
+        def respond(request):
+            if request.method == "GET" and request.url.path == "/api/status":
+                return httpx.Response(200, json={"status": "stopped", "active_model": None})
+            return httpx.Response(200, stream=upstream)
+        return httpx.MockTransport(respond)
+
     async def check_stop(self, partial):
         with tempfile.TemporaryDirectory() as directory:
             storage = StorageManager(Path(directory) / "chat.db")
@@ -41,7 +48,7 @@ class TestGenerationStop(unittest.IsolatedAsyncioTestCase):
             upstream = PendingSSE(partial)
             request_id = str(uuid4())
             client_type = httpx.AsyncClient
-            transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=upstream))
+            transport = self.pending_transport(upstream)
 
             async def consume():
                 async for _ in handler.stream_chat(conversation, "Explique", request_id=request_id):
@@ -102,7 +109,7 @@ class TestGenerationStop(unittest.IsolatedAsyncioTestCase):
             handler = ChatStreamHandler(storage=storage)
             upstream = PendingSSE("Bonjour")
             client_type = httpx.AsyncClient
-            transport = httpx.MockTransport(lambda request: httpx.Response(200, stream=upstream))
+            transport = self.pending_transport(upstream)
             with patch.object(api_server, "storage", storage), patch.object(api_server, "stream_handler", handler), patch("chat.sse_handler.httpx.AsyncClient", side_effect=lambda **kwargs: client_type(transport=transport, **kwargs)):
                 response = await api_server.chat_stream_endpoint(api_server.ChatRequest(conversation_id=conversation, message="Bonjour"))
                 await anext(response.body_iterator)

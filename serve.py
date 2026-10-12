@@ -8,7 +8,7 @@ import uvicorn
 def main() -> None:
     listeners = []
     try:
-        for port in (8900, 11346):
+        for port in (8900, 8901):
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             listeners.append(listener)
             listener.bind(("127.0.0.1", port))

@@ -10,7 +10,7 @@ AI_SERVER = ROOT / "ai-server"
 sys.path.insert(0, str(AI_SERVER))
 
 import configs
-from run_launcher import configure_launch_environment
+from run_launcher import configure_launch_environment, start_server
 
 
 class LaunchModeTests(unittest.TestCase):
@@ -38,6 +38,18 @@ class LaunchModeTests(unittest.TestCase):
     def test_invalid_mode_fails_closed(self):
         with patch.dict(os.environ, {"ETU_LAUNCH_MODE": "public"}), self.assertRaises(ValueError):
             configs.load_config()
+
+    def test_server_uses_project_environment_when_available(self):
+        expected = ROOT / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        with patch('run_launcher.Path.is_file',return_value=True), patch('run_launcher.subprocess.Popen') as launch:
+            start_server('local')
+        self.assertEqual(launch.call_args.args[0][0],str(expected))
+        self.assertEqual(launch.call_args.kwargs['env']['ETU_LAUNCH_MODE'],'local')
+
+    def test_server_retains_current_interpreter_without_project_environment(self):
+        with patch('run_launcher.Path.is_file',return_value=False), patch('run_launcher.subprocess.Popen') as launch:
+            start_server('normal')
+        self.assertEqual(launch.call_args.args[0][0],sys.executable)
 
 
 if __name__ == "__main__":

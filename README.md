@@ -1,6 +1,6 @@
 # ETU-AI
 
-Assistant local pour les étudiants du BUT Informatique. L'interface et le bridge restent sur `127.0.0.1:8900` et `127.0.0.1:11346`. MAIA-Beacon écoute par défaut sur `127.0.0.1:11343`.
+Assistant local pour les étudiants du BUT Informatique. L'interface et le bridge restent sur `127.0.0.1:8900` et `127.0.0.1:8901`. MAIA-Beacon écoute par défaut sur `127.0.0.1:11343`.
 
 ## Démarrer en développement (Windows)
 
@@ -47,4 +47,4 @@ Les commandes d'arrêt et le panneau mmproj peuvent être vérifiés dans `http:
 
 Les étapes et critères restants sont dans [ROADMAP.md](ROADMAP.md).
 
-Le prototype `ui-beta` de Phil Holden a inspiré l'interface et le mécanisme de mise à jour. Voir [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) pour l'attribution et la licence MIT.
+L'interface active est dans `ui/`, servie par ETU-AI sur le port 8900. L'ancien prototype `ui-beta` de Phil Holden a inspiré l'interface et le mécanisme de mise à jour, mais ne fait pas partie de l'application. Voir [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) pour l'attribution et la licence MIT.

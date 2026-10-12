@@ -18,6 +18,7 @@ let currentContextLimit = null;
 let currentModelReady = null;
 let currentModelState = "unknown";
 let localModelHasResponded = false;
+let currentHardwareSnapshot = null;
 const streamMarkup = new WeakMap();
 const streamFrames = new WeakMap();
 const appliedStreamTemplates = new WeakMap();
@@ -97,6 +98,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const sidebar = document.getElementById("sidebar");
   const sidebarToggle = document.getElementById("btn-open-sidebar");
+  const sidebarCollapseToggle = document.getElementById("btn-collapse-sidebar");
+  const desktopSidebarMedia = window.matchMedia("(min-width: 701px)");
+  const sidebarCollapsedStorageKey = "etu-sidebar-collapsed";
+  const syncSidebarCollapseButton = () => {
+    const collapsed = sidebar.classList.contains("is-collapsed");
+    sidebarCollapseToggle.setAttribute("aria-expanded", String(!collapsed));
+    sidebarCollapseToggle.setAttribute("aria-label", collapsed ? "Déployer la barre latérale" : "Rétracter la barre latérale");
+    sidebarCollapseToggle.title = collapsed ? "Déployer la barre latérale" : "Rétracter la barre latérale";
+  };
+  if (desktopSidebarMedia.matches && localStorage.getItem(sidebarCollapsedStorageKey) === "true") {
+    sidebar.classList.add("is-collapsed");
+  }
+  syncSidebarCollapseButton();
+  sidebarCollapseToggle.addEventListener("click", () => {
+    if (!desktopSidebarMedia.matches) return;
+    const collapsed = sidebar.classList.toggle("is-collapsed");
+    localStorage.setItem(sidebarCollapsedStorageKey, String(collapsed));
+    syncSidebarCollapseButton();
+  });
+  desktopSidebarMedia.addEventListener("change", (event) => {
+    if (!event.matches) sidebar.classList.remove("is-collapsed");
+    else if (localStorage.getItem(sidebarCollapsedStorageKey) === "true") sidebar.classList.add("is-collapsed");
+    syncSidebarCollapseButton();
+  });
   const closeSidebar = () => {
     sidebar.classList.remove("is-open");
     sidebarToggle.setAttribute("aria-expanded", "false");
@@ -152,9 +177,16 @@ async function initApiSettings() {
   const modelsContainer = document.getElementById("api-provider-models");
   const modelSearch = document.getElementById("api-provider-model-search");
   const modelHint = document.getElementById("api-model-hint");
+  const clearKeyInput = document.getElementById("api-provider-clear-key");
+  const clearKeyButton = document.getElementById("api-provider-clear-key-button");
   let savedModelSelection = "";
   let presets = {};
   let currentConfig = {};
+  const settingsMessage = document.getElementById("api-settings-message");
+  const setSettingsMessage = (text, state = "info") => {
+    settingsMessage.textContent = text;
+    settingsMessage.dataset.state = state;
+  };
   const providerLabels = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral", openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek", xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity", nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models", "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé" };
   const providerMarks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
   const providerSvg = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models"]);
@@ -193,22 +225,51 @@ async function initApiSettings() {
     const status = document.getElementById("api-key-status");
     status.textContent = hasKey ? "Clé enregistrée" : "Aucune clé";
     status.dataset.hasKey = String(Boolean(hasKey));
+    if (clearKeyButton) clearKeyButton.hidden = !hasKey;
+  };
+  const setClearKeyState = (value) => {
+    if (clearKeyInput) clearKeyInput.checked = Boolean(value);
+    if (clearKeyButton) {
+      clearKeyButton.textContent = value ? "Clé à supprimer" : "Supprimer la clé enregistrée";
+      clearKeyButton.setAttribute("aria-pressed", String(Boolean(value)));
+    }
+  };
+  const renderModelEmptyState = (title, detail = "", state = "") => {
+    const empty = document.createElement("div");
+    empty.className = `api-model-empty-state ${state}`.trim();
+    const icon = state === "is-loading"
+      ? '<span class="api-model-loading-spinner" aria-hidden="true"></span>'
+      : (window.ETUSVG?.icon("cloudOff", "api-model-empty-icon") || "");
+    empty.innerHTML = `${icon}<strong>${escapeHtml(title)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}`;
+    return empty;
   };
   let loadSequence = 0;
+  let activeModelRequest = null;
   const loadProviderModels = async ({ hasSavedKey = false, selected = [] } = {}) => {
+    activeModelRequest?.abort();
     const sequence = ++loadSequence;
+    const controller = new AbortController();
+    activeModelRequest = controller;
+    const refreshButton = document.getElementById("api-provider-models-refresh");
+    if (refreshButton) {
+      refreshButton.disabled = true;
+      refreshButton.classList.add("is-loading");
+      refreshButton.setAttribute("aria-busy", "true");
+    }
     modelHint.textContent = "Chargement des modèles depuis le fournisseur…";
-    modelsContainer.replaceChildren(Object.assign(document.createElement("p"), { className: "api-model-empty", textContent: "Chargement des modèles…" }));
+    modelsContainer.replaceChildren(renderModelEmptyState("Recherche des modèles…", "La requête peut prendre quelques secondes.", "is-loading"));
     try {
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
       const response = await fetch("/api/settings/provider/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           provider: providerSelect.value,
           base_url: document.getElementById("api-provider-url").value,
           api_key: document.getElementById("api-provider-key").value,
         }),
-      });
+      }).finally(() => clearTimeout(timeoutId));
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Impossible de charger les modèles.");
       if (sequence !== loadSequence) return;
@@ -219,17 +280,43 @@ async function initApiSettings() {
         const label = document.createElement("label"); label.className = "api-provider-model-option";
         const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.name = "api-provider-model-choice"; checkbox.value = id;
         checkbox.checked = selected.includes(id) || (!selected.length && id === savedModelSelection);
+        label.classList.toggle("is-selected", checkbox.checked);
         const mark = document.createElement("span"); mark.className = "api-model-provider-mark"; setProviderMark(mark, providerSelect.value);
         const text = document.createElement("span"); text.className = "api-provider-model-name"; text.textContent = id;
+        checkbox.addEventListener("change", () => label.classList.toggle("is-selected", checkbox.checked));
         label.append(mark, text, checkbox); modelsContainer.append(label);
       });
       modelHint.textContent = `${result.models.length} modèles reçus. Cochez ceux à afficher dans le sélecteur du chat.`;
     } catch (error) {
       if (sequence !== loadSequence) return;
-      const empty = document.createElement("p"); empty.className = "api-model-empty"; empty.textContent = error.message || (hasSavedKey ? "Échec du chargement des modèles." : "Saisissez une clé API pour charger les modèles.");
-      modelsContainer.replaceChildren(empty);
+      const statusMessage = error.message || "Impossible de charger les modèles.";
+      const isTimeout = error.name === "AbortError";
+      const hasAvailableKey = hasSavedKey || Boolean(document.getElementById("api-provider-key").value.trim());
+      if (providerSelect.value === "mistral" && savedModelSelection === "mistral-medium") {
+        const replacementId = "mistral-medium-3-5";
+        const label = document.createElement("label"); label.className = "api-provider-model-option is-selected";
+        const mark = document.createElement("span"); mark.className = "api-model-provider-mark"; setProviderMark(mark, "mistral");
+        const name = document.createElement("span"); name.className = "api-provider-model-name"; name.textContent = `${replacementId} · remplacement conseillé`;
+        const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.name = "api-provider-model-choice"; checkbox.value = replacementId; checkbox.checked = true;
+        checkbox.addEventListener("change", () => label.classList.toggle("is-selected", checkbox.checked));
+        label.append(mark, name, checkbox);
+        modelsContainer.replaceChildren(label);
+        modelSearch.hidden = true;
+        modelHint.textContent = `La liste Mistral n’a pas répondu. ${replacementId} remplace le modèle retiré mistral-medium ; enregistrez pour l’activer.`;
+        return;
+      }
+      const conciseMessage = isTimeout ? "La réponse met trop de temps" : (/clé API|key|401|403/i.test(statusMessage) ? "Vérifiez la clé API" : (/404|statut/i.test(statusMessage) ? "Aucun modèle disponible" : (hasAvailableKey ? "Modèles indisponibles" : "Saisissez une clé API")));
+      const detail = isTimeout ? "Délai dépassé après 25 secondes. Vérifiez la connexion et réessayez." : statusMessage;
+      modelsContainer.replaceChildren(renderModelEmptyState(conciseMessage, detail));
       modelSearch.hidden = true;
-      modelHint.textContent = "La liste sera rechargée automatiquement après la saisie de la clé API.";
+      modelHint.textContent = hasAvailableKey ? "Utilisez ↻ pour réessayer." : "Saisissez une clé API, puis utilisez ↻ pour charger les modèles.";
+    } finally {
+      if (activeModelRequest === controller) activeModelRequest = null;
+      if (sequence === loadSequence && refreshButton) {
+        refreshButton.disabled = false;
+        refreshButton.classList.remove("is-loading");
+        refreshButton.removeAttribute("aria-busy");
+      }
     }
   };
   modelSearch.addEventListener("input", () => {
@@ -246,6 +333,9 @@ async function initApiSettings() {
       : `${total} modèles reçus. Cochez ceux à afficher dans le sélecteur du chat.`;
   });
   const checkedModels = () => [...modelsContainer.querySelectorAll('input[name="api-provider-model-choice"]:checked')].map((input) => input.value);
+  document.getElementById("api-provider-models-refresh")?.addEventListener("click", () => {
+    loadProviderModels({ hasSavedKey: currentConfig.has_api_key, selected: checkedModels() });
+  });
   const renderProviderBrand = (id, config = {}) => {
     const provider = presets[id] || {};
     const labels = {
@@ -283,7 +373,7 @@ async function initApiSettings() {
   providerSelect.addEventListener("change", async () => {
     applyProviderPreset(providerSelect.value);
     document.getElementById("api-provider-key").value = "";
-    document.getElementById("api-provider-clear-key").checked = false;
+    setClearKeyState(false);
     try {
       const response = await fetch(`/api/settings/provider?provider=${encodeURIComponent(providerSelect.value)}`);
       if (!response.ok) throw new Error("Impossible de charger les réglages de ce fournisseur.");
@@ -296,21 +386,54 @@ async function initApiSettings() {
       modelsContainer.replaceChildren();
       modelSearch.hidden = true;
       modelSearch.value = "";
-      document.getElementById("api-provider-enabled").checked = Boolean(config.enabled);
       setKeyStatus(config.has_api_key);
       await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
     } catch (error) {
-      document.getElementById("api-settings-message").textContent = error.message;
+      setSettingsMessage(error.message, "error");
     }
   });
   document.getElementById("api-provider-add")?.addEventListener("click", () => {
     providerSelect.value = "custom";
     providerSelect.dispatchEvent(new Event("change"));
   });
+  clearKeyButton?.addEventListener("click", async () => {
+    const provider = providerSelect.value;
+    if (!currentConfig.has_api_key || !window.confirm(`Supprimer immédiatement la clé API enregistrée pour ${providerLabels[provider] || provider} ?`)) return;
+    clearKeyButton.disabled = true;
+    setSettingsMessage("Suppression de la clé…", "info");
+    try {
+      const response = await fetch("/api/settings/provider", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          enabled: false,
+          base_url: document.getElementById("api-provider-url").value || currentConfig.base_url || presets[provider]?.base_url,
+          model: checkedModels()[0] || savedModelSelection || currentConfig.model || presets[provider]?.model,
+          api_key: "",
+          clear_api_key: true,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Impossible de supprimer la clé enregistrée.");
+      currentConfig = result;
+      document.getElementById("api-provider-key").value = "";
+      setClearKeyState(false);
+      setKeyStatus(false);
+      renderProviderBrand(provider, result);
+      renderProviderList(provider);
+      updatePrivacyHint(result);
+      setSettingsMessage("Clé API supprimée du coffre-fort.", "success");
+      loadServerStatus();
+    } catch (error) {
+      setSettingsMessage(error.message || "Impossible de supprimer la clé enregistrée.", "error");
+    } finally {
+      clearKeyButton.disabled = false;
+    }
+  });
   fetch("/api/settings/provider").then((response) => response.ok ? response.json() : null).then(updatePrivacyHint).catch(() => {});
   open.addEventListener("click", async () => {
-    const message = document.getElementById("api-settings-message");
-    message.textContent = "";
+    setSettingsMessage("");
     try {
       const response = await fetch("/api/settings/provider");
       if (!response.ok) throw new Error("Impossible de charger la configuration.");
@@ -322,36 +445,30 @@ async function initApiSettings() {
       savedModelSelection = config.model || presets[providerSelect.value]?.model || "";
       renderProviderBrand(providerSelect.value, config);
       applyProviderPreset(providerSelect.value, true);
-      document.getElementById("api-provider-enabled").checked = Boolean(config.enabled);
       document.getElementById("api-provider-url").value = config.base_url || presets[providerSelect.value]?.base_url || "https://api.openai.com/v1";
       modelsContainer.replaceChildren();
       modelSearch.hidden = true;
       modelSearch.value = "";
       document.getElementById("api-provider-key").value = "";
-      document.getElementById("api-provider-clear-key").checked = false;
+      setClearKeyState(false);
       setKeyStatus(config.has_api_key);
       renderProviderList(providerSelect.value);
       openModal("modal-api-settings");
       await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
-    } catch (error) { message.textContent = error.message; }
+    } catch (error) { setSettingsMessage(error.message, "error"); }
   });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const message = document.getElementById("api-settings-message");
-    message.textContent = "Enregistrement…";
+    setSettingsMessage("Enregistrement…", "info");
     const payload = {
-      enabled: document.getElementById("api-provider-enabled").checked,
+      enabled: true,
       base_url: document.getElementById("api-provider-url").value,
       model: checkedModels()[0] || savedModelSelection,
       models: checkedModels(),
       api_key: document.getElementById("api-provider-key").value,
-      clear_api_key: document.getElementById("api-provider-clear-key").checked,
+      clear_api_key: Boolean(clearKeyInput?.checked),
       provider: providerSelect.value,
     };
-    if (!payload.models.length) {
-      message.textContent = "Cochez au moins un modèle à afficher dans le sélecteur du chat.";
-      return;
-    }
     try {
       const response = await fetch("/api/settings/provider", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
@@ -365,15 +482,15 @@ async function initApiSettings() {
       setKeyStatus(result.has_api_key);
       renderProviderBrand(providerSelect.value, result);
       updatePrivacyHint(result);
-      message.textContent = result.enabled ? "Fournisseur activé et configuration enregistrée." : "Configuration enregistrée.";
+      setSettingsMessage("Fournisseur activé et configuration enregistrée.", "success");
       loadServerStatus();
-    } catch (error) { message.textContent = error.message; }
+    } catch (error) { setSettingsMessage(error.message, "error"); }
   });
-  let keyLoadTimer;
   document.getElementById("api-provider-key").addEventListener("input", () => {
-    clearTimeout(keyLoadTimer);
-    if (!document.getElementById("api-provider-key").value.trim()) return;
-    keyLoadTimer = setTimeout(() => loadProviderModels({ selected: checkedModels() }), 700);
+    const hasTypedKey = Boolean(document.getElementById("api-provider-key").value.trim());
+    modelHint.textContent = hasTypedKey
+      ? "Clé saisie. Utilisez ↻ pour charger les modèles."
+      : "Utilisez ↻ pour recharger les modèles du fournisseur.";
   });
 }
 
@@ -1472,7 +1589,6 @@ function showToast(message, type = "info", duration = 3500) {
 /* -------------------------------------------------------------------------- */
 function initModelSelector() {
   const btnHeaderSelector = document.getElementById("btn-model-selector");
-  const btnQuickSelector = document.getElementById("btn-quick-model-select");
   const menu = document.getElementById("model-dropdown-menu");
   const btnOpenCatalog = document.getElementById("btn-dropdown-open-models");
 
@@ -1482,10 +1598,17 @@ function initModelSelector() {
     const isOpen = menu.classList.contains("active");
     if (isOpen) {
       menu.classList.remove("active");
-      if (btnHeaderSelector) btnHeaderSelector.classList.remove("open");
+      hideModelStatsPopover();
+      if (btnHeaderSelector) {
+        btnHeaderSelector.classList.remove("open");
+        btnHeaderSelector.setAttribute("aria-expanded", "false");
+      }
     } else {
       menu.classList.add("active");
-      if (btnHeaderSelector) btnHeaderSelector.classList.add("open");
+      if (btnHeaderSelector) {
+        btnHeaderSelector.classList.add("open");
+        btnHeaderSelector.setAttribute("aria-expanded", "true");
+      }
     }
   }
 
@@ -1493,21 +1616,15 @@ function initModelSelector() {
     btnHeaderSelector.addEventListener("click", toggleDropdown);
   }
 
-  if (btnQuickSelector) {
-    btnQuickSelector.addEventListener("click", (e) => {
-      // Toggle dropdown and scroll to top/focus if needed
-      toggleDropdown(e);
-      if (btnHeaderSelector) {
-        btnHeaderSelector.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }
-    });
-  }
-
   if (btnOpenCatalog) {
     btnOpenCatalog.addEventListener("click", (e) => {
       e.stopPropagation();
       if (menu) menu.classList.remove("active");
-      if (btnHeaderSelector) btnHeaderSelector.classList.remove("open");
+      hideModelStatsPopover();
+      if (btnHeaderSelector) {
+        btnHeaderSelector.classList.remove("open");
+        btnHeaderSelector.setAttribute("aria-expanded", "false");
+      }
       openModal("modal-models");
       loadModelCatalog();
     });
@@ -1516,9 +1633,13 @@ function initModelSelector() {
   // Fermer le dropdown lors d'un clic extérieur
   document.addEventListener("click", (e) => {
     const wrapper = document.getElementById("model-selector-wrapper");
-    if (wrapper && !wrapper.contains(e.target) && e.target !== btnQuickSelector && !btnQuickSelector?.contains(e.target)) {
+    if (wrapper && !wrapper.contains(e.target)) {
       if (menu) menu.classList.remove("active");
-      if (btnHeaderSelector) btnHeaderSelector.classList.remove("open");
+      hideModelStatsPopover();
+      if (btnHeaderSelector) {
+        btnHeaderSelector.classList.remove("open");
+        btnHeaderSelector.setAttribute("aria-expanded", "false");
+      }
     }
   });
 
@@ -1527,8 +1648,53 @@ function initModelSelector() {
     if (e.key === "Escape") {
       if (menu) menu.classList.remove("active");
       if (btnHeaderSelector) btnHeaderSelector.classList.remove("open");
+      if (btnHeaderSelector) btnHeaderSelector.setAttribute("aria-expanded", "false");
     }
   });
+  document.getElementById("model-dropdown-search")?.addEventListener("input", filterModelDropdownList);
+}
+
+let modelStatsPopover = null;
+let modelStatsHideTimer = null;
+
+function hideModelStatsPopover() {
+  clearTimeout(modelStatsHideTimer);
+  if (modelStatsPopover) modelStatsPopover.hidden = true;
+}
+
+function showModelStatsPopover(itemEl) {
+  clearTimeout(modelStatsHideTimer);
+  if (!modelStatsPopover) {
+    modelStatsPopover = document.createElement("aside");
+    modelStatsPopover.className = "model-stats-popover";
+    modelStatsPopover.setAttribute("role", "tooltip");
+    modelStatsPopover.addEventListener("mouseenter", () => clearTimeout(modelStatsHideTimer));
+    modelStatsPopover.addEventListener("mouseleave", hideModelStatsPopover);
+    document.body.appendChild(modelStatsPopover);
+  }
+  const metrics = itemEl._modelPerformance || { loading: true };
+  const value = (number, digits, unit = "s") => number == null ? "—" : `${(number / (unit === "s" ? 1000 : 1)).toFixed(digits)} ${unit}`;
+  const stats = metrics.loading ? null : [
+    ["Chargement", value(metrics.load, 1)],
+    ["TTFT", value(metrics.ttft, 2)],
+    ["Vitesse", value(metrics.speed, 1, "t/s")],
+  ];
+  modelStatsPopover.innerHTML = `<div class="model-stats-grid">${(stats || [["Chargement", "…"], ["TTFT", "…"], ["Vitesse", "…"]]).map(([label, result]) => `<div><span>${label}</span><strong>${result}</strong></div>`).join("")}</div>`;
+  modelStatsPopover.hidden = false;
+  const rect = itemEl.getBoundingClientRect();
+  const popoverWidth = Math.min(260, window.innerWidth - 24);
+  const gap = 10;
+  const placeRight = rect.right + gap + popoverWidth <= window.innerWidth - 12 || rect.left < popoverWidth + gap + 12;
+  const left = placeRight
+    ? Math.min(window.innerWidth - popoverWidth - 12, rect.right + gap)
+    : Math.max(12, rect.left - popoverWidth - gap);
+  modelStatsPopover.style.left = `${left}px`;
+  modelStatsPopover.style.top = `${Math.max(12, Math.min(rect.top + rect.height / 2 - modelStatsPopover.offsetHeight / 2, window.innerHeight - modelStatsPopover.offsetHeight - 12))}px`;
+}
+
+function scheduleHideModelStatsPopover() {
+  clearTimeout(modelStatsHideTimer);
+  modelStatsHideTimer = setTimeout(hideModelStatsPopover, 140);
 }
 
 function updateModelUI(activeModelName, installedModels, remoteModels = null) {
@@ -1542,9 +1708,7 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   const selectableModels = [...availableInstalledModels, ...remoteApiModels];
 
   const activeNameEl = document.getElementById("active-model-name");
-  const quickNameEl = document.getElementById("quick-model-name");
   const badgeIconEl = document.getElementById("model-badge-icon");
-  const quickIconEl = document.getElementById("quick-model-icon");
   const countBadgeEl = document.getElementById("model-count-badge");
   const listEl = document.getElementById("model-dropdown-list");
 
@@ -1565,11 +1729,8 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   }
 
   if (activeNameEl) activeNameEl.textContent = currentDisplay;
-  if (quickNameEl) quickNameEl.textContent = currentDisplay;
-
   const icon = "🧠";
   if (badgeIconEl) badgeIconEl.textContent = icon;
-  if (quickIconEl) quickIconEl.textContent = icon;
 
   if (countBadgeEl) {
     countBadgeEl.textContent = `${selectableModels.length} disponible${selectableModels.length > 1 ? "s" : ""}`;
@@ -1579,11 +1740,7 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   if (listEl) {
     listEl.innerHTML = "";
     if (selectableModels.length === 0) {
-      listEl.innerHTML = `
-        <div style="padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.82rem;">
-          Aucun modèle installé.<br>Cliquez sur "Gérer les modèles" ci-dessous.
-        </div>
-      `;
+      listEl.innerHTML = '<div class="model-dropdown-empty">Aucun modèle installé. Utilisez « Gérer les modèles » ci-dessous.</div>';
     } else {
       selectableModels.forEach((item) => {
         const itemStem = item.source === "api" ? item.id : (item.filename ? item.filename.replace(/\.gguf$/i, "") : item.id);
@@ -1592,20 +1749,27 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
           (currentActiveModel.toLowerCase() === itemStem.toLowerCase() ||
             (item.filename && item.filename.toLowerCase() === currentActiveModel.toLowerCase()));
 
-        const itemEl = document.createElement("div");
+        const itemEl = document.createElement("button");
+        itemEl.type = "button";
         itemEl.className = `model-dropdown-item ${isActive ? "active" : ""}`;
+        itemEl.setAttribute("role", "option");
+        itemEl.setAttribute("aria-selected", String(Boolean(isActive)));
+        itemEl.tabIndex = 0;
+        itemEl.dataset.modelName = item.name || itemStem;
+        itemEl.dataset.search = [item.name, itemStem, item.filename, item.id, item.model, item.provider_label, item.quant]
+          .filter(Boolean).join(" ").toLocaleLowerCase();
         
         let badgesHtml = "";
         if (item.source === "api") {
-          badgesHtml += `<span class="model-source-badge api">API · ${escapeHtml(item.provider_label)}</span>`;
+          badgesHtml += '<span class="model-source-badge api">API</span>';
         } else if (item.npu_compatible) {
           badgesHtml += `<span class="etu-badge etu-badge-cyan" style="font-size: 0.68rem; padding: 1px 5px;">⚡ Léger</span>`;
         } else if (item.compatibility?.has_gpu_acceleration) {
           badgesHtml += `<span class="etu-badge etu-badge-success" style="font-size: 0.68rem; padding: 1px 5px;">GPU possible</span>`;
         }
 
-        const sizeLabel = item.local_size_gib ? `${item.local_size_gib} Go` : (item.size_gib ? `${item.size_gib} Go` : "");
-        const metaLabel = item.source === "api" ? `Modèle distant · ${item.model}` : `${sizeLabel ? sizeLabel + " • " : ""}${item.quant || "GGUF"}`;
+        const metaLabel = getModelParameterCount(item) || "";
+        itemEl.setAttribute("aria-label", `${item.name || itemStem}${metaLabel ? ` · ${metaLabel}` : ""}. Clic droit pour ouvrir la fiche du modèle.`);
 
         itemEl.innerHTML = `
           <div class="model-dropdown-item-left">
@@ -1621,18 +1785,200 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
         `;
 
         itemEl.addEventListener("click", () => {
+          hideModelStatsPopover();
           const menu = document.getElementById("model-dropdown-menu");
           const btnHeaderSelector = document.getElementById("btn-model-selector");
           if (menu) menu.classList.remove("active");
-          if (btnHeaderSelector) btnHeaderSelector.classList.remove("open");
+          if (btnHeaderSelector) {
+            btnHeaderSelector.classList.remove("open");
+            btnHeaderSelector.setAttribute("aria-expanded", "false");
+          }
           const displayName = item.source === "api" ? `${item.name} · ${item.provider_label}` : (item.name || itemStem);
           switchActiveModel(item.source === "api" ? item.model : (item.filename || itemStem), displayName, item.source || "local", item.provider);
         });
+        itemEl.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          document.getElementById("model-dropdown-menu")?.classList.remove("active");
+          const selector = document.getElementById("btn-model-selector");
+          selector?.classList.remove("open");
+          selector?.setAttribute("aria-expanded", "false");
+          void openModelIdentity(item, itemStem);
+        });
 
         listEl.appendChild(itemEl);
+        itemEl._modelPerformance = { loading: true };
+        itemEl.addEventListener("mouseenter", () => showModelStatsPopover(itemEl));
+        itemEl.addEventListener("mouseleave", scheduleHideModelStatsPopover);
+        itemEl.addEventListener("focus", () => showModelStatsPopover(itemEl));
+        itemEl.addEventListener("blur", scheduleHideModelStatsPopover);
+        const query = new URLSearchParams({ model_id: String(item.id || itemStem), model_name: String(item.name || itemStem), limit: "100" });
+        fetch(`/api/models/performance?${query}`).then((response) => response.ok ? response.json() : null).then((data) => {
+          if (!data) { itemEl._modelPerformance = { loading: false, load: null, ttft: null }; return; }
+          const measurements = Array.isArray(data.measurements) ? data.measurements : [];
+          const median = (values) => {
+            const sorted = values.map(Number).filter((value) => Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
+            if (!sorted.length) return null;
+            const middle = Math.floor(sorted.length / 2);
+            return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+          };
+          const load = median(measurements.filter((entry) => entry.load_ms != null).map((entry) => entry.load_ms));
+          const ttft = median(measurements.filter((entry) => entry.ttft_ms != null).map((entry) => entry.ttft_ms));
+          const rates = measurements.map((entry) => Number(entry.tokens_per_second)).filter((rate) => Number.isFinite(rate) && rate > 0);
+          const speed = rates.length ? rates.reduce((sum, rate) => sum + rate, 0) / rates.length : null;
+          itemEl._modelPerformance = { loading: false, load, ttft, speed };
+          if (modelStatsPopover && !modelStatsPopover.hidden && itemEl.matches(":hover, :focus")) showModelStatsPopover(itemEl);
+        }).catch(() => { itemEl._modelPerformance = { loading: false, load: null, ttft: null }; });
       });
     }
+    filterModelDropdownList();
   }
+}
+
+function getModelParameterCount(item) {
+  const candidates = [item?.name, item?.model, item?.filename, item?.id].filter(Boolean);
+  for (const candidate of candidates) {
+    const match = String(candidate).match(/\b(\d+(?:[.,]\d+)?\s?B)\b/i);
+    if (match) return match[1].replace(/\s+/g, "");
+  }
+  return "";
+}
+
+function renderModelHardware(snapshot, compatibility, isRemote = false) {
+  const hardware = snapshot || {};
+  const hasGpu = Array.isArray(hardware.gpus) && hardware.gpus.length > 0;
+  const hasNpu = Array.isArray(hardware.npus) && hardware.npus.length > 0;
+  const rows = [
+    ["cpu", "Processeur", hardware.cpu ? "Détecté" : "Non détecté", isRemote ? "Non utilisé (API)" : "Pris en charge"],
+    ["gpu", "Carte graphique", hasGpu ? "Détectée" : "Non détectée", isRemote ? "Non utilisé (API)" : (compatibility?.has_gpu_acceleration ? "Pris en charge" : (hasGpu ? "Non pris en charge ici" : ""))],
+    ["npu", "Puce IA", hasNpu ? "Détectée" : "Non détectée", isRemote ? "Non utilisé (API)" : (compatibility?.has_npu_acceleration ? "Pris en charge" : (hasNpu ? "Non pris en charge ici" : ""))],
+  ];
+  return rows.map(([icon, label, value, support]) => `
+    <div class="model-hardware-item">
+      <span class="model-hardware-icon">${window.ETUSVG?.icon(icon, "") || ""}</span>
+      <span><small>${label}</small><strong>${escapeHtml(value || "Non détecté")}</strong>${support ? `<em>${escapeHtml(support)}</em>` : ""}</span>
+    </div>
+  `).join("");
+}
+
+async function openModelIdentity(item, itemStem) {
+  const dialog = document.getElementById("modal-model-identity");
+  const title = document.getElementById("model-identity-title");
+  const summary = document.getElementById("model-identity-summary");
+  const hardware = document.getElementById("model-identity-hardware");
+  const performance = document.getElementById("model-identity-performance");
+  const fit = document.getElementById("model-identity-fit");
+  const uninstall = document.getElementById("btn-model-identity-uninstall");
+  const hardwareSection = document.getElementById("model-identity-hardware-section");
+  const displayName = item.name || itemStem;
+  if (!dialog || !title || !summary || !hardware || !performance || !fit || !uninstall) return;
+
+  title.textContent = displayName;
+  const description = String(item.description || "").split(/(?<=[.!?])\s/)[0].slice(0, 180);
+  const isRemote = item.source === "api";
+  const source = isRemote ? "API" : "Modèle local";
+  if (hardwareSection) hardwareSection.hidden = isRemote;
+  summary.innerHTML = `
+    ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+    <div class="model-identity-tags">
+      <span>${source}</span>
+    </div>
+  `;
+  let compatibility = item.compatibility || null;
+  if (!isRemote && !compatibility) {
+    try {
+      const catalogResponse = await fetch("/api/models/catalog");
+      if (catalogResponse.ok) {
+        const catalogData = await catalogResponse.json();
+        const catalogItem = (catalogData.catalog || []).find((candidate) => candidate.filename === item.filename || candidate.id === item.id);
+        compatibility = catalogItem?.compatibility || null;
+      }
+    } catch (error) {
+      // Keep the identity sheet usable when compatibility data is unavailable.
+    }
+  }
+  fit.textContent = isRemote
+    ? "Ce modèle fonctionne en ligne ; le matériel de cet ordinateur n’est pas utilisé."
+    : compatibility?.status_tier === "incompatible" || compatibility?.is_compatible === false
+      ? "Ce modèle risque d’être trop lourd pour cet ordinateur."
+      : compatibility?.status_tier === "tight" && Number(currentHardwareSnapshot?.ram_available_gib) > 0 && Number(compatibility.required_ram_gib) > Number(currentHardwareSnapshot.ram_available_gib)
+        ? "Libérez un peu de mémoire avant de lancer ce modèle."
+      : compatibility?.status_tier === "tight"
+        ? "Ce modèle devrait fonctionner, avec peu de marge."
+        : compatibility?.is_compatible
+          ? "Ce modèle est adapté à cet ordinateur."
+          : "Compatibilité avec cet ordinateur non évaluée.";
+  hardware.innerHTML = renderModelHardware(currentHardwareSnapshot, compatibility, isRemote);
+  const canUninstall = !isRemote && item.is_installed === true && Boolean(item.filename);
+  uninstall.hidden = !canUninstall;
+  uninstall.onclick = canUninstall ? async () => {
+    if (!window.confirm(`Désinstaller « ${displayName} » de cet ordinateur ?`)) return;
+    uninstall.disabled = true;
+    try {
+      const response = await fetch(`/api/models/${encodeURIComponent(item.filename)}`, { method: "DELETE" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || "La désinstallation a échoué.");
+      closeModal("modal-model-identity");
+      showToast("Modèle désinstallé.", "success");
+      await loadServerStatus();
+    } catch (error) {
+      showToast(error.message || "La désinstallation a échoué.", "warning");
+    } finally {
+      uninstall.disabled = false;
+    }
+  } : null;
+  performance.innerHTML = '<p class="model-identity-loading">Chargement des mesures locales…</p>';
+  openModal("modal-model-identity");
+
+  try {
+    const query = new URLSearchParams({ model_id: String(item.id || itemStem), model_name: String(displayName), limit: "100" });
+    const response = await fetch(`/api/models/performance?${query}`);
+    if (!response.ok) throw new Error("Lecture des mesures impossible");
+    const data = await response.json();
+    const measurements = Array.isArray(data.measurements) ? data.measurements : [];
+    const median = (values) => {
+      const sorted = values.map(Number).filter((value) => Number.isFinite(value) && value >= 0).sort((a, b) => a - b);
+      if (!sorted.length) return null;
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+    };
+    const validRates = measurements.map((entry) => Number(entry.tokens_per_second)).filter((rate) => Number.isFinite(rate) && rate > 0);
+    const average = validRates.length ? validRates.reduce((sum, rate) => sum + rate, 0) / validRates.length : null;
+    const medianTtft = median(measurements.filter((entry) => entry.ttft_ms != null).map((entry) => entry.ttft_ms));
+    const medianLoad = median(measurements.filter((entry) => entry.load_ms != null).map((entry) => entry.load_ms));
+    const hasMetrics = medianTtft !== null || medianLoad !== null || average !== null;
+    const summaryStats = `<div class="model-performance-summary">
+      <div class="model-performance-stat"><span>Temps de chargement</span><strong>${medianLoad === null ? "—" : `${(medianLoad / 1000).toFixed(1)} s`}</strong><small>Médiane · ${measurements.filter((entry) => entry.load_ms != null).length} activations</small></div>
+      <div class="model-performance-stat"><span>TTFT · première réponse</span><strong>${medianTtft === null ? "—" : `${(medianTtft / 1000).toFixed(2)} s`}</strong><small>Médiane · ${measurements.filter((entry) => entry.ttft_ms != null).length} réponses</small></div>
+      <div class="model-performance-stat"><span>Vitesse de génération</span><strong>${average === null ? "—" : `${average.toFixed(1)} tokens/s`}</strong><small>Moyenne · ${validRates.length} réponses</small></div>
+    </div>`;
+    performance.innerHTML = hasMetrics
+      ? summaryStats
+      : `<p class="model-identity-empty">${window.ETUSVG?.icon("clock", "model-empty-clock") || ""}<span>Pas encore de mesure pour ce modèle.</span></p>`;
+  } catch (error) {
+    performance.innerHTML = '<p class="model-identity-empty">Aucune mesure disponible pour le moment.</p>';
+  }
+}
+
+function filterModelDropdownList() {
+  const list = document.getElementById("model-dropdown-list");
+  const search = document.getElementById("model-dropdown-search");
+  if (!list || !search) return;
+  const query = search.value.trim().toLocaleLowerCase();
+  const items = [...list.querySelectorAll(".model-dropdown-item")];
+  let visibleCount = 0;
+  items.forEach((item) => {
+    const matches = !query || item.dataset.search.includes(query);
+    item.hidden = !matches;
+    if (matches) visibleCount++;
+  });
+  let empty = list.querySelector(".model-dropdown-no-results");
+  if (!empty) {
+    empty = document.createElement("div");
+    empty.className = "model-dropdown-no-results";
+    empty.textContent = "Aucun modèle ne correspond à cette recherche.";
+    list.appendChild(empty);
+  }
+  empty.hidden = !query || visibleCount > 0 || items.length === 0;
 }
 
 async function switchActiveModel(modelFilename, displayName = null, source = "local", provider = null) {
@@ -1651,6 +1997,7 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
   }
 
   showToast(`🔄 Activation du modèle <strong>${escapeHtml(friendlyName)}</strong>...`, "info", 2500);
+  const loadStartedAt = performance.now();
 
   try {
     const resp = await fetch("/api/models/select", {
@@ -1663,6 +2010,14 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
 
     if (data.success) {
       currentActiveModel = data.active_model_id || data.active_model || cleanStem;
+      if (source === "local") {
+        const loadMs = Math.round(performance.now() - loadStartedAt);
+        fetch("/api/models/performance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model_id: currentActiveModel, model_name: friendlyName, source, total_ms: 0, load_ms: loadMs, measurement: "activation", hardware: currentHardwareSnapshot || {} }),
+        }).catch((error) => console.warn("Le temps de chargement du modèle n’a pas été enregistré.", error));
+      }
       if (source === "local") localModelHasResponded = false;
       updateModelUI(currentActiveModel, availableInstalledModels);
       loadServerStatus();
@@ -1694,6 +2049,14 @@ async function loadServerStatus() {
     const beaconDot = document.getElementById("beacon-dot");
     const modelIndicator = document.getElementById("model-status-indicator");
     currentContextLimit = Number(data.active_context) || null;
+    currentHardwareSnapshot = {
+      cpu: data.cpu_processor || (data.cpu_cores ? `${data.cpu_cores} cœurs` : ""),
+      gpus: (data.gpus || []).map((device) => device.name || device.type?.toUpperCase()).filter(Boolean),
+      npus: (data.npus || []).map((device) => device.name || device.type?.toUpperCase()).filter(Boolean),
+      backend: data.active_engine || data.backend || "",
+      ram_total_gib: data.ram_total_gib || null,
+      ram_available_gib: data.ram_available_gib || null,
+    };
     currentModelReady = Boolean(data.active_remote_model) || Boolean(data.model_ready);
     currentModelState = data.active_remote_model ? "running" : (data.model_state || "unknown");
     if (modelIndicator) {
@@ -2003,6 +2366,10 @@ function initChatForm() {
     try {
       const encodedAttachments = await Promise.all(submittedFiles.map(fileBase64));
       bubbleContent.dataset.generationStarted = String(performance.now());
+      bubbleContent.dataset.modelId = String(currentActiveModel || "");
+      bubbleContent.dataset.modelName = document.getElementById("active-model-name")?.textContent || currentActiveModel || "";
+      bubbleContent.dataset.modelSource = String(currentActiveModel || "").startsWith("api:") ? "api" : "local";
+      bubbleContent.dataset.hardwareProfile = JSON.stringify(currentHardwareSnapshot || {});
       const resp = await fetch("/api/chat/stream", {
         method: "POST",
         signal: controller.signal,
@@ -2067,6 +2434,9 @@ function initChatForm() {
         const dataMatch = buffer.match(/^data:\s*(.*)$/m);
         if (dataMatch) handleStreamEvent(JSON.parse(dataMatch[1]), bubbleContent);
       }
+      if (bubbleContent.dataset.generationCompleted !== "true" && bubbleContent.dataset.streamError !== "true" && !(streamMarkup.get(bubbleContent) || "").trim()) {
+        handleStreamEvent({ event: "error", message: "La connexion s’est interrompue avant la réponse du modèle. Réessayez." }, bubbleContent);
+      }
       finishStreamRender(bubbleContent);
       if (assistantBubble.classList.contains("streaming")) {
         assistantBubble.classList.remove("streaming");
@@ -2090,6 +2460,7 @@ function initChatForm() {
     } finally {
       bubbleContent.dataset.generationMs = String(Math.round(performance.now() - Number(bubbleContent.dataset.generationStarted)));
       updateAssistantTelemetry(bubbleContent, true);
+      recordModelPerformance(bubbleContent);
       if (activeChatStream?.controller === controller) {
         activeChatStream = null;
         form.dataset.busy = "false";
@@ -2197,6 +2568,7 @@ function handleStreamEvent(data, bubbleEl) {
     if (data.generation_tps !== null && data.generation_tps !== undefined && Number.isFinite(Number(data.generation_tps))) bubbleEl.dataset.generationTps = String(data.generation_tps);
     updateAssistantTelemetry(bubbleEl, true);
   } else if (data.event === "done") {
+    bubbleEl.dataset.generationCompleted = "true";
     finishStreamRender(bubbleEl);
     bubbleEl.closest(".message")?.classList.remove("streaming");
     setAssistantActivity(bubbleEl.closest(".message"), "done", "");
@@ -2516,6 +2888,56 @@ function updateAssistantTelemetry(bubble, completed = false) {
   progress.setAttribute("aria-label", `Contexte utilisé : ${ratio} %`);
 }
 
+function recordModelPerformance(bubble) {
+  if (!bubble || bubble.dataset.generationCompleted !== "true" || bubble.dataset.performanceRecordSent === "true") return;
+  const modelId = bubble.dataset.modelId;
+  const modelName = bubble.dataset.modelName;
+  if (!modelId || !modelName) return;
+  bubble.dataset.performanceRecordSent = "true";
+
+  const totalMs = Math.max(0, Number(bubble.dataset.generationMs) || 0);
+  const ttftValue = Number(bubble.dataset.firstTokenMs);
+  const ttftMs = Number.isFinite(ttftValue) && ttftValue > 0 ? Math.round(ttftValue) : null;
+  const exactOutputTokens = Number(bubble.dataset.completionTokens);
+  const hasExactOutputTokens = bubble.dataset.completionTokens !== undefined && Number.isFinite(exactOutputTokens);
+  const outputText = bubble.innerText || bubble.textContent || "";
+  const outputTokens = hasExactOutputTokens
+    ? Math.max(0, Math.round(exactOutputTokens))
+    : (outputText.trim() ? Math.max(1, Math.round(outputText.trim().length / 4)) : null);
+  const promptValue = Number(bubble.dataset.promptTokens);
+  const promptTokens = Number.isFinite(promptValue) && promptValue >= 0 ? Math.round(promptValue) : null;
+  const serverSpeed = Number(bubble.dataset.generationTps);
+  const hasServerSpeed = bubble.dataset.generationTps !== undefined && Number.isFinite(serverSpeed) && serverSpeed > 0;
+  const generationMs = Math.max(0, totalMs - (ttftMs || 0));
+  const speed = hasServerSpeed
+    ? serverSpeed
+    : (outputTokens && generationMs > 0 ? outputTokens / (generationMs / 1000) : null);
+
+  let hardware = currentHardwareSnapshot || {};
+  try {
+    hardware = JSON.parse(bubble.dataset.hardwareProfile || "{}") || hardware;
+  } catch (_) {}
+
+  fetch("/api/models/performance", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_id: modelId,
+      model_name: modelName,
+      source: bubble.dataset.modelSource || "local",
+      total_ms: Math.round(totalMs),
+      ttft_ms: ttftMs,
+      prompt_tokens: promptTokens,
+      output_tokens: outputTokens,
+      tokens_per_second: speed,
+      measurement: hasServerSpeed ? "server" : "estimated",
+      hardware,
+    }),
+  }).then((response) => {
+    if (!response.ok) console.warn("La mesure de performance du modèle n’a pas été enregistrée.");
+  }).catch((error) => console.warn("La mesure de performance du modèle n’a pas été enregistrée.", error));
+}
+
 function addAssistantActions(message, bubble) {
   const actions = document.createElement("div");
   actions.className = "assistant-message-actions";
@@ -2782,8 +3204,21 @@ function updateProfilePreview(avatar) {
 
 function setDisplayedProfile(profileId) {
   activeProfileId = assistantProfiles.some((profile) => profile.id === profileId) ? profileId : "default";
-  const select = document.getElementById("profile-select");
-  if (select) select.value = activeProfileId;
+  const activeProfile = getActiveProfile();
+  const trigger = document.getElementById("profile-select");
+  const avatar = document.getElementById("profile-select-avatar");
+  const name = document.getElementById("profile-select-name");
+  if (trigger && avatar && name) {
+    avatar.innerHTML = avatarMarkup(activeProfile.avatar);
+    name.textContent = activeProfile.name;
+    trigger.setAttribute("aria-label", "Profil actif : " + activeProfile.name + ". Choisir un profil");
+    trigger.title = "Profil actif : " + activeProfile.name;
+  }
+  document.querySelectorAll("#profile-options [role='option']").forEach((option) => {
+    const selected = option.dataset.profileId === activeProfileId;
+    option.setAttribute("aria-selected", String(selected));
+    option.classList.toggle("is-selected", selected);
+  });
   document.querySelectorAll("#chat-messages .assistant .ai-avatar").forEach((avatar) => {
     avatar.innerHTML = avatarMarkup(getActiveProfile().avatar);
   });
@@ -2796,13 +3231,17 @@ async function loadProfiles() {
   assistantProfiles = data.profiles;
   preferredProfileId = data.active_profile_id;
   if (!currentConversationId) activeProfileId = preferredProfileId;
-  const select = document.getElementById("profile-select");
-  select.replaceChildren();
+  const options = document.getElementById("profile-options");
+  options.replaceChildren();
   assistantProfiles.forEach((profile) => {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = `${profile.avatar.startsWith("data:image/") ? "◉" : profile.avatar} ${profile.name}`;
-    select.appendChild(option);
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "profile-picker-option";
+    option.setAttribute("role", "option");
+    option.dataset.profileId = profile.id;
+    option.innerHTML = '<span class="profile-picker-avatar" aria-hidden="true">' + avatarMarkup(profile.avatar) + '</span><span class="profile-picker-option-name"></span><svg class="profile-picker-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"></path></svg>';
+    option.querySelector(".profile-picker-option-name").textContent = profile.name;
+    options.appendChild(option);
   });
   setDisplayedProfile(activeProfileId);
   const list = document.getElementById("profile-list");
@@ -2832,6 +3271,51 @@ function editProfile(profile = null) {
 
 function initProfiles() {
   loadProfiles().catch((error) => console.warn(error));
+  const picker = document.getElementById("profile-picker");
+  const trigger = document.getElementById("profile-select");
+  const menu = document.getElementById("profile-options");
+  const setPickerOpen = (open, focusFirst = false) => {
+    menu.hidden = !open;
+    trigger.setAttribute("aria-expanded", String(open));
+    if (focusFirst && open) menu.querySelector("[role='option']")?.focus();
+  };
+  menu.addEventListener("click", (event) => {
+    const option = event.target.closest("[role='option']");
+    if (option) activateProfile(option.dataset.profileId);
+  });
+  trigger.addEventListener("click", () => setPickerOpen(menu.hidden));
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !menu.hidden) {
+      setPickerOpen(false);
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setPickerOpen(true, true);
+    }
+  });
+  menu.addEventListener("keydown", (event) => {
+    const options = [...menu.querySelectorAll("[role='option']")];
+    if (!options.length) return;
+    const index = options.indexOf(document.activeElement);
+    let nextIndex = index;
+    if (event.key === "ArrowDown") nextIndex = (index + 1) % options.length;
+    else if (event.key === "ArrowUp") nextIndex = (index - 1 + options.length) % options.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = options.length - 1;
+    else if (event.key === "Escape") {
+      setPickerOpen(false);
+      trigger.focus();
+      event.preventDefault();
+      return;
+    } else return;
+    event.preventDefault();
+    options[nextIndex]?.focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (!picker.contains(event.target)) setPickerOpen(false);
+  });
   document.getElementById("btn-open-profiles").addEventListener("click", () => {
     editProfile(getActiveProfile());
     openModal("modal-profiles");
@@ -2865,19 +3349,19 @@ function initProfiles() {
       error.textContent = problem.message;
     }
   });
-  document.getElementById("profile-select").addEventListener("change", async (event) => {
-    const profileId = event.target.value;
+  async function activateProfile(profileId) {
     try {
-      const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/activate`, { method: "POST" });
+      const response = await fetch("/api/profiles/" + encodeURIComponent(profileId) + "/activate", { method: "POST" });
       if (!response.ok) throw new Error("Activation impossible");
       preferredProfileId = profileId;
       setDisplayedProfile(profileId);
+      setPickerOpen(false);
       startNewConversation();
     } catch (error) {
-      event.target.value = activeProfileId;
+      setDisplayedProfile(activeProfileId);
       showToast(escapeHtml(error.message), "warning");
     }
-  });
+  }
   document.getElementById("profile-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const id = document.getElementById("profile-id").value;

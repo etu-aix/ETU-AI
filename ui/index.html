@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=provider-model-checkboxes-2">
+  <link rel="stylesheet" href="/static/style.css?v=model-hover-stats-6">
   <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
 </head>
 <body>
@@ -275,19 +275,28 @@
     <!-- Sidebar -->
     <aside id="sidebar" aria-label="Navigation et historique">
       <div class="brand">
-        <img class="brand-logo" src="/static/logo_etu_ai.svg" alt="" width="34" height="34">
-        <h1>ETU-AI</h1>
+        <button id="btn-collapse-sidebar" class="brand-toggle" type="button" aria-label="Rétracter la barre latérale" aria-controls="sidebar" aria-expanded="true" title="Rétracter la barre latérale">
+          <img class="brand-logo" src="/static/logo_etu_ai.svg" alt="" width="34" height="34">
+          <h1>ETU-AI</h1>
+        </button>
         <button id="btn-close-sidebar" class="sidebar-close" type="button" aria-label="Fermer le menu" title="Fermer le menu">&times;</button>
       </div>
 
-      <button id="btn-new-chat" class="btn-new-chat">
+      <button id="btn-new-chat" class="btn-new-chat" aria-label="Nouvelle discussion" title="Nouvelle discussion">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
-        Nouvelle discussion
+        <span>Nouvelle discussion</span>
       </button>
 
       <div class="profile-switcher">
         <span class="profile-eyebrow">Votre assistant</span>
-        <select id="profile-select" aria-label="Choisir un profil d'assistant"></select>
+        <div class="profile-picker" id="profile-picker">
+          <button id="profile-select" class="profile-picker-trigger" type="button" aria-label="Choisir un profil d'assistant" aria-haspopup="listbox" aria-expanded="false" aria-controls="profile-options">
+            <span id="profile-select-avatar" class="profile-picker-avatar" aria-hidden="true">✦</span>
+            <span id="profile-select-name" class="profile-picker-name">ETU-AI</span>
+            <svg class="profile-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"></path></svg>
+          </button>
+          <div id="profile-options" class="profile-picker-menu" role="listbox" aria-label="Profils disponibles" hidden></div>
+        </div>
         <button id="btn-open-profiles" type="button" class="nav-btn">✦ Gérer les profils</button>
       </div>
 
@@ -301,15 +310,15 @@
       </div>
 
       <div class="sidebar-footer">
-        <button id="btn-open-models" class="nav-btn">
+        <button id="btn-open-models" class="nav-btn" aria-label="Modèles" title="Modèles">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-          Modèles
+          <span>Modèles</span>
         </button>
-        <button id="btn-reopen-wizard" class="nav-btn" style="color: var(--accent-color);">
+        <button id="btn-reopen-wizard" class="nav-btn" style="color: var(--accent-color);" aria-label="Configuration" title="Configuration">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          Configuration
+          <span>Configuration</span>
         </button>
-        <button id="btn-open-api-settings" class="nav-btn">🔑 Clés API</button>
+        <button id="btn-open-api-settings" class="nav-btn" aria-label="Clés API" title="Clés API">🔑 <span>Clés API</span></button>
       </div>
     </aside>
 
@@ -336,33 +345,6 @@
         <div class="header-actions">
           <button id="btn-chat-view" class="chat-view-toggle" type="button" hidden>Voir la discussion</button>
           <button id="btn-theme" class="theme-toggle" type="button" aria-label="Changer le thème" title="Changer le thème">☀</button>
-          <div class="model-selector-wrapper" id="model-selector-wrapper">
-            <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d'IA" type="button">
-              <span class="model-badge-icon" id="model-badge-icon">🧠</span>
-              <div class="model-selector-info">
-                <span class="model-selector-label">Modèle IA</span>
-                <span id="active-model-name" class="model-selector-name">Chargement...</span>
-              </div>
-              <span class="model-status-indicator" id="model-status-indicator" title="Prêt"></span>
-              <svg class="model-dropdown-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-            </button>
-
-            <div class="model-dropdown-menu" id="model-dropdown-menu">
-              <div class="model-dropdown-header">
-                <span>Modèles disponibles</span>
-                <span class="model-count-badge" id="model-count-badge">0 disponible</span>
-              </div>
-              <div class="model-dropdown-list" id="model-dropdown-list">
-                <!-- Rempli dynamiquement -->
-              </div>
-              <div class="model-dropdown-footer">
-                <button type="button" id="btn-dropdown-open-models" class="dropdown-manage-btn">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-                  Gérer & Télécharger des modèles...
-                </button>
-              </div>
-            </div>
-          </div>
         </div>
       </header>
 
@@ -394,11 +376,34 @@
         <div class="chat-input-toolbar">
           <div class="quick-model-wrapper">
             <span class="toolbar-label">Modèle actif :</span>
-            <button type="button" id="btn-quick-model-select" class="quick-model-pill" title="Changer de modèle rapidement">
-              <span class="quick-icon" id="quick-model-icon">⚡</span>
-              <span id="quick-model-name">Chargement...</span>
-              <span class="quick-caret">▾</span>
-            </button>
+            <div class="model-selector-wrapper model-selector-toolbar" id="model-selector-wrapper">
+              <button id="btn-model-selector" class="model-selector-btn quick-model-pill" title="Changer de modèle d’IA" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-dropdown-menu">
+                <span class="model-badge-icon" id="model-badge-icon">🧠</span>
+                <div class="model-selector-info">
+                  <span class="model-selector-label">Modèle IA</span>
+                  <span id="active-model-name" class="model-selector-name">Chargement...</span>
+                </div>
+                <span class="model-status-indicator" id="model-status-indicator" title="Prêt"></span>
+                <svg class="model-dropdown-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+              <div class="model-dropdown-menu" id="model-dropdown-menu" role="listbox" aria-label="Modèles disponibles">
+                <div class="model-dropdown-header">
+                  <span>Modèles disponibles</span>
+                  <span class="model-count-badge" id="model-count-badge">0 disponible</span>
+                </div>
+                <label class="model-dropdown-search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+                  <input id="model-dropdown-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off">
+                </label>
+                <div class="model-dropdown-list" id="model-dropdown-list"></div>
+                <div class="model-dropdown-footer">
+                  <button type="button" id="btn-dropdown-open-models" class="dropdown-manage-btn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+                    Gérer & Télécharger des modèles…
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="chat-shortcuts-hint" id="chat-privacy-hint">Les réponses restent sur cet ordinateur.</div>
         </div>
@@ -469,7 +474,7 @@
         </button>
         <button id="btn-open-etu-connection" class="configuration-choice" type="button">
           <strong>Connexion ETU 2</strong>
-          <span>Autoriser les outils de lecture du groupe et de l’emploi du temps dans le chat local.</span>
+          <span>Connecter ETU 2 et ETU-AI avec un seul code.</span>
         </button>
       </div>
     </div>
@@ -482,17 +487,18 @@
         <button class="modal-close" data-target="modal-etu-connection" aria-label="Fermer la connexion ETU 2">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="etu-text">Dans ETU 2, lancez la connexion à ETU-AI. La demande apparaîtra ici pour que vous puissiez l’autoriser ou la refuser.</p>
-        <p class="etu-text">Une fois connecté, ETU-AI peut demander la lecture de votre groupe ou de votre emploi du temps. Gardez ETU 2 ouvert. Avec un modèle local, les résultats restent sur votre ordinateur.</p>
-        <label class="etu-text" style="display:flex;gap:10px;align-items:flex-start;margin:16px 0">
-          <input id="etu-remote-tools-consent" type="checkbox" style="margin-top:4px">
-          <span>Autoriser l’envoi des résultats ETU (groupe et emploi du temps) au fournisseur distant actif, par exemple Mistral, afin que l’IA puisse les utiliser pour répondre. Désactivé par défaut.</span>
-        </label>
-        <p id="etu-remote-tools-status" role="status" aria-live="polite"></p>
+        <p class="etu-text">Une seule association pour utiliser votre assistant dans Workspace et consulter votre groupe et votre emploi du temps depuis ETU-AI.</p>
+        <div id="etu-remote-connection"></div>
+        <details id="etu-local-connection" class="etu-connection-disclosure" hidden>
+        <summary>Anciennes connexions locales</summary>
+        <div class="etu-connection-details-body">
+        <p class="etu-text">Les connexions créées avec l’ancienne méthode restent accessibles ici. Pour une nouvelle association, utilisez le code ci-dessus.</p>
         <p id="etu-connection-status" role="status" aria-live="polite">Chargement des connexions…</p>
         <div id="etu-connection-entries"></div>
-        <div class="etu-connection-actions">
           <button id="btn-refresh-etu-connection" class="etu-btn etu-btn-secondary" type="button">Actualiser</button>
+        </div>
+        </details>
+        <div class="etu-connection-actions">
           <button id="btn-back-configuration" class="etu-btn etu-btn-secondary" type="button">Retour</button>
         </div>
       </div>
@@ -514,7 +520,6 @@
         <section class="api-provider-settings">
         <div class="api-key-intro"><span class="api-key-lock" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4.5" y="10" width="15" height="11" rx="2.5"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path><path d="M12 14.5v2.5"></path></svg></span><div><strong>Vos clés restent privées</strong><p>Stockées dans le coffre-fort de votre système. Elles ne sont jamais affichées après l’enregistrement.</p></div></div>
         <form id="api-settings-form" class="profile-form">
-          <label><input id="api-provider-enabled" type="checkbox"> Utiliser un fournisseur distant</label>
           <select id="api-provider-select" aria-label="Fournisseur">
             <optgroup label="API natives"><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option></optgroup>
             <optgroup label="API compatibles OpenAI">
@@ -535,20 +540,32 @@
             <span id="api-provider-brand-state" class="api-provider-brand-state">À configurer</span>
           </div>
           <div id="api-provider-url-wrap">
-            <label for="api-provider-url">URL compatible OpenAI</label>
-            <input id="api-provider-url" type="url" value="https://api.openai.com/v1" autocomplete="url" required>
+            <label for="api-provider-url">URL</label>
+            <input id="api-provider-url" type="url" value="https://api.openai.com/v1" placeholder="https://api.exemple.com/v1" autocomplete="url" required>
           </div>
-          <label>Modèles disponibles</label>
+          <div class="api-models-heading">
+            <label for="api-provider-model-search">Modèles disponibles</label>
+            <button id="api-provider-models-refresh" class="api-models-refresh" type="button" aria-label="Actualiser la liste des modèles" title="Recharger les modèles"><span aria-hidden="true">↻</span></button>
+          </div>
           <input id="api-provider-model-search" class="api-provider-model-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off" hidden>
           <div id="api-provider-models" class="api-provider-models" aria-describedby="api-model-hint"><p class="api-model-empty">Les modèles se chargent à la sélection du fournisseur.</p></div>
           <p id="api-model-hint" class="api-model-hint" role="status" aria-live="polite">Sélectionnez un fournisseur pour charger ses modèles.</p>
           <label for="api-provider-key">Clé API <span id="api-key-status"></span></label>
           <input id="api-provider-key" type="password" placeholder="Collez votre clé (laissez vide pour conserver celle de ce fournisseur)" autocomplete="new-password">
-          <label><input id="api-provider-clear-key" type="checkbox"> Supprimer la clé enregistrée</label>
-          <div class="etu-text">Chaque fournisseur garde sa propre clé dans le coffre-fort. L’activation envoie vos conversations au fournisseur choisi. D’autres services compatibles OpenAI se configurent avec « Autre ».</div>
+          <input id="api-provider-clear-key" type="checkbox" hidden>
+          <button id="api-provider-clear-key-button" class="api-clear-key-button" type="button" hidden>Supprimer la clé enregistrée</button>
+          <div class="etu-text">Chaque fournisseur garde sa propre clé dans le coffre-fort. À l’enregistrement, vos conversations seront envoyées au fournisseur choisi. D’autres services compatibles OpenAI se configurent avec « Autre ».</div>
           <button class="etu-btn etu-btn-primary" type="submit">Enregistrer</button>
           <div id="api-settings-message" role="status" aria-live="polite"></div>
         </form>
+        <details class="etu-connection-disclosure">
+          <summary>Données ETU avec les fournisseurs IA</summary>
+          <div class="etu-connection-details-body">
+            <p class="etu-text">Avec un modèle local, les résultats des outils ETU restent sur cet ordinateur.</p>
+            <label class="etu-connection-checkbox"><input id="etu-remote-tools-consent" type="checkbox"><span>Autoriser l’envoi de mon groupe et de mon emploi du temps au fournisseur IA actif pour répondre à mes questions.</span></label>
+            <p id="etu-remote-tools-status" role="status" aria-live="polite"></p>
+          </div>
+        </details>
         </section>
       </div>
     </div>
@@ -648,12 +665,41 @@
     </div>
   </div>
 
+  <div id="modal-model-identity" class="modal-overlay model-identity-overlay" role="dialog" aria-modal="true" aria-labelledby="model-identity-title">
+    <section class="modal-content model-identity-dialog">
+      <header class="modal-header">
+        <div class="model-identity-heading">
+          <span class="etu-eyebrow">Fiche du modèle</span>
+          <h3 id="model-identity-title">Modèle</h3>
+        </div>
+        <button type="button" class="modal-close" data-target="modal-model-identity" aria-label="Fermer la fiche">&times;</button>
+      </header>
+      <div class="modal-body model-identity-body">
+        <div id="model-identity-summary" class="model-identity-summary"></div>
+        <p id="model-identity-fit" class="model-identity-fit" role="status"></p>
+        <section id="model-identity-hardware-section" class="model-identity-section">
+          <h4>Votre ordinateur</h4>
+          <div id="model-identity-hardware" class="model-identity-hardware"></div>
+        </section>
+        <section class="model-identity-section">
+          <div class="model-identity-section-heading">
+            <div><h4>Performances mesurées ici</h4><p>Temps d’activation du modèle et délai avant le premier token (TTFT), calculés sur les mesures locales.</p></div>
+          </div>
+          <div id="model-identity-performance" class="model-identity-performance" aria-live="polite"></div>
+        </section>
+        <button id="btn-model-identity-uninstall" class="model-uninstall-btn" type="button" hidden>Désinstaller ce modèle</button>
+        <p class="model-identity-hint">Clic droit sur un modèle pour rouvrir cette fiche. Les mesures restent sur cet ordinateur.</p>
+      </div>
+    </section>
+  </div>
+
   <script src="/static/generated-layout.js?v=chat-ui-5"></script>
   <script src="/static/generative-ui.js?v=chat-ui-6"></script>
   <script src="/static/vendor/marked-18.0.14.umd.js"></script>
   <script src="/static/vendor/highlight-11.12.0.min.js"></script>
-  <script src="/static/svg-manager.js?v=first-request-loading-1"></script>
-  <script src="/static/app.js?v=provider-model-checkboxes-2"></script>
-  <script src="/static/etu-bridge.js?v=tool-consent-2"></script>
+  <script src="/static/svg-manager.js?v=model-identity-6"></script>
+  <script src="/static/app.js?v=model-hover-stats-6"></script>
+  <script src="/static/etu-bridge.js?v=connection-ui-4"></script>
+  <script src="/static/etu-remote.js?v=connection-ui-4"></script>
 </body>
 </html>

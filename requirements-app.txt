@@ -5,3 +5,4 @@ keyring>=25,<27
 pypdf>=5,<7
 Pillow>=11,<13
 cryptography>=44,<52
+websockets>=14,<16

@@ -28,6 +28,8 @@ def mock_sse(lines=None, delay=0):
     lines = lines or [b'data: {"choices":[{"delta":{"content":"Bonjour"}}]}\n\n', b'data: [DONE]\n\n']
 
     async def handler(request):
+        if request.method == "GET" and request.url.path == "/api/status":
+            return httpx.Response(200, json={"status": "stopped", "active_model": None})
         requests.append(request)
         response_lines = lines
         if lines and isinstance(lines[0], (list, tuple)):

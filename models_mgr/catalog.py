@@ -132,6 +132,7 @@ def assess_compatibility(
 
     ram_info = hw.get("ram", {})
     total_ram = ram_info.get("total_gib", hw.get("ram_total_gib", 8.0))
+    available_ram = ram_info.get("available_gib", hw.get("ram_available_gib", total_ram))
     req_ram = model.get("required_ram_gib", 6.0)
     is_npu_comp = model.get("npu_compatible", False)
     has_gpu = bool(gpus and backend in ("cuda", "vulkan", "metal"))
@@ -143,27 +144,44 @@ def assess_compatibility(
         color = "warning"
         recommendation = f"Nécessite ~{req_ram} Go de RAM alors que votre système dispose de {total_ram} Go."
         score = 20
+        is_compatible = False
+        status_tier = "incompatible"
+    elif req_ram > total_ram * 0.85 or req_ram > available_ram:
+        badge = "Charge élevée"
+        color = "warning"
+        recommendation = "Ce modèle peut fonctionner, mais la mémoire disponible est limitée."
+        score = 50
+        is_compatible = True
+        status_tier = "tight"
     elif has_gpu:
         badge = "GPU possible"
         color = "success"
         recommendation = "Accélération graphique possible ; le backend réellement utilisé sera indiqué après chargement."
         score = 90
+        is_compatible = True
+        status_tier = "optimal"
     elif req_ram <= 6.0 or req_ram <= (total_ram * 0.75):
         badge = "Compatible CPU"
         color = "success"
         recommendation = "Fonctionnera de manière fluide sur votre processeur."
         score = 80
+        is_compatible = True
+        status_tier = "optimal"
     else:
         badge = "Charge élevée"
         color = "warning"
         recommendation = f"Ce modèle nécessite ~{req_ram} Go de RAM libre pour éviter tout ralentissement."
         score = 50
+        is_compatible = True
+        status_tier = "tight"
 
     return {
         "badge": badge,
         "color": color,
         "recommendation": recommendation,
         "score": score,
+        "is_compatible": is_compatible,
+        "status_tier": status_tier,
         "has_gpu_acceleration": has_gpu,
         "has_npu_acceleration": False,
         "npu_candidate": bool(has_npu and is_npu_comp),
@@ -232,4 +250,3 @@ def get_catalog_with_status(
             enriched.append(custom_entry)
 
     return enriched
-

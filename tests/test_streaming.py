@@ -8,11 +8,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from chat.sse_handler import ChatStreamHandler
 from storage.db import StorageManager
-from mock_sse import mock_sse
+from mock_sse import mock_sse, SSEBytes
 
 
 DELAYED_LINES = [
@@ -23,6 +25,40 @@ DELAYED_LINES = [
 
 
 class TestStreaming(unittest.IsolatedAsyncioTestCase):
+    async def test_remote_rate_limit_is_reported_and_saved_instead_of_empty_reply(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = StorageManager(Path(directory) / "chat.db")
+            conversation = storage.create_conversation("Erreur API")
+            storage.set_setting("api_providers", {
+                "active_provider": "mistral", "configs": {
+                    "mistral": {"base_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"}
+                }
+            })
+            transport = httpx.MockTransport(lambda request: httpx.Response(
+                429, headers={"content-type": "application/json"},
+                stream=SSEBytes([b'{"message":"Rate limit exceeded"}']),
+            ))
+            client_type = httpx.AsyncClient
+            with patch("chat.sse_handler.get_api_key", return_value="test-key"), patch(
+                "chat.sse_handler.httpx.AsyncClient", side_effect=lambda **kwargs: client_type(transport=transport, **kwargs)
+            ):
+                events = [json.loads(event.split("data: ", 1)[1]) async for event in ChatStreamHandler(storage=storage).stream_chat(conversation, "Salut")]
+            self.assertEqual([event["event"] for event in events], ["status", "error", "done"])
+            self.assertIn("429", events[1]["message"])
+            self.assertIn("Rate limit exceeded", events[1]["message"])
+            self.assertEqual(events[-1]["status"], "error")
+            self.assertEqual(storage.get_messages(conversation)[-1]["content"], events[1]["message"])
+
+    async def test_empty_upstream_stream_is_an_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            storage = StorageManager(Path(directory) / "chat.db")
+            conversation = storage.create_conversation("Flux vide")
+            with mock_sse([b"data: [DONE]\n\n"]):
+                events = [json.loads(event.split("data: ", 1)[1]) async for event in ChatStreamHandler(storage=storage).stream_chat(conversation, "Salut")]
+            self.assertEqual(events[-2]["event"], "error")
+            self.assertEqual(events[-1]["status"], "error")
+            self.assertTrue(storage.get_messages(conversation)[-1]["content"])
+
     async def test_remote_provider_identity_is_in_the_system_context(self):
         with tempfile.TemporaryDirectory() as directory:
             storage = StorageManager(Path(directory) / "chat.db")

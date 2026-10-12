@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 from uuid import UUID, uuid4
+from urllib.error import HTTPError, URLError
 import urllib.request
 from urllib.parse import urlencode, urlsplit
 
@@ -44,6 +45,7 @@ from models_mgr.hf_client import hf_client
 from storage.db import StorageManager
 from storage.api_credentials import delete_api_key, get_api_key, set_api_key
 from storage.state_manager import state_manager
+from storage.model_performance import append_model_performance, read_model_performance
 from tools.executor import ToolExecutor
 from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
 from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
@@ -62,12 +64,25 @@ _active_chat_conversations: set[str] = set()
 
 app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
 app.state.etu_storage = storage
+from integration.remote import router as remote_router, remote as etu_remote
+app.include_router(remote_router)
+@app.on_event("startup")
+async def start_etu_remote():
+    await etu_remote.start(app)
+@app.on_event("shutdown")
+async def stop_etu_remote():
+    await etu_remote.stop()
 
 @app.on_event("startup")
 def on_startup():
     """Initialisation au démarrage du serveur : enregistre l'état et lance Beacon si setup déjà fait."""
     import threading
-    bridge.identity()
+    try:
+        bridge.identity()
+    except Exception:
+        # The ETU bridge is optional; an unreadable identity must not prevent
+        # the local chat and provider settings API from starting.
+        logger.exception("ETU bridge identity is unavailable; continuing without the ETU bridge")
     try:
         state_manager.record_startup()
     except OSError as exc:
@@ -276,6 +291,20 @@ class ModelSelectRequest(BaseModel):
     context_size: Optional[int] = None
     source: str = "local"
     provider: Optional[str] = None
+
+
+class ModelPerformanceRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=300)
+    model_name: str = Field(min_length=1, max_length=240)
+    source: str = Field(min_length=1, max_length=10)
+    total_ms: int = Field(ge=0, le=86_400_000)
+    ttft_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    load_ms: Optional[int] = Field(default=None, ge=0, le=86_400_000)
+    prompt_tokens: Optional[int] = Field(default=None, ge=0, le=10_000_000)
+    output_tokens: Optional[int] = Field(default=None, ge=0, le=10_000_000)
+    tokens_per_second: Optional[float] = Field(default=None, ge=0, le=100_000)
+    measurement: str = Field(min_length=1, max_length=12)
+    hardware: Optional[dict[str, Any]] = None
 
 
 class ProjectorRequest(BaseModel):
@@ -681,6 +710,49 @@ def remove_model_projector(model: str):
     return {"success": True}
 
 
+@app.delete("/api/models/{filename}")
+def uninstall_model(filename: str):
+    """Remove an installed local GGUF model after safely stopping it if active."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.gguf", filename, re.IGNORECASE) or is_projector(filename):
+        raise HTTPException(status_code=422, detail="Modèle local invalide")
+    model_path = downloader.models_dir / filename
+    if model_path.parent.resolve() != downloader.models_dir.resolve() or model_path.is_symlink():
+        raise HTTPException(status_code=422, detail="Modèle local invalide")
+    if not model_path.is_file():
+        raise HTTPException(status_code=404, detail="Modèle introuvable")
+    if _active_chat_conversations:
+        raise HTTPException(status_code=409, detail="Arrêtez la génération avant de désinstaller ce modèle.")
+
+    model_name = filename[:-5]
+    beacon_status = None
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=2) as response:
+            beacon_status = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, ValueError):
+        pass
+    if beacon_status and beacon_status.get("active_model") == model_name and beacon_status.get("status") == "running":
+        try:
+            stop = urllib.request.Request(
+                "http://127.0.0.1:11343/api/stop", data=b"{}",
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(stop, timeout=15):
+                pass
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Impossible d’arrêter le modèle en cours.") from exc
+
+    try:
+        assignments = storage.get_setting("mmproj_assignments", {}) or {}
+        if filename in assignments:
+            ProjectorManager(storage, downloader, hf_client).assign(filename, None)
+        model_path.unlink()
+        if storage.get_setting("selected_model") == model_name:
+            storage.set_setting("selected_model", None)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Impossible de supprimer le fichier du modèle.") from exc
+    return {"success": True, "filename": filename}
+
+
 @app.post("/api/models/mmproj/import")
 async def import_model_projector(request: Request, model: str, filename: str):
     """Stream a local GGUF without buffering gigabytes in the web client or API."""
@@ -805,6 +877,29 @@ def select_model(req: ModelSelectRequest):
         raise HTTPException(status_code=503, detail=f"Beacon indisponible : {e}")
 
 
+@app.post("/api/models/performance")
+def save_model_performance(req: ModelPerformanceRequest):
+    """Append anonymized generation timings to a local, git-ignored JSONL file."""
+    if req.source not in {"local", "api"} or req.measurement not in {"server", "estimated", "activation"}:
+        raise HTTPException(status_code=422, detail="Source ou type de mesure invalide")
+    entry = req.dict()
+    entry["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        append_model_performance(entry)
+    except OSError as exc:
+        logger.warning("Impossible d'enregistrer les performances du modèle: %s", exc)
+        raise HTTPException(status_code=500, detail="Enregistrement local des performances impossible") from exc
+    return {"recorded": True}
+
+
+@app.get("/api/models/performance")
+def get_model_performance(model_id: Optional[str] = None, model_name: Optional[str] = None, limit: int = 100):
+    """Return local measurements for the requested model; no chat content is stored."""
+    if not model_id and not model_name:
+        raise HTTPException(status_code=422, detail="Un identifiant ou un nom de modèle est requis")
+    return {"measurements": read_model_performance(model_id, model_name, limit)}
+
+
 # -----------------------------------------------------------------------------
 # Setup Wizard Endpoints
 # -----------------------------------------------------------------------------
@@ -896,12 +991,14 @@ def list_provider_models(req: ProviderModelsRequest, origin: Optional[str] = Hea
         headers["Authorization"] = f"Bearer {api_key}"
     try:
         request = urllib.request.Request(endpoint, headers=headers, method="GET")
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with urllib.request.urlopen(request, timeout=10) as response:
             payload = json.loads(response.read(2_000_000).decode("utf-8"))
     except Exception as exc:
         status = getattr(exc, "code", None)
-        if status in {401, 403}:
-            raise HTTPException(status_code=502, detail="Le fournisseur a refusé la clé API. Vérifiez la clé et ses droits.") from exc
+        if status == 401:
+            raise HTTPException(status_code=502, detail=f"{preset['label']} a rejeté cette clé (401). Vérifiez qu’il s’agit d’une clé API active, copiée sans préfixe « Bearer ».") from exc
+        if status == 403:
+            raise HTTPException(status_code=502, detail=f"{preset['label']} refuse l’accès (403). Vérifiez les autorisations de la clé et l’accès API du compte.") from exc
         if status:
             raise HTTPException(status_code=502, detail=f"Le fournisseur a répondu avec le statut {status} lors du chargement des modèles.") from exc
         raise HTTPException(status_code=502, detail="Impossible de joindre le fournisseur ou de lire sa réponse de modèles.") from exc
@@ -938,7 +1035,7 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
         raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
     preset = PROVIDER_PRESETS[req.provider]
     base_url = req.base_url.strip().rstrip("/")
-    model = req.model.strip() or preset["model"]
+    model = (req.model or "").strip() or preset["model"]
     try:
         parsed_url = urlsplit(base_url)
         local_http = parsed_url.scheme == "http" and parsed_url.hostname in {"127.0.0.1", "localhost", "::1"}
@@ -948,8 +1045,8 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
         parsed_url = None
     if not (local_http or secure_https) or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
         raise HTTPException(status_code=400, detail="L’URL doit utiliser HTTPS (sauf pour un serveur local).")
-    if not model or len(model) > 200:
-        raise HTTPException(status_code=400, detail="URL ou nom de modèle invalide.")
+    if len(model) > 200:
+        raise HTTPException(status_code=400, detail="Nom de modèle invalide.")
     key = (req.api_key or "").strip()
     if key and not req.clear_api_key:
         try:
@@ -974,11 +1071,11 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
     if not configs and legacy:
         configs[legacy.get("provider", "openai-compatible")] = legacy
     selected_models = list(dict.fromkeys(name.strip() for name in req.models if isinstance(name, str) and name.strip() and len(name.strip()) <= 200))
-    if not selected_models:
+    if not selected_models and model:
         selected_models = [model]
     if len(selected_models) > 500:
         raise HTTPException(status_code=400, detail="Sélectionnez au maximum 500 modèles.")
-    if model not in selected_models:
+    if selected_models and model not in selected_models:
         model = selected_models[0]
     configs[req.provider] = {"base_url": base_url, "model": model, "models": selected_models, "type": preset["type"]}
     active_provider = req.provider if req.enabled else (None if state.get("active_provider", legacy.get("provider")) == req.provider else state.get("active_provider"))

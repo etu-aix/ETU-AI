@@ -15,7 +15,7 @@ import integration.bridge as bridge_module
 from integration.bridge import Bridge, digest
 
 ORIGIN = "https://etu-aix.alwaysdata.net"
-LOCAL = "http://127.0.0.1:11346"
+LOCAL = "http://127.0.0.1:8901"
 
 
 class TestBridge(unittest.TestCase):
