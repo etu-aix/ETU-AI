@@ -1,4 +1,4 @@
-/* Consent is shown in the local configuration dialog. */
+/* Consent controls whether ETU tools may be used with third-party providers. */
 (() => {
   const labels = {'etu.profile.group': 'Groupe', 'etu.schedule.read': 'Emploi du temps', 'etu.workspace.read': 'Workspace', 'etu.ai.models.read': 'Modèles ETU-AI', 'etu.ai.model.select': 'Changer le modèle ETU-AI'};
   const configuration = document.getElementById('modal-configuration');
@@ -8,6 +8,46 @@
   const configButton = document.getElementById('btn-reopen-wizard');
   const remoteConsent = document.getElementById('etu-remote-tools-consent');
   const remoteConsentStatus = document.getElementById('etu-remote-tools-status');
+  async function loadRemoteConsent() {
+    if (!remoteConsent || !remoteConsentStatus) return;
+    try {
+      const response = await fetch('/api/etu/remote-tools', {cache: 'no-store'});
+      if (!response.ok) throw new Error();
+      remoteConsent.checked = Boolean((await response.json()).enabled);
+      remoteConsentStatus.textContent = remoteConsent.checked
+        ? 'Le partage ETU est autorisé pour les fournisseurs compatibles.'
+        : 'Le partage des informations ETU avec les fournisseurs tiers est désactivé. Les résultats restent sur cet ordinateur.';
+      remoteConsentStatus.dataset.state = remoteConsent.checked ? 'enabled' : 'disabled';
+    } catch {
+      remoteConsentStatus.textContent = 'Impossible de charger ce réglage. Redémarrez ETU-AI si la version vient d’être mise à jour.';
+      remoteConsentStatus.dataset.state = 'error';
+    }
+  }
+  if (remoteConsent && remoteConsentStatus) {
+    remoteConsent.addEventListener('change', async () => {
+      remoteConsent.disabled = true;
+      try {
+        const response = await fetch('/api/etu/remote-tools', {
+          method: 'PUT', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({enabled: remoteConsent.checked})
+        });
+        if (!response.ok) throw new Error();
+        const result = await response.json();
+        remoteConsent.checked = Boolean(result.enabled);
+        remoteConsentStatus.textContent = result.enabled
+          ? 'Le partage ETU est autorisé pour les fournisseurs compatibles.'
+          : 'Le partage des informations ETU avec les fournisseurs tiers est désactivé. Les résultats restent sur cet ordinateur.';
+        remoteConsentStatus.dataset.state = result.enabled ? 'enabled' : 'disabled';
+      } catch {
+        remoteConsent.checked = !remoteConsent.checked;
+        remoteConsentStatus.textContent = 'Enregistrement impossible. Vérifiez que l’interface locale est à jour.';
+        remoteConsentStatus.dataset.state = 'error';
+      } finally {
+        remoteConsent.disabled = false;
+      }
+    });
+    loadRemoteConsent();
+  }
   if (!configuration || !connection || !configButton) return;
   let previous = '';
   let refreshing = false;
@@ -45,34 +85,6 @@
     configuration.inert = true;
   });
   document.getElementById('btn-refresh-etu-connection').addEventListener('click', () => refresh(true));
-  async function loadRemoteConsent() {
-    try {
-      const response = await fetch('/api/etu/remote-tools', {cache: 'no-store'});
-      if (!response.ok) throw new Error();
-      remoteConsent.checked = Boolean((await response.json()).enabled);
-      remoteConsentStatus.textContent = remoteConsent.checked ? 'Partage avec le fournisseur distant autorisé.' : 'Les résultats ETU restent locaux pour le moment.';
-    } catch {
-      remoteConsentStatus.textContent = 'Impossible de charger ce réglage. Redémarrez ETU-AI si la version vient d’être mise à jour.';
-    }
-  }
-  remoteConsent.addEventListener('change', async () => {
-    remoteConsent.disabled = true;
-    try {
-      const response = await fetch('/api/etu/remote-tools', {
-        method: 'PUT', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({enabled: remoteConsent.checked})
-      });
-      if (!response.ok) throw new Error();
-      const result = await response.json();
-      remoteConsent.checked = Boolean(result.enabled);
-      remoteConsentStatus.textContent = result.enabled ? 'Partage avec le fournisseur distant autorisé.' : 'Les résultats ETU restent locaux.';
-    } catch {
-      remoteConsent.checked = !remoteConsent.checked;
-      remoteConsentStatus.textContent = 'Enregistrement impossible. Vérifiez que l’interface locale est à jour.';
-    } finally {
-      remoteConsent.disabled = false;
-    }
-  });
   for (const dialog of [configuration, connection]) {
     dialog.querySelector('.modal-close').addEventListener('click', () => close(dialog));
     dialog.addEventListener('click', event => { if (event.target === dialog) close(dialog); });
@@ -158,7 +170,6 @@
     }
   }
   refresh();
-  loadRemoteConsent();
   setInterval(refresh, 3000);
   document.addEventListener('visibilitychange', () => refresh());
 })();

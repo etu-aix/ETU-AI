@@ -11,10 +11,13 @@ import struct
 import base64
 import logging
 import os
+import platform
 import re
+import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 from urllib.error import HTTPError, URLError
 import urllib.request
@@ -36,12 +39,16 @@ from chat.sse_handler import ChatStreamHandler
 from chat.attachments import prepare_attachments, load_attachments
 from configs import init_file_logger
 from install import scan_hardware
+from configs import CONFIG_FILE, STATE_FILE, load_config
+from llama_setup import setup_llama
+from release_catalog import backend_for_variant, release_variants
+from setup_utils import atomic_json, file_lock, read_json
 
 init_file_logger("api_server.log")
 from models_mgr.catalog import get_catalog_with_status
 from models_mgr.downloader import ModelDownloader
 from models_mgr.projectors import ProjectorManager, is_projector, known_text_only
-from models_mgr.hf_client import hf_client
+from models_mgr.hf_client import hf_client, PARAMETER_RANGES
 from storage.db import StorageManager
 from storage.api_credentials import delete_api_key, get_api_key, set_api_key
 from storage.state_manager import state_manager
@@ -59,11 +66,80 @@ UI_DIR = BASE_DIR / "ui"
 storage = StorageManager()
 tool_executor = ToolExecutor()
 downloader = ModelDownloader(storage=storage)
+_server_reinstall_lock = threading.Lock()
+_server_reinstall: dict[str, str] = {"status": "idle", "message": ""}
+_inference_condition = threading.Condition()
+_inference_reinstall_pending = False
+_active_inference_requests = 0
+_power_condition = threading.Condition()
+_power_state = "awake"
+_power_error = ""
+_hardware_info_cache: Optional[dict[str, Any]] = None
+_hardware_info_cache_lock = threading.Lock()
 stream_handler = ChatStreamHandler(storage=storage, tool_executor=tool_executor)
 _active_chat_conversations: set[str] = set()
+_model_activation_lock = threading.Lock()
 
 app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
 app.state.etu_storage = storage
+
+
+def get_hardware_info() -> dict[str, Any]:
+    """Return the startup hardware scan instead of probing devices per request."""
+    global _hardware_info_cache
+    if _hardware_info_cache is None:
+        with _hardware_info_cache_lock:
+            if _hardware_info_cache is None:
+                _hardware_info_cache = scan_hardware()
+    return _hardware_info_cache
+
+
+@app.middleware("http")
+async def track_inference_requests(request: Request, call_next):
+    """Refuse les nouvelles générations pendant une réinstallation et suit les flux actifs."""
+    global _active_inference_requests
+    if request.url.path not in {"/api/chat/stream", "/v1/chat/completions"} or request.method != "POST":
+        return await call_next(request)
+    with _inference_condition:
+        if _inference_reinstall_pending:
+            return JSONResponse(status_code=503, content={"detail": "Réinstallation du moteur en cours. Réessayez dans un instant."})
+        _active_inference_requests += 1
+
+    try:
+        response = await call_next(request)
+    except BaseException:
+        with _inference_condition:
+            _active_inference_requests -= 1
+            _inference_condition.notify_all()
+        raise
+
+    body_iterator = response.body_iterator
+
+    async def tracked_body():
+        global _active_inference_requests
+        try:
+            async for chunk in body_iterator:
+                yield chunk
+        finally:
+            with _inference_condition:
+                _active_inference_requests -= 1
+                _inference_condition.notify_all()
+
+    response.body_iterator = tracked_body()
+    return response
+
+
+@app.middleware("http")
+async def reject_requests_while_sleeping(request: Request, call_next):
+    """Keep the local UI reachable while refusing API traffic during sleep."""
+    if request.method != "OPTIONS" and request.url.path.startswith(("/api/", "/v1/")):
+        with _power_condition:
+            state = _power_state
+        if state != "awake" and request.url.path not in {
+            "/api/power/state", "/api/power/wake", "/api/power/restart", "/api/power/shutdown",
+        }:
+            return JSONResponse(status_code=503, content={"detail": "Désolé je suis en veille"})
+    return await call_next(request)
 from integration.remote import router as remote_router, remote as etu_remote
 app.include_router(remote_router)
 @app.on_event("startup")
@@ -89,6 +165,8 @@ def on_startup():
         print(f"[!] Horodatage du démarrage non enregistré : {exc}")
     try:
         hw = scan_hardware()
+        global _hardware_info_cache
+        _hardware_info_cache = hw
         state_manager.update_state({
             "hardware": {
                 "cpu": hw.get("cpu", {}).get("processor"),
@@ -102,9 +180,22 @@ def on_startup():
     except Exception as e:
         print(f"[!] Erreur scan hardware au démarrage: {e}")
 
-    # Si le setup a déjà été complété, lancer MAIA-Beacon en arrière-plan sans bloquer
+    # Garder MAIA-Beacon actif après la configuration, et le relancer s'il tombe.
     if wizard_manager.is_completed():
-        threading.Thread(target=wizard_manager.ensure_beacon_running, daemon=True).start()
+        threading.Thread(target=maintain_beacon, name="maia-beacon-supervisor", daemon=True).start()
+
+
+def maintain_beacon():
+    """Start Beacon after setup and recover it if its process exits unexpectedly."""
+    while True:
+        try:
+            with _power_condition:
+                app_is_awake = _power_state == "awake"
+            if app_is_awake and wizard_manager.is_completed() and not wizard_manager.is_beacon_online():
+                wizard_manager.ensure_beacon_running()
+        except Exception:
+            logger.exception("MAIA-Beacon supervision failed")
+        time.sleep(10)
 
 # Les origines ETU accèdent uniquement au bridge /v1, jamais à l'administration.
 app.add_middleware(
@@ -145,6 +236,8 @@ async def local_boundary(request: Request, call_next):
 
 
 app.include_router(etu_router)
+from integration.workshop import router as workshop_router
+app.include_router(workshop_router)
 
 
 @app.get("/api/launch-mode")
@@ -154,10 +247,142 @@ def get_launch_mode():
         mode = "normal"
     return {
         "mode": mode,
+        "pid": os.getpid(),
         "beacon_host": "0.0.0.0" if mode == "server" else "127.0.0.1",
         "beacon_port": 11343,
         "localhost_origins_allowed": ALLOW_LOCALHOST_ORIGINS,
     }
+
+
+@app.get("/api/power/state")
+def get_power_state(request: Request):
+    require_local_admin(request)
+    with _power_condition:
+        return {"state": _power_state, "error": _power_error, "mode": get_launch_mode()["mode"]}
+
+
+def _finish_sleep() -> None:
+    global _power_state, _power_error
+    try:
+        with _inference_condition:
+            while _active_inference_requests:
+                _inference_condition.wait(timeout=1)
+        wizard_manager.stop_beacon_listener()
+        with _power_condition:
+            _power_state = "sleeping"
+            _power_condition.notify_all()
+    except Exception as exc:
+        logger.exception("Cannot put the inference backend to sleep")
+        with _power_condition:
+            _power_state = "awake"
+            _power_error = str(exc)
+            _power_condition.notify_all()
+
+
+@app.post("/api/power/sleep")
+def sleep_app(request: Request):
+    global _power_state, _power_error
+    require_local_admin(request)
+    with _power_condition:
+        if _power_state != "awake":
+            raise HTTPException(status_code=409, detail="Une transition d’alimentation est déjà en cours")
+        if _inference_reinstall_pending:
+            raise HTTPException(status_code=409, detail="Attendez la fin de la réinstallation")
+        _power_state = "entering_sleep"
+        _power_error = ""
+    threading.Thread(target=_finish_sleep, daemon=True).start()
+    return {"state": "entering_sleep"}
+
+
+@app.post("/api/power/wake")
+def wake_app(request: Request):
+    global _power_state, _power_error
+    require_local_admin(request)
+    with _power_condition:
+        while _power_state == "entering_sleep":
+            _power_condition.wait(timeout=1)
+        if _power_state == "awake":
+            return {"state": "awake", "woke": False}
+        if _power_state != "sleeping":
+            raise HTTPException(status_code=409, detail="Une transition d’alimentation est déjà en cours")
+        _power_state = "waking"
+    try:
+        if wizard_manager.is_completed():
+            if not wizard_manager.ensure_beacon_running():
+                raise RuntimeError("Impossible de démarrer le moteur d’inférence")
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline and not wizard_manager.is_beacon_online():
+                time.sleep(0.5)
+            if not wizard_manager.is_beacon_online():
+                raise RuntimeError("Le moteur d’inférence ne répond pas")
+    except Exception as exc:
+        logger.exception("Cannot wake the inference backend")
+        with _power_condition:
+            _power_state = "sleeping"
+            _power_error = str(exc)
+            _power_condition.notify_all()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    with _power_condition:
+        _power_state = "awake"
+        _power_error = ""
+        _power_condition.notify_all()
+    return {"state": "awake", "woke": True}
+
+
+class RestartRequest(BaseModel):
+    mode: Literal["normal", "local", "server"]
+
+
+def _end_app() -> None:
+    with _inference_condition:
+        while _active_inference_requests:
+            _inference_condition.wait(timeout=1)
+    try:
+        wizard_manager.stop_beacon_listener()
+    except Exception:
+        logger.exception("Could not stop Beacon during application shutdown")
+    time.sleep(0.35)
+    app.state.uvicorn_server.should_exit = True
+
+
+@app.post("/api/power/restart")
+def restart_app(request: Request, body: RestartRequest):
+    global _power_state
+    require_local_admin(request)
+    if not getattr(app.state, "uvicorn_server", None):
+        raise HTTPException(status_code=409, detail="Redémarrage disponible depuis le lanceur ETU-AI")
+    with _power_condition:
+        if _power_state in {"entering_sleep", "waking", "shutting_down"} or _inference_reinstall_pending:
+            raise HTTPException(status_code=409, detail="Une autre opération est en cours")
+        previous_state = _power_state
+        _power_state = "shutting_down"
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.Popen(
+            [sys.executable, str(BASE_DIR / "restart_app.py"), body.mode],
+            cwd=str(BASE_DIR), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, creationflags=flags,
+        )
+    except OSError as exc:
+        with _power_condition:
+            _power_state = previous_state
+        raise HTTPException(status_code=500, detail=f"Redémarrage impossible : {exc}") from exc
+    threading.Thread(target=_end_app, daemon=True).start()
+    return {"state": "restarting", "mode": body.mode, "old_pid": os.getpid()}
+
+
+@app.post("/api/power/shutdown")
+def shutdown_app(request: Request):
+    global _power_state
+    require_local_admin(request)
+    if not getattr(app.state, "uvicorn_server", None):
+        raise HTTPException(status_code=409, detail="Arrêt disponible depuis le lanceur ETU-AI")
+    with _power_condition:
+        if _power_state in {"entering_sleep", "waking", "shutting_down"} or _inference_reinstall_pending:
+            raise HTTPException(status_code=409, detail="Une autre opération est en cours")
+        _power_state = "shutting_down"
+    threading.Thread(target=_end_app, daemon=True).start()
+    return {"state": "shutting_down"}
 
 
 @app.get("/api/etu/remote-tools")
@@ -199,6 +424,7 @@ async def stop_bridge_cleanup():
 # -----------------------------------------------------------------------------
 class SetupStartRequest(BaseModel):
     selected_models: list[dict[str, Any]]
+    backend: Literal["auto", "npu"] = "auto"
 # -----------------------------------------------------------------------------
 class AttachmentRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -235,6 +461,10 @@ class ProviderModelsRequest(BaseModel):
     provider: str
     base_url: Optional[str] = None
     api_key: Optional[str] = None
+
+
+class HardwarePreferenceRequest(BaseModel):
+    preference: Literal["auto", "gpu", "npu"]
 
 
 PROVIDER_PRESETS = {
@@ -417,6 +647,12 @@ def delete_conversation(conv_id: str):
     return {"success": success}
 
 
+@app.delete("/api/conversations")
+def delete_all_conversations():
+    deleted = storage.delete_all_conversations()
+    return {"success": True, "deleted": deleted}
+
+
 @app.get("/api/profiles")
 def list_profiles():
     return {"profiles": storage.list_profiles(), "active_profile_id": storage.get_setting("active_profile", "default")}
@@ -495,7 +731,7 @@ def get_configured_api_models() -> list[dict[str, Any]]:
 
 @app.get("/api/models/catalog")
 def get_catalog():
-    hw = scan_hardware()
+    hw = get_hardware_info()
     installed = set(downloader.list_installed_models())
     # Le catalogue local doit rester disponible même si Hugging Face est lent.
     # L'exploration distante possède son propre onglet et son propre endpoint.
@@ -527,20 +763,35 @@ def search_huggingface_models(
     sort: str = "downloads",
     limit: int = 25,
     only_compatible: bool = True,
+    publisher: str = "",
+    parameter_range: str = "",
+    trusted_only: bool = False,
+    hardware_filter: str = "",
+    explorer: bool = False,
 ):
     """Recherche des modèles GGUF sur Hugging Face sans credential, avec évaluation de compatibilité matérielle."""
-    hw = scan_hardware()
+    hw = get_hardware_info()
     installed = set(downloader.list_installed_models())
+    if publisher not in {"", "mistralai", "Qwen", "Alibaba-NLP", "deepseek-ai", "meta-llama"}:
+        raise HTTPException(status_code=422, detail="Éditeur inconnu")
+    if parameter_range and parameter_range not in PARAMETER_RANGES:
+        raise HTTPException(status_code=422, detail="Filtre de paramètres inconnu")
+    if hardware_filter not in {"", "cpu", "gpu", "npu"}:
+        raise HTTPException(status_code=422, detail="Filtre matériel inconnu")
     results = hf_client.get_all_compatible_models(
         hardware_info=hw,
         query=q,
-        limit=limit,
+        limit=max(1, min(limit, 51)),
         only_compatible=only_compatible,
+        publisher=publisher,
+        parameter_range=parameter_range,
+        trusted_only=trusted_only,
+        hardware_filter=hardware_filter,
+        preserve_order=explorer,
     )
     for m in results:
-        fn = m.get("filename")
-        if fn and fn in installed:
-            m["is_installed"] = True
+        m["installed_filenames"] = [quant["filename"] for quant in m.get("quantizations", []) if quant.get("filename") in installed]
+        m["is_installed"] = bool(m["installed_filenames"])
     return {
         "query": q,
         "total": len(results),
@@ -568,9 +819,8 @@ def get_all_compatible_hf_models(limit: int = 30):
         only_compatible=True,
     )
     for m in models:
-        fn = m.get("filename")
-        if fn and fn in installed:
-            m["is_installed"] = True
+        m["installed_filenames"] = [quant["filename"] for quant in m.get("quantizations", []) if quant.get("filename") in installed]
+        m["is_installed"] = bool(m["installed_filenames"])
     return {
         "total": len(models),
         "models": models,
@@ -664,12 +914,51 @@ def download_model(req: DownloadRequest):
     return {"task_id": task_id, "status": "started"}
 
 
+@app.post("/api/models/import")
+async def import_local_model(request: Request, filename: str):
+    """Stream a local GGUF into the model library without buffering it in memory."""
+    try:
+        downloader.validate_reference("local/import", filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if is_projector(filename):
+        raise HTTPException(status_code=422, detail="Les projecteurs mmproj/projector se gèrent dans Vision / mmproj.")
+    destination = downloader.models_dir / filename
+    if destination.exists():
+        raise HTTPException(status_code=409, detail="Un modèle portant ce nom est déjà installé.")
+    temporary = downloader.models_dir / f"model-import-{uuid4().hex}.part"
+    limit = 64 * 1024 ** 3
+    size = 0
+    header = bytearray()
+    try:
+        with temporary.open("xb") as output:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(status_code=413, detail="64 Go maximum par modèle importé.")
+                header.extend(chunk[:max(0, 8 - len(header))])
+                await asyncio.to_thread(output.write, chunk)
+        if len(header) < 8 or header[:4] != b"GGUF" or struct.unpack_from("<I", header, 4)[0] not in {2, 3}:
+            raise HTTPException(status_code=422, detail="Le fichier sélectionné n'est pas un GGUF valide.")
+        if destination.exists():
+            raise HTTPException(status_code=409, detail="Un modèle portant ce nom est déjà installé.")
+        temporary.replace(destination)
+        return {"success": True, "filename": filename}
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 @app.get("/api/models/tasks/{task_id}")
 def get_download_task(task_id: str):
     task = downloader.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Tâche introuvable")
     return task
+
+
+@app.get("/api/models/tasks")
+def list_download_tasks():
+    return {"tasks": downloader.list_tasks()}
 
 
 @app.post("/api/models/tasks/{task_id}/cancel")
@@ -789,9 +1078,72 @@ async def import_model_projector(request: Request, model: str, filename: str):
         temporary.unlink(missing_ok=True)
 
 
+def activate_local_model_for_chat(model_name: str) -> dict[str, Any]:
+    """Load the queued local model when a chat request first needs it."""
+    clean_model = model_name[:-5] if model_name.lower().endswith(".gguf") else model_name
+    if f"{clean_model}.gguf" not in downloader.list_installed_models():
+        raise RuntimeError("Le modèle sélectionné n'est plus installé")
+    with _model_activation_lock:
+        try:
+            mmproj = ProjectorManager(storage, downloader, hf_client).selected(f"{clean_model}.gguf")
+            if not wizard_manager.is_beacon_online():
+                if not wizard_manager.ensure_beacon_running():
+                    raise RuntimeError("Impossible de démarrer MAIA-Beacon")
+                # A cold Windows startup can take longer while the supervisor
+                # validates the OpenVINO runtime and discovers the NPU. Keep
+                # the UI request alive long enough to receive the actual result.
+                startup_deadline = time.monotonic() + 300
+                while time.monotonic() < startup_deadline and not wizard_manager.is_beacon_online():
+                    time.sleep(0.5)
+                if not wizard_manager.is_beacon_online():
+                    raise RuntimeError("MAIA-Beacon ne répond pas")
+
+            status_url = "http://127.0.0.1:11343/api/status"
+            with urllib.request.urlopen(status_url, timeout=3) as response:
+                current = json.loads(response.read().decode("utf-8"))
+            if current.get("status") == "running" and current.get("active_model") == clean_model and current.get("active_mmproj") == mmproj:
+                return current
+            if current.get("status") == "running" and current.get("active_model") == clean_model and current.get("active_mmproj") != mmproj:
+                stop_request = urllib.request.Request(status_url.replace("/api/status", "/api/stop"), data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(stop_request, timeout=10):
+                    pass
+
+            selection = {"model": clean_model, "mmproj": mmproj or "__etu_no_mmproj__.gguf"}
+            req = urllib.request.Request(
+                "http://127.0.0.1:11343/api/select", data=json.dumps(selection).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            if result.get("success") is False:
+                raise RuntimeError(result.get("error") or "Beacon a refusé le modèle")
+
+            # OpenVINO may spend several minutes compiling the first stateless
+            # NPU graph; keep the request alive through that cold start.
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline:
+                with urllib.request.urlopen(status_url, timeout=3) as response:
+                    status = json.loads(response.read().decode("utf-8"))
+                if status.get("status") == "error":
+                    raise RuntimeError(status.get("error_message") or "Le chargement du modèle a échoué")
+                if status.get("status") == "running" and status.get("active_model") == clean_model:
+                    if status.get("active_mmproj") != mmproj:
+                        raise RuntimeError("Beacon n'a pas chargé le projecteur associé à cette variante")
+                    return status
+                time.sleep(0.5)
+            raise RuntimeError("Délai de chargement du modèle dépassé")
+        except (HTTPException, RuntimeError):
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Beacon indisponible : {exc}") from exc
+
+
+stream_handler.local_model_selector = activate_local_model_for_chat
+
+
 @app.post("/api/models/select")
 def select_model(req: ModelSelectRequest):
-    """Bascule à chaud du modèle via l'API de MAIA-Beacon."""
+    """Choisit le prochain modèle ; un modèle local ne se charge qu'au prochain message."""
     if req.source == "api":
         if not req.provider or req.provider not in PROVIDER_PRESETS:
             raise HTTPException(status_code=400, detail="Fournisseur API invalide")
@@ -825,56 +1177,16 @@ def select_model(req: ModelSelectRequest):
         mmproj = ProjectorManager(storage, downloader, hf_client).selected(f"{clean_model}.gguf")
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    try:
-        beacon_url = "http://127.0.0.1:11343/api/select"
-        selection: dict[str, Any] = {"model": clean_model}
-        # A non-existent explicit path disables Beacon's broad family-based auto-detection.
-        # Exact projector associations are resolved and validated by this application.
-        selection["mmproj"] = mmproj or "__etu_no_mmproj__.gguf"
-        with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=3) as status_resp:
-            current = json.loads(status_resp.read().decode("utf-8"))
-        if current.get("active_model") == clean_model and current.get("status") == "running" and current.get("active_mmproj") != mmproj:
-            stop_request = urllib.request.Request("http://127.0.0.1:11343/api/stop", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(stop_request, timeout=10):
-                pass
-        if req.context_size is not None:
-            selection["context_size"] = req.context_size
-        payload = json.dumps(selection).encode("utf-8")
-        req_post = urllib.request.Request(
-            beacon_url,
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req_post, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if data.get("success") is False:
-                raise HTTPException(status_code=502, detail=data.get("error", "Beacon a refusé le modèle"))
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=3) as status_resp:
-                status = json.loads(status_resp.read().decode("utf-8"))
-            if status.get("status") == "error":
-                raise HTTPException(status_code=502, detail=status.get("error_message") or "Chargement du modèle échoué")
-            if status.get("status") == "running" and status.get("active_model") == clean_model and status.get("active_mmproj") != mmproj:
-                raise HTTPException(status_code=502, detail="Le moteur n'a pas chargé le projecteur associé. Vérifiez sa compatibilité avec cette variante du modèle.")
-            if status.get("status") == "running" and status.get("active_model") == clean_model and status.get("active_mmproj") == mmproj:
-                storage.set_setting("selected_model", clean_model)
-                provider_state = storage.get_setting("api_providers", {}) or {}
-                if provider_state:
-                    provider_state["active_provider"] = None
-                    storage.set_setting("api_providers", provider_state)
-                legacy_provider = storage.get_setting("api_provider", {}) or {}
-                if legacy_provider.get("enabled"):
-                    legacy_provider["enabled"] = False
-                    storage.set_setting("api_provider", legacy_provider)
-                return {"success": True, "active_model": clean_model, "active_mmproj": mmproj, "result": status}
-            time.sleep(0.5)
-        raise HTTPException(status_code=504, detail="Délai de chargement du modèle dépassé")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Beacon indisponible : {e}")
+    storage.set_setting("selected_model", clean_model)
+    provider_state = storage.get_setting("api_providers", {}) or {}
+    if provider_state:
+        provider_state["active_provider"] = None
+        storage.set_setting("api_providers", provider_state)
+    legacy_provider = storage.get_setting("api_provider", {}) or {}
+    if legacy_provider.get("enabled"):
+        legacy_provider["enabled"] = False
+        storage.set_setting("api_provider", legacy_provider)
+    return {"success": True, "queued": True, "active_model": clean_model, "active_mmproj": mmproj}
 
 
 @app.post("/api/models/performance")
@@ -906,6 +1218,39 @@ def get_model_performance(model_id: Optional[str] = None, model_name: Optional[s
 @app.get("/api/setup/status")
 def get_setup_status():
     return wizard_manager.get_status()
+
+
+@app.get("/api/settings/hardware")
+def get_hardware_preference():
+    preference = storage.get_setting("hardware_preference", "auto")
+    if preference not in {"auto", "gpu", "npu"}:
+        preference = "auto"
+    hw = get_hardware_info()
+    return {"preference": preference, "has_npu": bool(hw.get("npus")), "has_gpu": bool(hw.get("gpus"))}
+
+
+@app.put("/api/settings/hardware")
+def update_hardware_preference(req: HardwarePreferenceRequest):
+    hw = get_hardware_info()
+    if req.preference == "npu" and not hw.get("npus"):
+        raise HTTPException(status_code=422, detail="Aucun NPU détecté sur cet ordinateur")
+    if req.preference == "gpu" and not hw.get("gpus"):
+        raise HTTPException(status_code=422, detail="Aucun GPU détecté sur cet ordinateur")
+    config = load_config()
+    config["backend"] = "npu" if req.preference == "npu" else "auto"
+    config_path = AI_SERVER_DIR / "config.json"
+    try:
+        existing = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+        existing["backend"] = config["backend"]
+        atomic_json(config_path, existing)
+        storage.set_setting("hardware_preference", req.preference)
+        if wizard_manager.is_beacon_online():
+            wizard_manager.stop_beacon_listener()
+        if wizard_manager.is_completed() and not wizard_manager.ensure_beacon_running():
+            raise RuntimeError("Impossible de redémarrer MAIA-Beacon")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Préférence enregistrée, mais redémarrage de Beacon impossible : {exc}") from exc
+    return get_hardware_preference()
 
 
 @app.get("/api/settings/provider")
@@ -1089,6 +1434,146 @@ def get_app_state():
     return state_manager.get_state()
 
 
+@app.get("/api/maintenance/server")
+def get_server_maintenance(request: Request, refresh: bool = False):
+    require_local_admin(request)
+    config = load_config()
+    state = read_json(STATE_FILE)
+    installed_variant = next((part.removeprefix("bin-") for part in Path(state.get("llama_exe_path", "")).parts if part.startswith("bin-")), None)
+    with _server_reinstall_lock:
+        progress = _server_reinstall.copy()
+    try:
+        variants = release_variants(config, refresh=refresh)
+        catalog_error = None if any(item["compatible"] for item in variants) else "Aucun exécutable compatible dans les releases GitHub"
+    except (RuntimeError, ValueError) as exc:
+        variants, catalog_error = [], str(exc)
+    return {
+        "variants": [{"id": item["id"], "label": item["label"], "platform": item["platform"],
+                      "arch": item["arch"], "tag": item["tag"], "variant": item["variant"],
+                      "compatible": item["compatible"]} for item in variants],
+        "selected_variant": next((item["id"] for item in variants if item["compatible"] and item["tag"] == config["llama_release_tag"] and item["variant"] == installed_variant), None),
+        "installed_variant": installed_variant,
+        "release_tag": config["llama_release_tag"],
+        "catalog_error": catalog_error,
+        **progress,
+    }
+
+
+@app.get("/api/maintenance/server/progress")
+def get_server_reinstall_progress(request: Request):
+    require_local_admin(request)
+    with _server_reinstall_lock:
+        return _server_reinstall.copy()
+
+
+class ServerReinstallRequest(BaseModel):
+    variant: str
+
+
+def _reinstall_server_variant(asset: dict[str, str]) -> None:
+    failure = None
+    variant = asset["variant"]
+    try:
+        with _server_reinstall_lock:
+            _server_reinstall.update(status="running", message="En attente de la fin des réponses en cours…")
+        with _inference_condition:
+            while _active_inference_requests:
+                _inference_condition.wait(timeout=1)
+
+        with _server_reinstall_lock:
+            _server_reinstall.update(status="running", message="Arrêt du moteur d’inférence…")
+        if wizard_manager.is_beacon_online():
+            wizard_manager.stop_beacon_listener()
+        process = wizard_manager.beacon_process
+        if process and process.poll() is None:
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        with _server_reinstall_lock:
+            _server_reinstall.update(status="running", message="Installation de la version choisie…")
+        config = load_config()
+        backend = backend_for_variant(variant)
+        config["backend"] = backend
+        config["device"] = "auto"
+        config["llama_release_tag"] = asset["tag"]
+        config["_exact_asset_name"] = asset["name"]
+        config["_exact_asset_url"] = asset["url"]
+        if asset["sha256"]:
+            config["binary_sha256"] = {**config["binary_sha256"], asset["name"]: asset["sha256"]}
+        with file_lock(AI_SERVER_DIR / "setup.lock"), file_lock((BASE_DIR / config["deps_dir"]) / ".maia.lock"):
+            setup_llama(scan_hardware(), config=config, exact_variant=variant)
+            saved = read_json(CONFIG_FILE)
+            saved["backend"] = backend
+            saved["device"] = "auto"
+            saved["llama_release_tag"] = asset["tag"]
+            if asset["sha256"]:
+                saved["binary_sha256"] = {**saved.get("binary_sha256", {}), asset["name"]: asset["sha256"]}
+            atomic_json(CONFIG_FILE, saved)
+    except Exception as exc:
+        logger.exception("Server variant reinstall failed")
+        failure = str(exc)
+    finally:
+        if wizard_manager.is_completed():
+            with _server_reinstall_lock:
+                _server_reinstall.update(status="running", message="Redémarrage du moteur d’inférence…")
+            if not wizard_manager.ensure_beacon_running() and failure is None:
+                failure = "Variante installée, mais le moteur local n’a pas pu redémarrer"
+            elif failure is None:
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline and not wizard_manager.is_beacon_online():
+                    time.sleep(0.5)
+                if not wizard_manager.is_beacon_online():
+                    failure = "Variante installée, mais le moteur local ne répond pas après son redémarrage"
+        global _inference_reinstall_pending
+        with _inference_condition:
+            _inference_reinstall_pending = False
+            _inference_condition.notify_all()
+        with _server_reinstall_lock:
+            _server_reinstall.update(
+                status="error" if failure else "completed",
+                message=failure or f"Variante {variant} réinstallée",
+            )
+
+
+@app.post("/api/maintenance/server/reinstall")
+def reinstall_server_variant(request: Request, body: ServerReinstallRequest):
+    require_local_admin(request)
+    if wizard_manager.status == "running":
+        raise HTTPException(status_code=409, detail="Attendez la fin de l’installation en cours")
+    try:
+        asset = next((item for item in release_variants(load_config()) if item["compatible"] and item["id"] == body.variant), None)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if asset is None:
+        raise HTTPException(status_code=400, detail="Variante du serveur invalide pour cet ordinateur")
+    with _server_reinstall_lock:
+        if _server_reinstall["status"] == "running":
+            raise HTTPException(status_code=409, detail="Une réinstallation est déjà en cours")
+        global _inference_reinstall_pending
+        with _inference_condition:
+            _inference_reinstall_pending = True
+        _server_reinstall.update(
+            status="running", message="Préparation de la réinstallation…",
+            variant=asset["variant"], release_tag=asset["tag"],
+        )
+    try:
+        threading.Thread(target=_reinstall_server_variant, args=(asset,), daemon=True).start()
+    except RuntimeError as exc:
+        with _inference_condition:
+            _inference_reinstall_pending = False
+            _inference_condition.notify_all()
+        with _server_reinstall_lock:
+            _server_reinstall.update(status="error", message="Impossible de démarrer la réinstallation")
+        raise HTTPException(status_code=503, detail="Impossible de démarrer la réinstallation") from exc
+    return {"started": True}
+
+
 @app.post("/api/setup/state")
 def update_app_state(updates: dict[str, Any]):
     """Permet de mettre à jour des clés de l'état persistant."""
@@ -1097,7 +1582,7 @@ def update_app_state(updates: dict[str, Any]):
 
 @app.post("/api/setup/start")
 def start_setup_endpoint(req: SetupStartRequest):
-    started = wizard_manager.start_setup(req.selected_models)
+    started = wizard_manager.start_setup(req.selected_models, req.backend)
     return {"started": started, "status": wizard_manager.status}
 
 
@@ -1149,12 +1634,18 @@ def server_status():
         active_model = saved_selected_model
     elif not active_model and installed:
         active_model = installed[0].replace(".gguf", "")
+    loaded_model = active_model
 
     catalog_items = get_catalog_with_status(hw, installed)
     installed_catalog = [m for m in catalog_items if m.get("is_installed")]
     provider_state = storage.get_setting("api_providers", {}) or {}
     active_provider = provider_state.get("active_provider")
     active_remote_model = next((model for model in get_configured_api_models() if model["provider"] == active_provider), None)
+    if saved_selected_model and not active_remote_model:
+        active_model = saved_selected_model
+        model_ready = model_state == "running" and loaded_model == saved_selected_model
+        if model_state == "running" and loaded_model != saved_selected_model:
+            model_state = "selected"
 
     return {
         "app_name": "ETU-AI",
@@ -1162,6 +1653,7 @@ def server_status():
         "setup_completed": wizard_manager.is_completed(),
         "beacon_online": beacon_online,
         "active_model": active_model,
+        "loaded_model": loaded_model,
         "active_remote_model": active_remote_model,
         "active_engine": active_engine,
         "active_mmproj": active_mmproj,
@@ -1174,6 +1666,8 @@ def server_status():
         "installed_models": installed_catalog,
         "remote_models": get_configured_api_models(),
         "backend": hw.get("recommended_backend"),
+        "installed_backend": read_json(STATE_FILE).get("backend"),
+        "configured_backend": load_config().get("backend"),
         "gpus": hw.get("gpus", []),
         "npus": hw.get("npus", []),
         "has_npu": bool(hw.get("npus")),

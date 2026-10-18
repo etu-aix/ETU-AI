@@ -107,7 +107,7 @@ def find_llama_server_binary(root: Union[str, Path]) -> Optional[Path]:
     return sorted(matches, key=lambda p: len(p.parts))[0] if matches else None
 
 
-def get_platform_info(requested_backend: str) -> tuple[str, str, str, list[str]]:
+def get_platform_info(requested_backend: str, fallback_backend: str = "cpu") -> tuple[str, str, str, list[str]]:
     """Determine host platform platform name, architecture, archive type, and backend priority order.
 
     Args:
@@ -132,13 +132,18 @@ def get_platform_info(requested_backend: str) -> tuple[str, str, str, list[str]]
         "metal": ["metal", "cpu"],
         "cpu": ["cpu"],
     }
-    candidates = backend_map.get(requested_backend, ["cpu"])
+    if requested_backend == "npu":
+        if system not in ("Windows", "Linux") or arch != "x64":
+            raise RuntimeError(f"OpenVINO NPU release is unavailable for {system}/{arch}")
+        candidates = ["openvino", *backend_map.get(fallback_backend, ["cpu"])]
+    else:
+        candidates = backend_map.get(requested_backend, ["cpu"])
     os_name = {"Windows": "windows", "Linux": "linux", "Darwin": "macos"}[system]
     ext = "zip" if system == "Windows" else "tar.gz"
     return os_name, arch, ext, candidates
 
 
-def list_devices(executable: Union[str, Path], verbose: bool = False) -> list[dict[str, Any]]:
+def list_devices(executable: Union[str, Path], verbose: bool = False, env: Optional[dict[str, str]] = None) -> list[dict[str, Any]]:
     """Probe an executable for available hardware computation devices using `--list-devices`.
 
     Args:
@@ -149,7 +154,7 @@ def list_devices(executable: Union[str, Path], verbose: bool = False) -> list[di
         list of dict: Parsed device info dictionaries (id, name, total VRAM, free VRAM).
     """
     command = [str(executable), "--list-devices"]
-    result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=20)
+    result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=20, env=env)
     if result.returncode:
         if verbose:
             print(f"[!] {executable} --list-devices exited {result.returncode} (0x{result.returncode & 0xffffffff:08X}): {(result.stdout + result.stderr)[-2000:]}")
@@ -183,14 +188,21 @@ def test_binary_execution(
         bool: True if binary executes and meets backend/device requirements, False otherwise.
     """
     try:
+        env = os.environ.copy()
+        env.pop("GGML_OPENVINO_DEVICE", None)
+        if backend == "npu":
+            env["GGML_OPENVINO_DEVICE"] = "NPU"
         command = [str(exe_path), "--version"]
-        result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=20)
+        result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=20, env=env)
         if result.returncode != 0:
             print(f"[!] {exe_path} --version exited {result.returncode} (0x{result.returncode & 0xffffffff:08X}): {(result.stdout + result.stderr)[-2000:]}")
             return False
         if backend == "cpu":
             return device == "auto"
-        devices = list_devices(exe_path, verbose=True)
+        devices = list_devices(exe_path, verbose=True, env=env)
+        if backend == "npu" and not any(d["id"].upper().startswith("OPENVINO") for d in devices):
+            print(f"[!] {exe_path} does not expose an OpenVINO device")
+            return False
         if device != "auto" and not any(d["id"] == device for d in devices):
             print(f"[!] Requested device {device} is not among the devices reported by {exe_path}")
             return False
@@ -240,11 +252,21 @@ def download_precompiled_binary(
     Returns:
         tuple[Path or None, str or None]: Tuple of (executable_path, matched_backend), or (None, None).
     """
-    os_name, arch, ext, candidates = get_platform_info(backend)
+    os_name, arch, ext, candidates = get_platform_info(backend, config.get("_fallback_backend", "cpu"))
+    exact_variant = config.get("_exact_variant")
+    if exact_variant:
+        expected_name = f"llama-server-{config['llama_release_tag']}-{os_name}-{arch}-{exact_variant}.{ext}"
+        expected_url = f"https://github.com/{config['llama_release_repo']}/releases/download/{config['llama_release_tag']}/{expected_name}"
+        if config.get("_exact_asset_name") or config.get("_exact_asset_url"):
+            if config.get("_exact_asset_name") != expected_name or config.get("_exact_asset_url") != expected_url:
+                raise ValueError("Release archive does not match the selected GitHub asset")
+        elif exact_variant not in candidates:
+            raise ValueError(f"Unsupported release variant: {exact_variant}")
+        candidates = [exact_variant]
     target = Path(target_dir)
     target.mkdir(parents=True, exist_ok=True)
     for candidate in candidates:
-        actual = "cuda" if candidate.startswith("cuda") else candidate
+        actual = "npu" if candidate == "openvino" else "cuda" if candidate.startswith("cuda") else "vulkan" if candidate.startswith("vulkan") else candidate
         if actual == "cpu" and (config["device"] != "auto" or not allow_cpu):
             continue
         filename = f"llama-server-{config['llama_release_tag']}-{os_name}-{arch}-{candidate}.{ext}"
@@ -256,6 +278,10 @@ def download_precompiled_binary(
             backend=candidate,
             ext=ext,
         )
+        if exact_variant and config.get("_exact_asset_name"):
+            if filename != config["_exact_asset_name"]:
+                raise ValueError("Release archive does not match the selected GitHub asset")
+            url = config["_exact_asset_url"]
         print(f"[+] Trying {candidate}: {url}")
         try:
             with tempfile.TemporaryDirectory(dir=target, prefix="binary-", ignore_cleanup_errors=True) as temp:
@@ -302,7 +328,7 @@ def compile_from_source(
         RuntimeError: If build or execution tests fail for all backend candidates.
     """
     ensure_source_archive(config["llama_repo"], llama_dir, config["llama_tag"], update=update)
-    _, _, _, candidates = get_platform_info(backend)
+    _, _, _, candidates = get_platform_info(backend, config.get("_fallback_backend", "cpu"))
     unique_candidates = dict.fromkeys("cuda" if item.startswith("cuda") else item for item in candidates)
     for candidate in unique_candidates:
         if candidate == "cpu" and config["device"] != "auto":
@@ -326,8 +352,9 @@ def compile_from_source(
                 "--target", "llama-server", "--parallel", parallel_jobs,
             ])
             exe = find_llama_server_binary(build)
-            if exe and test_binary_execution(exe, candidate, config["device"]):
-                return exe, candidate
+            actual = "npu" if candidate == "openvino" else candidate
+            if exe and test_binary_execution(exe, actual, config["device"]):
+                return exe, actual
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"[!] Build {candidate} failed: {exc}")
     raise RuntimeError("No build could execute; check compiler, SDK and driver diagnostics above")
@@ -339,6 +366,7 @@ def setup_llama(
     offline: bool = False,
     update: bool = False,
     config: Optional[dict[str, Any]] = None,
+    exact_variant: Optional[str] = None,
 ) -> Path:
     """Set up and validate a llama-server binary appropriate for the detected system hardware.
 
@@ -348,6 +376,7 @@ def setup_llama(
         offline (bool, optional): Prevent downloading binaries or cloning repos. Defaults to False.
         update (bool, optional): Force checking for updated releases or commits. Defaults to False.
         config (dict, optional): Configuration settings dictionary. Defaults to loading from disk.
+        exact_variant (str, optional): Install only this release archive variant, without backend fallback.
 
     Returns:
         Path: Validated Path to the `llama-server` binary.
@@ -355,9 +384,18 @@ def setup_llama(
     Raises:
         RuntimeError: If no functional binary is available or matches hardware requirements.
     """
-    cfg = config or load_config()
+    cfg = dict(config or load_config())
+    if exact_variant:
+        cfg["_exact_variant"] = exact_variant
+        update = True
+    cfg["_fallback_backend"] = hw_info.get("recommended_backend", "cpu")
     backend = cfg["backend"] if cfg["backend"] != "auto" else hw_info.get("recommended_backend", "cpu")
-    get_platform_info(backend)
+    if backend == "npu" and not any(
+        "intel" in f"{item.get('name', '')} {item.get('manufacturer', '')}".lower()
+        for item in hw_info.get("npus", [])
+    ):
+        raise RuntimeError("OpenVINO NPU requires a detected Intel NPU and driver")
+    get_platform_info(backend, cfg["_fallback_backend"])
     state = read_json(STATE_FILE)
     identity = binary_identity(cfg)
     cached = ROOT_DIR / state.get("llama_exe_path", "__missing__")
@@ -391,6 +429,8 @@ def setup_llama(
     deps = (ROOT_DIR / cfg["deps_dir"]).resolve()
     exe, actual = (None, None) if force_rebuild else download_precompiled_binary(deps, backend, cfg)
     if exe is None:
+        if exact_variant:
+            raise RuntimeError(f"La variante {exact_variant} est indisponible ou incompatible avec cet ordinateur")
         if not shutil.which("cmake"):
             raise RuntimeError("No usable precompiled binary. Install CMake and a C++ toolchain, or select a supported release")
         exe, actual = compile_from_source(deps / "llama-cpp-turboquant", backend, cfg, update=update)

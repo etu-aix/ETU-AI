@@ -44,14 +44,18 @@ class ChatToolTest(unittest.IsolatedAsyncioTestCase):
             synthesis = json.loads(requests[1].content)
             self.assertEqual(json.loads(synthesis['messages'][-1]['content'])['data']['group'], 'Group1')
 
-    async def test_etu_tools_are_not_offered_to_remote_providers(self):
+    async def test_etu_tools_are_not_offered_without_remote_sharing_consent(self):
         with tempfile.TemporaryDirectory() as directory:
             storage = StorageManager(Path(directory)/'chat.db')
             storage.set_setting('api_providers', {'active_provider':'test', 'configs':{'test':{'base_url':'https://example.test/v1', 'model':'test'}}})
+            storage.set_setting('etu_remote_tools_enabled', False)
             conversation = storage.create_conversation('Test distant')
             with patch('chat.sse_handler.get_api_key', return_value='dummy-key'), patch('chat.sse_handler.tool_relay.binding', side_effect=AssertionError('ETU data must stay local')), mock_sse() as requests:
                 async for _ in ChatStreamHandler(storage=storage).stream_chat(conversation, 'Bonjour'): pass
-            self.assertIsNone(json.loads(requests[0].content)['tools'])
+            payload = json.loads(requests[0].content)
+            self.assertIsNone(payload['tools'])
+            self.assertIn('Le partage des informations ETU avec les fournisseurs tiers est désactivé', payload['messages'][0]['content'])
+            self.assertIn('section Fournisseurs IA et clés API', payload['messages'][0]['content'])
 
     async def test_remote_tools_require_consent_and_are_offered_when_enabled(self):
         with tempfile.TemporaryDirectory() as directory:

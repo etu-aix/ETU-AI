@@ -6,7 +6,7 @@ Intercepte les appels d'outils, émet des fragments HTML en temps réel et persi
 from collections.abc import AsyncGenerator
 import asyncio
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import httpx
 
 from chat.prompts import build_system_message
@@ -25,10 +25,12 @@ class ChatStreamHandler:
         storage: Optional[StorageManager] = None,
         tool_executor: Optional[ToolExecutor] = None,
         llama_url: str = "http://127.0.0.1:11343",
+        local_model_selector: Optional[Callable[[str], Any]] = None,
     ):
         self.storage = storage or StorageManager()
         self.tool_executor = tool_executor or ToolExecutor()
         self.llama_url = llama_url.rstrip("/")
+        self.local_model_selector = local_model_selector
         self.active_requests: dict[str, asyncio.Task] = {}
 
     def cancel(self, request_id: str) -> bool:
@@ -100,7 +102,7 @@ class ChatStreamHandler:
             instructions = profile.get("instructions", "")
             system_message["content"] += f"\n\nNom de cet assistant : {name}."
             if instructions:
-                system_message["content"] += f"\nPréférences personnelles de l'utilisateur : {instructions}"
+                system_message["content"] += f"\nInstructions du profil : {instructions}"
         # Garder le contexte utile sans ralentir le pré-remplissage sur CPU.
         recent = []
         remaining = 10000
@@ -156,10 +158,13 @@ class ChatStreamHandler:
         elif use_remote and remote_tools_allowed and not remote_tool_compatible:
             system_message["content"] = system_message["content"].replace("Etu2 n'est pas connecté ; ne prétends pas lire des données étudiantes ou y effectuer des actions.", "ETU 2 est connecté, mais les outils ne sont pas compatibles avec ce fournisseur. Ne prétends pas lire des données étudiantes.")
         elif use_remote and not remote_tools_allowed:
-            system_message["content"] = system_message["content"].replace("Etu2 n'est pas connecté ; ne prétends pas lire des données étudiantes ou y effectuer des actions.", "Les outils ETU ne sont pas disponibles pour cette réponse distante. Ne prétends pas lire des données étudiantes.")
+            system_message["content"] = system_message["content"].replace(
+                "Etu2 n'est pas connecté ; ne prétends pas lire des données étudiantes ou y effectuer des actions.",
+                "Le partage des informations ETU avec les fournisseurs tiers est désactivé. Les fonctions ETU ne sont donc pas disponibles pour cette réponse : n'essaie pas de les appeler et n'invente aucun résultat. Si la demande nécessite ces fonctions, indique que ce réglage peut être activé dans Paramètres, section Fournisseurs IA et clés API.",
+            )
         endpoint = self.llama_url + "/v1/chat/completions"
         headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
-        target_model = model_name or "default"
+        target_model = model_name or self.storage.get_setting("selected_model") or "default"
         remote_type = provider.get("type", "openai")
         if use_remote:
             try:
@@ -247,6 +252,13 @@ class ChatStreamHandler:
                 initial_state = "loading_model"
                 initial_message = f"Réveil de {target_model} dans llama.cpp…"
         yield self._sse_event("status", {"state": initial_state, "message": initial_message})
+        if not use_remote and self.local_model_selector and target_model != "default":
+            try:
+                await asyncio.to_thread(self.local_model_selector, target_model)
+            except Exception as exc:
+                yield self._sse_event("error", {"message": f"Le chargement de {target_model} a échoué : {exc}"})
+                yield self._sse_event("done", {"status": "error"})
+                return
 
         assistant_full_html = ""
         tool_calls_accumulator: dict[int, dict[str, Any]] = {}

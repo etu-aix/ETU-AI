@@ -7,7 +7,9 @@ et le démarrage supervisé du serveur d'IA sur le port 11343 avec retour d'éta
 from collections.abc import Callable
 import json
 import os
+import platform
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import threading
@@ -18,6 +20,7 @@ import urllib.request
 
 from storage.db import StorageManager
 from storage.state_manager import state_manager
+from setup_utils import file_lock
 
 ROOT_DIR = Path(__file__).resolve().parent
 AI_SERVER_DIR = ROOT_DIR / "ai-server"
@@ -78,40 +81,186 @@ class SetupWizardManager:
         if self.is_beacon_online():
             return True
 
-        with self.lock:
-            if self.beacon_process and self.beacon_process.poll() is None:
-                # Processus déjà en cours de lancement
-                return True
+        deadline = time.monotonic() + 300
+        launch_lock = AI_SERVER_DIR / ".beacon-launch.lock"
+        try:
+            # Multiple ETU-AI instances (for example during a restart) can each
+            # run their own recovery loop. Serialize only the launch window,
+            # then wait for the owner to expose the API instead of starting a
+            # second Beacon that will fail on .venv.maia.lock.
+            with file_lock(launch_lock):
+                if self.is_beacon_online():
+                    return True
+                with self.lock:
+                    if self.beacon_process and self.beacon_process.poll() is None:
+                        process = self.beacon_process
+                    else:
+                        env = os.environ.copy()
+                        env["PYTHONPATH"] = str(AI_SERVER_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+                        cmd_run = [sys.executable, "beacon.py"]
+                        process = subprocess.Popen(
+                            cmd_run,
+                            cwd=str(AI_SERVER_DIR),
+                            env=env,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            encoding="utf-8",
+                            errors="replace",
+                            bufsize=1,
+                        )
+                        self.beacon_process = process
 
-            env = os.environ.copy()
-            env["PYTHONPATH"] = str(AI_SERVER_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+                        def _stream(proc=process):
+                            if proc.stdout:
+                                for line in proc.stdout:
+                                    message = line.rstrip()
+                                    if message:
+                                        self.add_log(f"[Beacon] {message}")
 
-            cmd_run = [sys.executable, "beacon.py"]
-            try:
-                self.beacon_process = subprocess.Popen(
-                    cmd_run,
-                    cwd=str(AI_SERVER_DIR),
-                    env=env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    bufsize=1,
-                )
+                        threading.Thread(target=_stream, daemon=True).start()
 
-                def _stream():
-                    if self.beacon_process and self.beacon_process.stdout:
-                        for l in self.beacon_process.stdout:
-                            c = l.rstrip()
-                            if c:
-                                self.add_log(f"[Beacon] {c}")
-
-                threading.Thread(target=_stream, daemon=True).start()
-                return True
-            except Exception as e:
-                self.add_log(f"[!] Échec démarrage Beacon en arrière-plan: {e}")
+                while time.monotonic() < deadline:
+                    if self.is_beacon_online():
+                        return True
+                    if process.poll() is not None:
+                        self.add_log(f"[!] Beacon s'est arrêté avant d'ouvrir son API (code {process.returncode})")
+                        return False
+                    time.sleep(0.5)
+                self.add_log("[!] Délai dépassé en attendant l'API MAIA-Beacon")
                 return False
+        except RuntimeError as exc:
+            if "Another instance owns" not in str(exc):
+                self.add_log(f"[!] Échec démarrage Beacon en arrière-plan: {exc}")
+                return False
+            self.add_log("[i] Un autre superviseur démarre déjà MAIA-Beacon ; attente de son API")
+            while time.monotonic() < deadline:
+                if self.is_beacon_online():
+                    return True
+                time.sleep(0.5)
+            self.add_log("[!] Le superviseur concurrent n'a pas ouvert l'API MAIA-Beacon")
+            return False
+
+    def stop_beacon_listener(self, timeout: float = 15) -> bool:
+        """Stop Beacon on its configured port, including a process started outside this manager."""
+        if not self.is_beacon_online():
+            # A supervisor can hold the setup lock while probing runtimes even
+            # before it opens port 11343. Stop the process tree we launched so
+            # restarts don't leave a hidden lock owner behind.
+            process = self.beacon_process
+            pids = set(self._beacon_supervisor_pids())
+            if process and process.poll() is None:
+                pids.add(process.pid)
+            for pid in sorted(pids):
+                if platform.system() == "Windows":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        capture_output=True, text=True, timeout=timeout,
+                    )
+                elif process and pid == process.pid:
+                    process.terminate()
+                else:
+                    os.kill(pid, signal.SIGTERM)
+            if process and process.poll() is None:
+                try:
+                    process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            return True
+
+        # Unload the active model first so llama-server can exit cleanly.
+        stop_request = urllib.request.Request(
+            f"{BEACON_URL}/api/stop",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(stop_request, timeout=timeout):
+                pass
+        except (urllib.error.URLError, OSError):
+            # A Beacon build may not expose /api/stop; the owning process is still stopped below.
+            pass
+
+        pids = self._beacon_listener_pids()
+        if not pids:
+            raise RuntimeError("Impossible de trouver le processus qui écoute sur le port de MAIA-Beacon")
+        for pid in pids:
+            if pid == os.getpid():
+                raise RuntimeError("Le port de MAIA-Beacon est occupé par le serveur ETU-AI")
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+            except OSError as exc:
+                raise RuntimeError(f"Impossible d’arrêter MAIA-Beacon (PID {pid}) : {exc}") from exc
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and self.is_beacon_online():
+            time.sleep(0.25)
+        if self.is_beacon_online():
+            raise RuntimeError("MAIA-Beacon ne s’est pas arrêté après la demande d’arrêt")
+        return True
+
+    @staticmethod
+    def _beacon_listener_pids() -> list[int]:
+        """Return process IDs listening on Beacon's fixed local API port."""
+        try:
+            import psutil
+
+            return sorted({
+                connection.pid
+                for connection in psutil.net_connections(kind="inet")
+                if connection.pid and connection.status == psutil.CONN_LISTEN
+                and connection.laddr and connection.laddr.port == 11343
+            })
+        except Exception:
+            pass
+
+        if platform.system() == "Windows":
+            try:
+                result = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=10, check=True)
+                pids = set()
+                for line in result.stdout.splitlines():
+                    fields = line.split()
+                    if len(fields) >= 5 and fields[0].upper() == "TCP" and fields[3].upper() == "LISTENING":
+                        if fields[1].rsplit(":", 1)[-1] == "11343" and fields[4].isdigit():
+                            pids.add(int(fields[4]))
+                return sorted(pids)
+            except (OSError, subprocess.SubprocessError):
+                return []
+
+        for command in (["lsof", "-tiTCP:11343", "-sTCP:LISTEN"], ["fuser", "-n", "tcp", "11343"]):
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+                pids = {int(token) for token in f"{result.stdout} {result.stderr}".split() if token.isdigit()}
+                if pids:
+                    return sorted(pids)
+            except (OSError, subprocess.SubprocessError, ValueError):
+                continue
+        return []
+
+    @staticmethod
+    def _beacon_supervisor_pids() -> list[int]:
+        """Find only Beacon supervisors started from this ETU-AI checkout."""
+        try:
+            import psutil
+
+            expected_cwd = str(AI_SERVER_DIR.resolve()).casefold()
+            expected_script = str((AI_SERVER_DIR / "beacon.py").resolve()).casefold()
+            matches = []
+            for process in psutil.process_iter(["pid", "cmdline", "cwd"]):
+                try:
+                    argv = [str(part).casefold() for part in (process.info.get("cmdline") or [])]
+                    cwd = str(process.info.get("cwd") or "").casefold()
+                    if "beacon.py" in argv and (cwd == expected_cwd or expected_script in argv):
+                        matches.append(int(process.info["pid"]))
+                except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+                    continue
+            return sorted(set(matches))
+        except Exception:
+            return []
 
     def get_status(self) -> dict[str, Any]:
         """Retourne l'état complet du setup pour le frontend."""
@@ -136,7 +285,7 @@ class SetupWizardManager:
             self.logs.append(entry)
             print(entry, flush=True)
 
-    def start_setup(self, selected_models: list[dict[str, Any]]) -> bool:
+    def start_setup(self, selected_models: list[dict[str, Any]], backend: str = "auto") -> bool:
         """Démarre le pipeline d'installation en arrière-plan."""
         with self.lock:
             if self.status == "running":
@@ -149,15 +298,17 @@ class SetupWizardManager:
             for s in self.steps:
                 s["status"] = "pending"
 
-        thread = threading.Thread(target=self._run_pipeline, args=(selected_models,), daemon=True)
+        thread = threading.Thread(target=self._run_pipeline, args=(selected_models, backend), daemon=True)
         thread.start()
         return True
 
-    def _run_pipeline(self, selected_models: list[dict[str, Any]]) -> None:
+    def _run_pipeline(self, selected_models: list[dict[str, Any]], backend: str = "auto") -> None:
         """Exécute les 4 étapes du setup séquentiellement avec streaming des logs."""
         try:
             if not selected_models:
                 raise ValueError("Choisissez au moins un modèle avant l'installation")
+            if backend not in {"auto", "npu"}:
+                raise ValueError("Backend d'installation invalide")
             from models_mgr.hf_client import hf_client
             from models_mgr.downloader import ModelDownloader
             validator = ModelDownloader(storage=self.storage)
@@ -187,16 +338,15 @@ class SetupWizardManager:
 
             # Mise à jour de config.json dans ai-server avec le modèle choisi
             config_json_path = AI_SERVER_DIR / "config.json"
+            cfg_data = {}
             if config_json_path.exists():
-                try:
-                    with open(config_json_path, "r", encoding="utf-8") as f:
-                        cfg_data = json.load(f)
-                    cfg_data["default_model_repo"] = primary_model.get("repo", "mistralai/Ministral-3-3B-Instruct-2512-GGUF")
-                    cfg_data["default_model_file"] = primary_model.get("filename", "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf")
-                    with open(config_json_path, "w", encoding="utf-8") as f:
-                        json.dump(cfg_data, f, indent=2)
-                except Exception as e:
-                    self.add_log(f"[!] Avertissement mise à jour config.json: {e}")
+                with open(config_json_path, "r", encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+            cfg_data["default_model_repo"] = primary_model.get("repo", "mistralai/Ministral-3-3B-Instruct-2512-GGUF")
+            cfg_data["default_model_file"] = primary_model.get("filename", "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf")
+            cfg_data["backend"] = backend
+            with open(config_json_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, indent=2)
 
             # Lancement de beacon.py --setup-only pour préparer les binaires & venv
             self.add_log("Préparation des binaires et de l'environnement virtuel...")

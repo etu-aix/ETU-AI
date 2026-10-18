@@ -11,6 +11,9 @@ __pycache__/
 storage/api_secrets.dpapi
 storage/api_secrets.unreadable-*.dpapi
 storage/etu_identity.dpapi
+storage/etu_identity.vault
+storage/etu_identity.*-*.vault
+storage/etu_identity.*-*.dpapi
 # Fichiers de secrets locaux potentiels pour les autres coffres système.
 storage/api_secrets.json
 storage/model-performance.jsonl

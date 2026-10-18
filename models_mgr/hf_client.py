@@ -13,9 +13,18 @@ from typing import Any, Optional
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
 
 DEFAULT_USER_AGENT = "ETU-AI-HuggingFace-Client/1.0"
 HF_API_BASE = "https://huggingface.co/api"
+TRUSTED_GGUF_PUBLISHERS = ("mistralai", "Qwen", "Alibaba-NLP", "deepseek-ai", "meta-llama")
+PARAMETER_RANGES = {
+    "1to2": (1, 2), "2to4": (2, 4), "4to7": (4, 7),
+    "7to14": (7, 14), "14to35": (14, 35), "35plus": (35, None),
+}
+
+_HF_TREE_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="hf-tree")
+_HF_SEARCH_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hf-search")
 
 
 # Catalogue de secours hors-ligne / rapide enrichi avec métadonnées complètes
@@ -408,7 +417,7 @@ FALLBACK_GGUF_MODELS = [
 class HuggingFaceClient:
     """Client public pour l'API REST Hugging Face (sans token ni credential)."""
 
-    def __init__(self, timeout: int = 8):
+    def __init__(self, timeout: int = 2):
         self.timeout = timeout
         self._cache: dict[str, Any] = {}
         self._cache_time: dict[str, float] = {}
@@ -444,9 +453,13 @@ class HuggingFaceClient:
         filter_tag: str = "gguf",
         sort: str = "downloads",
         limit: int = 40,
+        author: str = "",
+        single_source: bool = False,
     ) -> list[dict[str, Any]]:
         """Recherche des dépôts de modèles GGUF sur Hugging Face sans identifiant."""
-        if not query:
+        if author or single_source:
+            search_queries = [query]
+        elif not query:
             # En mode découverte globale, interroge plusieurs requêtes clés pour obtenir un large catalogue
             search_queries = ["instruct gguf", "qwen gguf", "llama gguf", "code gguf", "mistral gguf"]
         else:
@@ -460,10 +473,12 @@ class HuggingFaceClient:
                 "search": sq,
                 "sort": sort,
                 "direction": "-1",
-                "limit": str(min(limit, 30)),
+                "limit": str(min(limit, 60 if single_source else 30)),
             }
             if filter_tag:
                 params["filter"] = filter_tag
+            if author:
+                params["author"] = author
 
             query_str = urllib.parse.urlencode(params)
             url = f"{HF_API_BASE}/models?{query_str}"
@@ -478,7 +493,10 @@ class HuggingFaceClient:
 
         if not aggregated_raw:
             # En cas d'indisponibilité réseau ou timeout, utilisation du catalogue de secours
-            return self._filter_fallback_catalog(query)
+            fallback = self._filter_fallback_catalog(query)
+            if author:
+                fallback = [item for item in fallback if item["repo"].split("/", 1)[0].lower() == author.lower()]
+            return fallback[:limit]
 
         results = []
         for item in aggregated_raw:
@@ -488,7 +506,7 @@ class HuggingFaceClient:
             
             author, model_name = repo_id.split("/", 1)
             clean_name = self._beautify_model_name(model_name)
-            params_label = self._extract_params_size(repo_id)
+            params_label = self._extract_params_size(model_name)
 
             results.append({
                 "id": repo_id,
@@ -595,6 +613,18 @@ class HuggingFaceClient:
             color = "warning"
             recommendation = f"Fonctionnera mais consommera presque toute votre RAM ({required_ram_gib} Go / {total_ram_gib} Go)."
             score = 45
+        elif is_npu_optimal:
+            status_tier = "optimal"
+            badge = "🚀 Recommandé NPU"
+            color = "success"
+            recommendation = "Modèle compact adapté à un NPU détecté ; l'accélération réelle dépend du backend Beacon installé."
+            score = 95
+        elif is_npu_compatible:
+            status_tier = "compatible"
+            badge = "✅ Compatible NPU"
+            color = "info"
+            recommendation = "Peut convenir au NPU détecté ; l'accélération réelle dépend du backend Beacon installé."
+            score = 80
         elif has_gpu and size_gib <= 8.0:
             is_compatible = True
             status_tier = "optimal"
@@ -638,35 +668,126 @@ class HuggingFaceClient:
         query: str = "",
         limit: int = 30,
         only_compatible: bool = True,
+        publisher: str = "",
+        parameter_range: str = "",
+        trusted_only: bool = False,
+        hardware_filter: str = "",
+        preserve_order: bool = False,
     ) -> list[dict[str, Any]]:
         """Récupère toutes les IA possibles depuis Hugging Face en évaluant automatiquement
 
         la compatibilité matérielle avec le PC.
         """
-        raw_list = self.search_models(query=query, limit=limit)
+        # L'explorateur pagine par lots de dix modèles. Limiter les dépôts
+        # candidats à la taille de ce lot évite une rafale d'appels /tree sur
+        # Hugging Face à chaque nouvelle recherche.
+        # The explorer only needs enough candidates to fill the requested page.
+        # Doubling this count made each search fetch up to twice as many repository
+        # trees as it could display, and a slow Hugging Face response stalled UI search.
+        candidate_limit = limit
+        trusted_authors = {author.lower() for author in TRUSTED_GGUF_PUBLISHERS}
+        if trusted_only and not publisher:
+            search_future = _HF_SEARCH_EXECUTOR.submit(
+                self._search_trusted_models, query, candidate_limit
+            )
+            completed, _ = wait((search_future,), timeout=18)
+            if search_future in completed:
+                raw_list = search_future.result()
+            else:
+                search_future.cancel()
+                raw_list = self._filter_fallback_catalog(query)
+        else:
+            search_future = _HF_SEARCH_EXECUTOR.submit(
+                self.search_models,
+                query=query,
+                limit=candidate_limit,
+                author=publisher,
+                single_source=preserve_order,
+            )
+            completed, _ = wait((search_future,), timeout=18)
+            if search_future in completed:
+                raw_list = search_future.result()
+            else:
+                search_future.cancel()
+                raw_list = self._filter_fallback_catalog(query)
         compatible_models = []
 
         # Fusion avec les modèles de référence
         seen_repos = set()
         candidates = []
 
-        # 1. Modèles de référence enrichis
-        for fb in FALLBACK_GGUF_MODELS:
-            if not query or query.lower() in fb["name"].lower() or query.lower() in fb["repo"].lower():
-                candidates.append(fb)
-                seen_repos.add(fb["repo"].lower())
-                if len(candidates) >= limit:
-                    break
+        # L'explorateur montre la recherche live ; les autres vues gardent les références intégrées.
+        if not preserve_order:
+            for fb in FALLBACK_GGUF_MODELS:
+                if publisher and fb["repo"].split("/", 1)[0].lower() != publisher.lower():
+                    continue
+                if trusted_only and fb["repo"].split("/", 1)[0].lower() not in trusted_authors:
+                    continue
+                if not query or query.lower() in fb["name"].lower() or query.lower() in fb["repo"].lower():
+                    candidates.append(fb)
+                    seen_repos.add(fb["repo"].lower())
+                    if len(candidates) >= limit:
+                        break
 
         # 2. Modèles issus de Hugging Face Live API
-        for item in raw_list[:max(0, limit - len(candidates))]:
+        for item in raw_list[:max(0, candidate_limit - len(candidates))]:
             repo = item["repo"]
+            if publisher and repo.split("/", 1)[0].lower() != publisher.lower():
+                continue
+            if trusted_only and repo.split("/", 1)[0].lower() not in trusted_authors:
+                continue
             if repo.lower() not in seen_repos:
                 candidates.append(item)
                 seen_repos.add(repo.lower())
 
+        if preserve_order:
+            query_lower = query.lower().strip()
+            query_key = re.sub(r"[^a-z0-9]+", "", query_lower)
+            for fallback in FALLBACK_GGUF_MODELS:
+                repo = fallback["repo"]
+                author = repo.split("/", 1)[0]
+                if repo.lower() in seen_repos:
+                    continue
+                if publisher and author.lower() != publisher.lower():
+                    continue
+                if trusted_only and author.lower() not in trusted_authors:
+                    continue
+                if query_lower:
+                    searchable = f"{fallback['name']} {repo}".lower()
+                    searchable_key = re.sub(r"[^a-z0-9]+", "", searchable)
+                    if query_lower not in searchable and query_key not in searchable_key:
+                        continue
+                candidates.append(fallback)
+                seen_repos.add(repo.lower())
+
+        # L'API de recherche Hugging Face ne fournit pas les fichiers du dépôt.
+        # Les demander séquentiellement rendait l'explorateur très lent (jusqu'à
+        # plusieurs timeouts successifs). Précharge les arbres en parallèle tout
+        # en conservant l'ordre initial des dépôts.
+        missing_files = [candidate for candidate in candidates if not candidate.get("default_file")]
+        if missing_files:
+            futures = {_HF_TREE_EXECUTOR.submit(self.get_model_files, candidate["repo"]): candidate for candidate in missing_files}
+            completed, pending = wait(futures, timeout=18)
+            for future in completed:
+                candidate = futures[future]
+                candidate["_file_lookup_attempted"] = True
+                try:
+                    files = future.result()
+                except Exception:
+                    files = []
+                files = [file_info for file_info in files if not file_info.get("is_projector")]
+                if files:
+                    candidate["default_file"] = files[0]
+                    candidate["quantizations"] = files
+            for future in pending:
+                futures[future]["_file_lookup_attempted"] = True
+                future.cancel()
+
         for c in candidates:
             repo = c["repo"]
+            params_label = c.get("params") or self._extract_params_size(repo.split("/", 1)[-1])
+            if parameter_range and not self._matches_parameter_range(params_label, parameter_range):
+                continue
             
             # Détermination du fichier et de la taille
             default_file = c.get("default_file")
@@ -674,6 +795,9 @@ class HuggingFaceClient:
             
             verified_file = False
             if not default_file:
+                # Ne pas refaire en série une vérification déjà tentée en parallèle.
+                if c.get("_file_lookup_attempted"):
+                    continue
                 # Récupération des fichiers du dépôt
                 files = [item for item in self.get_model_files(repo) if not item.get("is_projector")]
                 if not files:
@@ -692,6 +816,12 @@ class HuggingFaceClient:
 
             if only_compatible and not comp["is_compatible"]:
                 continue
+            if hardware_filter == "gpu" and not comp["has_gpu_acceleration"]:
+                continue
+            if hardware_filter == "npu" and not comp["npu_candidate"]:
+                continue
+            if hardware_filter == "cpu" and not comp["is_compatible"]:
+                continue
 
             entry = {
                 "id": c.get("id", repo),
@@ -701,7 +831,7 @@ class HuggingFaceClient:
                 "description": c.get("description", f"Modèle GGUF haute performance disponible sur Hugging Face ({repo})."),
                 "downloads": c.get("downloads", 0),
                 "likes": c.get("likes", 0),
-                "params": c.get("params", self._extract_params_size(repo)),
+                "params": params_label,
                 "filename": default_file.get("filename"),
                 "size_gib": size_gib,
                 "quant": default_file.get("quant", "Q4_K_M"),
@@ -713,14 +843,25 @@ class HuggingFaceClient:
                 "file_verified": verified_file,
             }
             compatible_models.append(entry)
+            if preserve_order and len(compatible_models) >= limit:
+                break
 
         # Tri : Score de compatibilité décroissant, puis téléchargements
-        compatible_models.sort(
-            key=lambda m: (m["compatibility"]["score"], m.get("downloads", 0)),
-            reverse=True,
-        )
+        if not preserve_order:
+            compatible_models.sort(
+                key=lambda m: (m["compatibility"]["score"], m.get("downloads", 0)),
+                reverse=True,
+            )
 
         return compatible_models
+
+    def _search_trusted_models(self, query: str, limit: int) -> list[dict[str, Any]]:
+        """Search trusted publishers and keep the same popularity ordering."""
+        raw_list = []
+        for author in TRUSTED_GGUF_PUBLISHERS:
+            raw_list.extend(self.search_models(query=query, limit=limit, author=author, single_source=True))
+        raw_list.sort(key=lambda item: (item.get("downloads", 0), item["repo"]), reverse=True)
+        return raw_list
 
     def auto_select_best_models(
         self,
@@ -772,6 +913,16 @@ class HuggingFaceClient:
         if match:
             return f"{match.group(1).upper()}B"
         return "Inconnu"
+
+    @staticmethod
+    def _matches_parameter_range(params_label: str, parameter_range: str) -> bool:
+        bounds = PARAMETER_RANGES.get(parameter_range)
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*[bB]", str(params_label))
+        if not bounds or not match:
+            return False
+        value = float(match.group(1))
+        lower, upper = bounds
+        return value >= lower and (upper is None or value < upper)
 
     def _extract_quant(self, filename: str) -> str:
         """Extrait le type de quantification d'un fichier GGUF (ex: Q4_K_M, Q5_K_M, Q8_0)."""

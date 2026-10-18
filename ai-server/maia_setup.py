@@ -128,7 +128,7 @@ def managed_environment(
     # Remove inherited settings before Beacon's setdefault-based .env reader runs.
     env = {
         key: value for key, value in os.environ.items()
-        if not key.upper().startswith(("BEACON_", "LLAMA_", "FRUGAL_", "MAX_VRAM"))
+        if not key.upper().startswith(("BEACON_", "LLAMA_", "FRUGAL_", "MAX_VRAM", "GGML_OPENVINO_"))
         and key.upper() not in (
             "MODELS_DIR", "TARGET_DEVICE", "IDLE_TIMEOUT_SECONDS", "PYTHONPATH", "PYTHONHOME"
         )
@@ -138,15 +138,21 @@ def managed_environment(
         "BEACON_HOST": config["beacon_host"], "BEACON_PORT": str(config["beacon_port"]),
         "LLAMA_SERVER_EXE": str(Path(llama_exe).resolve()), "LLAMA_SERVER_HOST": "127.0.0.1",
         "LLAMA_SERVER_PORT": str(llama_port), "MODELS_DIR": str((ROOT_DIR / config["models_dir"]).resolve()),
-        "TARGET_DEVICE": "GPU", "IDLE_TIMEOUT_SECONDS": str(config["idle_timeout_seconds"]),
+        "TARGET_DEVICE": "NPU" if config.get("_actual_backend") == "npu" else "GPU",
+        "IDLE_TIMEOUT_SECONDS": str(config["idle_timeout_seconds"]),
         "LLAMA_LOAD_MODE": config.get("llama_load_mode", "mmap"),
-        "LLAMA_ARG_N_PARALLEL": "1", "LLAMA_ARG_FLASH_ATTN": "on",
+        "LLAMA_ARG_N_PARALLEL": "1",
+        # OpenVINO's NPU path currently needs flash attention disabled.
+        "LLAMA_ARG_FLASH_ATTN": "off" if config.get("_actual_backend") == "npu" else "on",
         "MAX_VRAM_PERCENT": str(config["max_vram_ratio"]),
         "LLAMA_ARG_DEVICE": "none" if config.get("_actual_backend") == "cpu" else config["device"],
     })
     # Omit the option for automatic selection; 'auto' is not a llama device ID.
     if env["LLAMA_ARG_DEVICE"] == "auto":
         del env["LLAMA_ARG_DEVICE"]
+    if config.get("_actual_backend") == "npu":
+        env["GGML_OPENVINO_DEVICE"] = "NPU"
+        env["GGML_OPENVINO_STATEFUL_EXECUTION"] = "0"
     print("[i] Beacon manages VRAM; legacy vram_margin_mib is not applied.")
     return env
 

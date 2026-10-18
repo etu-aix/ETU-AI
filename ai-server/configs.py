@@ -27,7 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     # Precompiled Binaries Settings (GitHub Releases)
     "llama_release_repo": "MAIA-404-systems/llama-cpp-turboquant",
-    "llama_release_tag": "v1.0.0",
+    "llama_release_tag": "v1.0.2",
     "llama_release_url_template": "https://github.com/{repo}/releases/download/{tag}/llama-server-{tag}-{os}-{arch}-{backend}.{ext}",
 
     # CMake installation links & recommendations
@@ -136,7 +136,7 @@ def load_config() -> dict[str, Any]:
             raise ValueError(f"Invalid TCP port: {name}")
     if config["llama_port"] == config["beacon_port"]:
         raise ValueError("Beacon and llama must use different ports")
-    if config["backend"] not in ("auto", "cpu", "cuda", "vulkan", "metal"):
+    if config["backend"] not in ("auto", "cpu", "cuda", "vulkan", "metal", "npu"):
         raise ValueError("Unsupported backend")
     max_vram = config["max_vram_ratio"]
     if (

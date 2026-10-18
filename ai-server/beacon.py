@@ -212,14 +212,14 @@ def start_beacon_service(
 
 
 def wait_for_healthcheck(process: subprocess.Popen, config: dict[str, Any]) -> None:
-    """Wait for Beacon's API, select the configured context and verify inference.
+    """Wait for Beacon's API without loading a model during application startup.
 
     Args:
         process (subprocess.Popen): Subprocess instance of the Beacon service.
         config (dict): Server configuration dictionary.
 
     Raises:
-        RuntimeError: If process exits prematurely, health check times out, or smoke test fails.
+        RuntimeError: If process exits prematurely or the HTTP startup times out.
     """
     deadline = time.monotonic() + config["startup_timeout_seconds"]
     base = service_url(config)
@@ -235,43 +235,7 @@ def wait_for_healthcheck(process: subprocess.Popen, config: dict[str, Any]) -> N
         time.sleep(0.25)
     else:
         raise RuntimeError("Beacon HTTP startup timed out")
-    model = Path(config["default_model_file"]).stem
-    models_dir = (ROOT_DIR / config["models_dir"]).resolve()
-    associations = read_json(models_dir / ".etu-mmproj.json") or {}
-    association = associations.get(model + ".gguf", {})
-    mmproj = association.get("local_filename")
-    if mmproj and (Path(mmproj).name != mmproj or not (models_dir / mmproj).is_file()):
-        mmproj = None
-    local_json(base + "/api/select", {"model": model, "context_size": config["context_size"], "mmproj": mmproj or "__etu_no_mmproj__.gguf"})
-    deadline = time.monotonic() + config["startup_timeout_seconds"]
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(f"Beacon exited during model loading: code {process.returncode}")
-        status = local_json(base + "/api/status")
-        if status.get("status") == "error":
-            raise RuntimeError(status.get("error_message") or "Beacon model loading failed")
-        if status.get("status") == "running" and status.get("active_model") == model and status.get("active_mmproj") == mmproj:
-            break
-        time.sleep(0.25)
-    else:
-        raise RuntimeError("Beacon model loading timed out")
-    # A catalog HTTP 200 is not a model/inference readiness check.
-    try:
-        response = local_json(base + "/v1/chat/completions", {
-            "model": model,
-            "messages": [{"role": "user", "content": "Hello"}],
-            "max_tokens": 1, "stream": False,
-        }, timeout=config["startup_timeout_seconds"] * 3 + 30)
-    except urllib.error.HTTPError as exc:
-        try:
-            status_detail = local_json(base + "/api/status", timeout=5)
-            detail = status_detail.get("error_message")
-        except (OSError, ValueError):
-            detail = None
-        raise RuntimeError(f"Inference smoke test failed (HTTP {exc.code}): {detail or exc.reason}") from exc
-    if not isinstance(response.get("choices"), list) or not response["choices"]:
-        raise RuntimeError("Inference smoke test returned no choices")
-    print(f"[OK] API and one-token inference validated at {base}")
+    print(f"[OK] Beacon API is ready at {base}; model loading is deferred until the first request")
 
 
 def shutdown(process: subprocess.Popen, config: dict[str, Any]) -> None:
@@ -358,6 +322,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("[OK] Offline artifacts prepared. Use --offline --verify-only to validate inference.")
             return 0
         config["_actual_backend"] = backend_state["backend"]
+        if config["_actual_backend"] == "npu" and config["context_size"] > 1024:
+            print("[i] OpenVINO NPU: limiting initial context to 1024 tokens for reliable compilation.")
+            config["context_size"] = 1024
         beacon_socket = reserve_port(config["beacon_host"], config["beacon_port"])
         llama_socket = None
         try:

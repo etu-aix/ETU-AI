@@ -11,5 +11,11 @@
   "models_dir": "ai-server/models",
   "default_model_repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
   "default_model_file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
-  "llama_tag": "b11491"
+  "llama_tag": "b11491",
+  "backend": "npu",
+  "device": "auto",
+  "llama_release_tag": "v1.0.2",
+  "binary_sha256": {
+    "llama-server-v1.0.2-windows-x64-vulkan-openvino.zip": "310ddea565e169f12e5fc6c56e31f8e1e4a138343cd2848f16c97b44cd7195de"
+  }
 }

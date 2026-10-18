@@ -50,7 +50,7 @@ Le fichier `.env` du dépôt téléchargé n'est pas réécrit.
 
 | Clé | Valeur par défaut | Effet |
 | --- | --- | --- |
-| `backend` | `auto` | Préférence `cuda`, `vulkan`, `metal`, `cpu` ou détection automatique |
+| `backend` | `auto` | Préférence `cuda`, `vulkan`, `metal`, `cpu`, `npu` (Intel OpenVINO) ou détection automatique |
 | `device` | `auto` | Sélection native de llama (`auto`), ou identifiant exact tel que `Vulkan0` |
 | `beacon_host` | `127.0.0.1` | Adresse d'écoute API |
 | `beacon_port` | `11343` | Port API |
@@ -58,10 +58,10 @@ Le fichier `.env` du dépôt téléchargé n'est pas réécrit.
 | `context_size` | `4096` | Contexte envoyé à Beacon pour le modèle chargé au démarrage |
 | `max_vram_ratio` | `0.90` | Fraction maximale de la VRAM totale |
 | `vram_margin_mib` | `512` | Ancienne option conservée pour compatibilité ; non appliquée par Beacon |
-| `startup_timeout_seconds` | `300` | Délai d’attente du bootstrap pour l’API, puis pour le modèle |
+| `startup_timeout_seconds` | `300` | Délai d’attente du bootstrap pour l’API |
 | `idle_timeout_seconds` | `300` | Délai de veille géré par Beacon ; `0` désactive la veille |
 | `llama_release_repo` | dépôt MAIA | Dépôt réellement utilisé dans l'URL des binaires |
-| `llama_release_tag` | `v1.0.0` | Version du binaire |
+| `llama_release_tag` | `v1.0.2` | Version du binaire |
 | `beacon_tag` | `v1.0.0` | Ref exact des sources Beacon |
 | `llama_tag` | `main` | Ref des sources pour la compilation |
 | `default_model_revision` | `main` | Révision Hugging Face du modèle |
@@ -80,6 +80,15 @@ provoque pas une sélection silencieuse d'un autre GPU.
 Si un CPU est en cache alors qu'un GPU est recommandé, un démarrage en ligne
 réessaie les binaires GPU avant de réutiliser le CPU. Les échecs de sonde CUDA
 affichent maintenant la sortie brute de `--version` et `--list-devices`.
+
+Sur Windows et Linux x64, `backend: "npu"` essaie l'archive OpenVINO v1.0.2
+avec un NPU Intel détecté. L'assistant d'installation propose ce choix lorsque
+le NPU est présent. La sonde impose `GGML_OPENVINO_DEVICE=NPU` et vérifie que
+le périphérique OpenVINO est réellement visible. Si ce moteur échoue, le
+backend GPU recommandé, puis le CPU, sont essayés. Beacon reçoit le backend
+réellement installé ; avec OpenVINO NPU, le contexte initial est limité à
+1 024 tokens et l'exécution est configurée en mode sans état. La compatibilité
+des modèles GGUF dépend de leur architecture et de leur quantification.
 
 Windows x64 est pris en charge. Windows ARM64 échoue explicitement avant toute
 réparation de DLL ; il n'est pas encore pris en charge. Les chemins Linux/macOS
@@ -113,12 +122,15 @@ détecte les incompatibilités que le seul en-tête ne peut pas révéler.
 
 `beacon.py` prépare les binaires, le modèle et le venv, puis lance directement
 `deps/MAIA-Beacon/main.py`. `maia_setup.py` transmet la configuration par
-l’environnement du processus. Aucune fonction ni route de Beacon n’est remplacée.
+l’environnement du processus. Pour la cible NPU, le lanceur configure le chemin
+llama.cpp/OpenVINO du Beacon local afin d’éviter l’optimisation GPU par VRAM.
 
 MAIA-Beacon gère le chargement du modèle, l’optimisation mémoire, le proxy HTTP
-et la veille. `ai-server` attend `/v1/models`, envoie le modèle et `context_size`
-à `/api/select`, attend son état `running` dans `/api/status`, puis demande une
-génération d’un token. Le démarrage n’est validé que si cette génération réussit.
+et la veille. `ai-server` attend `/v1/models` mais laisse le modèle déchargé au
+démarrage. Le modèle sélectionné est chargé à la première génération, pas au
+changement de modèle. En mode NPU, Beacon passe les GGUF par le backend OpenVINO
+sans offload GPU, en exécution stateless et avec un contexte plafonné à 1024
+tokens pour respecter les contraintes actuelles de ce chemin.
 
 `context_size` concerne le chargement initial, pas une limite globale de l’API.
 `device` est transmis via `LLAMA_ARG_DEVICE` et `max_vram_ratio` via

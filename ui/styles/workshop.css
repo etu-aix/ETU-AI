@@ -1,0 +1,17 @@
+#profile-workshop-publication { padding:16px; border:1px solid var(--border-color); border-radius:12px; background:var(--bg-secondary); }
+#profile-workshop-publication summary { font-weight:700; cursor:pointer; }
+#profile-workshop-publication[open] { display:grid; gap:14px; }
+#profile-workshop-publication label { display:grid; gap:6px; font-size:.85rem; line-height:1.6; }
+#profile-workshop-publication input:not([type=checkbox]), #profile-workshop-publication textarea { width:100%; box-sizing:border-box; padding:10px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg-primary); color:var(--text-main); font:inherit; }
+#profile-workshop-publication .profile-workshop-model-field { display:grid; gap:6px; }
+#profile-workshop-publication .profile-workshop-model-label { font-size:.85rem; line-height:1.6; }
+#profile-workshop-publication .profile-workshop-model-selector { width:100%; }
+#profile-workshop-publication .profile-workshop-model-selector > .model-selector-btn { width:100%; justify-content:space-between; border-radius:8px; }
+#profile-workshop-publication .profile-workshop-model-selector .model-selector-info { flex:1; }
+#profile-workshop-publication .profile-workshop-model-selector .model-dropdown-menu { top:calc(100% + 6px); bottom:auto; left:0; right:0; width:auto; z-index:5; }
+#profile-workshop-publication .profile-workshop-model-selector .model-dropdown-list { max-height:220px; }
+#profile-workshop-publication .profile-workshop-api-hint { margin:0; color:var(--success, #3fb950); font-size:.85rem; }
+#profile-workshop-publication label:has([type=checkbox]) { display:block; }
+#profile-workshop-publication [type=checkbox] { width:auto; margin-right:6px; }
+#profile-workshop-publication a { color:var(--accent-color); }
+#profile-workshop-status { font-size:.85rem; line-height:1.5; }

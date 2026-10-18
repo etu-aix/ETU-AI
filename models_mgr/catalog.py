@@ -135,6 +135,7 @@ def assess_compatibility(
     available_ram = ram_info.get("available_gib", hw.get("ram_available_gib", total_ram))
     req_ram = model.get("required_ram_gib", 6.0)
     is_npu_comp = model.get("npu_compatible", False)
+    is_npu_supported = model.get("npu_supported", is_npu_comp)
     has_gpu = bool(gpus and backend in ("cuda", "vulkan", "metal"))
     has_npu = bool(npus and len(npus) > 0)
 
@@ -153,6 +154,13 @@ def assess_compatibility(
         score = 50
         is_compatible = True
         status_tier = "tight"
+    elif has_npu and is_npu_supported:
+        badge = "NPU validé"
+        color = "success"
+        recommendation = "Ce modèle GGUF est validé sur NPU avec le backend OpenVINO de llama.cpp."
+        score = 95
+        is_compatible = True
+        status_tier = "optimal"
     elif has_gpu:
         badge = "GPU possible"
         color = "success"
@@ -183,9 +191,9 @@ def assess_compatibility(
         "is_compatible": is_compatible,
         "status_tier": status_tier,
         "has_gpu_acceleration": has_gpu,
-        "has_npu_acceleration": False,
-        "npu_candidate": bool(has_npu and is_npu_comp),
-        "npu_supported": False,
+        "has_npu_acceleration": bool(has_npu and is_npu_supported),
+        "npu_candidate": bool(has_npu and (is_npu_comp or model.get("npu_candidate", False))),
+        "npu_supported": bool(has_npu and is_npu_supported),
         "required_ram_gib": req_ram,
     }
 
@@ -221,8 +229,8 @@ def get_catalog_with_status(
         if is_installed and fn in local_model_map:
             entry["local_size_gib"] = local_model_map[fn]["size_gib"]
         entry["compatibility"] = assess_compatibility(entry, hardware_info)
-        entry["npu_candidate"] = entry.get("npu_compatible", False)
-        entry["npu_compatible"] = False
+        entry["npu_candidate"] = entry.get("npu_candidate", entry.get("npu_compatible", False))
+        entry["npu_supported"] = entry.get("npu_supported", entry.get("npu_compatible", False))
         enriched.append(entry)
 
     # 2. Détection des modèles locaux tiers (fichiers GGUF hors catalogue officiel)
@@ -230,6 +238,11 @@ def get_catalog_with_status(
         fn = loc["filename"]
         if fn not in known_filenames:
             clean_name = fn.replace(".gguf", "").replace("-", " ").title()
+            local_name = fn.lower()
+            validated_npu_model = (
+                ("gemma-4-e4b" in local_name and "q4_k_m" in local_name)
+                or ("llama-3.2-1b-instruct" in local_name and "q4_k_m" in local_name)
+            )
             custom_entry = {
                 "id": f"local-{fn}",
                 "name": f"{clean_name} (Modèle Local Détecté)",
@@ -240,8 +253,9 @@ def get_catalog_with_status(
                 "description": f"Modèle GGUF détecté directement dans ai-server/models. Prêt instantanément sans téléchargement.",
                 "category": "Modèle Local",
                 "quant": "GGUF",
-                "npu_candidate": loc["size_gib"] <= 4.0,
-                "npu_compatible": False,
+                "npu_candidate": validated_npu_model or loc["size_gib"] <= 4.0,
+                "npu_compatible": validated_npu_model,
+                "npu_supported": validated_npu_model,
                 "npu_recommended": False,
                 "is_installed": True,
                 "is_custom_local": True,

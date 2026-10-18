@@ -1,8 +1,8 @@
 (() => {
-  const host = document.getElementById('etu-remote-connection');
+  const host = document.getElementById('settings-etu-mount');
   if (!host) return;
   const root = document.createElement('section'); root.className = 'etu-connection-card';
-  root.innerHTML = '<h4>Un code pour connecter vos applications</h4><p data-status role="status" aria-live="polite">Vérification de la connexion…</p><p data-device class="etu-text" hidden></p><label data-name-label class="etu-connection-name">Nom de cet appareil <input data-name maxlength="100" autocomplete="off"></label><div data-pairing hidden><p>Saisissez ce code dans ETU 2 → Paramètres → ETU-AI, puis cliquez sur Connecter.</p><strong data-code class="etu-connection-code"></strong><p class="etu-text">Le code expire après 5 minutes.</p></div><button data-connect class="etu-btn etu-btn-primary" type="button" disabled>Afficher le code</button><button data-disconnect class="etu-btn etu-btn-secondary etu-connection-remove" type="button" hidden disabled>Déconnecter ETU 2</button>';
+  root.innerHTML = '<h4>Connexion ETU 2</h4><p data-status role="status" aria-live="polite">Vérification de la connexion…</p><p data-device class="etu-text" hidden></p><label data-name-label class="etu-connection-name">Nom de cet appareil <input data-name maxlength="100" autocomplete="off"></label><div data-pairing hidden><p>Saisissez ce code dans ETU 2 → Paramètres → ETU-AI, puis cliquez sur Connecter.</p><strong data-code class="etu-connection-code"></strong><p class="etu-text">Le code expire après 5 minutes.</p></div><button data-connect class="etu-btn etu-btn-primary" type="button" disabled>Afficher le code</button><button data-disconnect class="etu-btn etu-btn-secondary etu-connection-remove" type="button" hidden disabled>Mettre fin à la connexion</button>';
   host.append(root);
   const status = root.querySelector('[data-status]'), code = root.querySelector('[data-code]');
   const connect = root.querySelector('[data-connect]'), disconnect = root.querySelector('[data-disconnect]');
@@ -35,8 +35,13 @@
     if (busy) return; busy = true; connect.disabled = disconnect.disabled = true;
     try {render(await action());} catch (error) {status.textContent = error.message;} finally {busy = false;}
   }
+  window.refreshEtuRemoteConnection = () => run(() => request());
   connect.addEventListener('click', () => run(() => request('POST', deviceName.value.trim() ? {device_name:deviceName.value.trim()} : {})));
   disconnect.addEventListener('click', () => run(() => request('DELETE')));
   document.getElementById('btn-open-etu-connection')?.addEventListener('click', () => run(() => request()));
-  setInterval(() => {if (!busy && root.closest('.modal-overlay')?.classList.contains('active')) run(() => request());}, 2000);
+  setInterval(() => {
+    const settingsPanel = root.closest('[data-settings-panel="etu"]');
+    const visible = settingsPanel && !settingsPanel.hidden || root.closest('.modal-overlay')?.classList.contains('active');
+    if (!busy && !document.hidden && visible) run(() => request());
+  }, 2000);
 })();

@@ -14,6 +14,7 @@ let assistantProfiles = [];
 let activeProfileId = "default";
 let preferredProfileId = "default";
 let pendingAvatarData = null;
+let profileAvatarFallback = "✦";
 let currentContextLimit = null;
 let currentModelReady = null;
 let currentModelState = "unknown";
@@ -24,6 +25,98 @@ const streamFrames = new WeakMap();
 const appliedStreamTemplates = new WeakMap();
 let activeChatStream = null;
 let chatViewVersion = 0;
+let appPowerState = "awake";
+let currentLaunchMode = "normal";
+let powerActionMenu = null;
+const notificationStorageKey = "etu-app-notifications";
+let appNotifications = [];
+try { appNotifications = JSON.parse(localStorage.getItem(notificationStorageKey) || "[]"); } catch (_) { appNotifications = []; }
+if (!Array.isArray(appNotifications)) appNotifications = [];
+const seenDownloadStatuses = new Map();
+let downloadRefreshInFlight = false;
+let applyingAppRoute = false;
+let lastAppliedAppRoute = null;
+
+const modelTabRoutes = {
+  "tab-catalog": "local",
+  "tab-vision": "vision",
+  "tab-hf-explorer": "hugging-face",
+  "tab-hf-custom": "direct",
+};
+const modelRouteTabs = Object.fromEntries(Object.entries(modelTabRoutes).map(([tab, route]) => [route, tab]));
+
+function setAppRoute(route, replace = false) {
+  if (applyingAppRoute || window.location.hash === route) return;
+  window.history[replace ? "replaceState" : "pushState"]({}, "", route);
+  lastAppliedAppRoute = route;
+}
+
+function syncModelsRoute() {
+  const activeTab = document.querySelector(".modal-tab-btn.active")?.dataset.tab || "tab-catalog";
+  const routeTab = modelTabRoutes[activeTab] || "local";
+  const inSettingsModels = !document.getElementById("settings-view")?.hidden
+    && document.querySelector('[data-settings-panel="models"]:not([hidden])');
+  setAppRoute(inSettingsModels ? `#/settings/models/${routeTab}` : `#/models/${routeTab}`);
+}
+
+function restoreAppRoute() {
+  if (lastAppliedAppRoute === window.location.hash) return;
+  lastAppliedAppRoute = window.location.hash;
+  const route = window.location.hash.replace(/^#\/?/, "").split("?")[0].split("/").filter(Boolean);
+  applyingAppRoute = true;
+  try {
+    if (route[0] === "settings") {
+      const section = ["general", "models", "profiles", "providers", "data", "etu", "installation"].includes(route[1]) ? route[1] : "general";
+      closeDownloadsView({ fromRoute: true });
+      showSettingsView(section, { fromRoute: true });
+      if (section === "models") showModelsTab(modelRouteTabs[route[2]] || "tab-catalog", { fromRoute: true });
+    } else if (route[0] === "chat" && route[1]) {
+      closeSettingsView({ fromRoute: true });
+      closeDownloadsView({ fromRoute: true });
+      try { selectConversation(decodeURIComponent(route[1])); }
+      catch { window.history.replaceState({}, "", "#/chat"); }
+    } else if (route[0] === "downloads") {
+      closeSettingsView({ fromRoute: true });
+      showDownloadsView({ fromRoute: true });
+    } else if (route[0] === "models") {
+      closeSettingsView({ fromRoute: true });
+      closeDownloadsView({ fromRoute: true });
+      openModal("modal-models", { fromRoute: true });
+      showModelsTab(modelRouteTabs[route[1]] || "tab-catalog", { fromRoute: true });
+    } else {
+      closeSettingsView({ fromRoute: true });
+      closeDownloadsView({ fromRoute: true });
+      const modelDialog = document.getElementById("modal-models");
+      if (modelDialog?.classList.contains("active")) closeModal("modal-models", { fromRoute: true });
+      if (route[0] !== "chat") window.history.replaceState({}, "", "#/chat");
+    }
+  } finally {
+    applyingAppRoute = false;
+  }
+}
+
+function initAppUrlRouting() {
+  if (!window.location.hash) setAppRoute("#/chat", true);
+  window.addEventListener("popstate", restoreAppRoute);
+  window.addEventListener("hashchange", restoreAppRoute);
+  restoreAppRoute();
+}
+
+function resizeChatInput() {
+  const input = document.getElementById("chat-input");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
+}
+
+function trackChatComposerHeight() {
+  const main = document.getElementById("chat-main");
+  const composer = document.getElementById("chat-input-container");
+  if (!main || !composer) return;
+  const update = () => main.style.setProperty("--chat-composer-height", `${Math.ceil(composer.getBoundingClientRect().height)}px`);
+  update();
+  new ResizeObserver(update).observe(composer);
+}
 
 function cancelChatStream() {
   chatViewVersion++;
@@ -31,6 +124,7 @@ function cancelChatStream() {
     const { controller, bubble, requestId, accepted, rawMessage, userBubble } = activeChatStream;
     if (!accepted) {
       document.getElementById("chat-input").value = rawMessage;
+      resizeChatInput();
       userBubble.remove();
     }
     fetch(`/api/chat/requests/${requestId}/stop`, { method: "POST" }).catch(() => {});
@@ -74,6 +168,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initModals();
   initModelSelector();
   initChatForm();
+  trackChatComposerHeight();
   ETUChatUI.configure({
     submit: submitGeneratedPrompt,
     renderProgram: (container, html) => renderAuthoredPreview(container, html, true),
@@ -89,9 +184,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const suggestion = event.target.closest("[data-prompt]");
     if (!suggestion) return;
     document.getElementById("chat-input").value = suggestion.dataset.prompt;
+    resizeChatInput();
     document.getElementById("chat-form").requestSubmit();
   });
   initProfiles();
+  initSettingsPage();
+  initHardwarePreference();
+  initAppUtilities();
   initApiSettings();
   loadConversations();
   loadServerStatus();
@@ -143,10 +242,49 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("history-search").addEventListener("input", renderConversationHistory);
 
+  document.getElementById("btn-open-settings")?.addEventListener("click", () => showSettingsView("general"));
+  document.getElementById("btn-settings-close")?.addEventListener("click", closeSettingsView);
+  document.getElementById("btn-settings-theme")?.addEventListener("click", () => document.getElementById("btn-theme")?.click());
+  document.getElementById("btn-settings-repair")?.addEventListener("click", () => document.getElementById("btn-reinstall-app")?.click());
+  document.getElementById("btn-settings-uninstall")?.addEventListener("click", () => showToast("La désinstallation sera disponible avec le programme d’installation de bureau.", "info"));
+  document.getElementById("btn-settings-dependencies")?.addEventListener("click", () => showToast("La désinstallation des dépendances sera disponible avec le programme d’installation de bureau.", "info"));
+  document.getElementById("btn-settings-reinstall-server")?.addEventListener("click", reinstallServerVariant);
+  document.getElementById("btn-settings-delete-chats")?.addEventListener("click", async (event) => {
+    if (!conversationHistory.length) {
+      showToast("Aucun chat à supprimer.", "info");
+      return;
+    }
+    if (!window.confirm("Supprimer définitivement tous les chats enregistrés sur cet ordinateur ?")) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    cancelChatStream();
+    try {
+      const response = await fetch("/api/conversations", { method: "DELETE" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      conversationHistory = [];
+      renderConversationHistory();
+      startNewConversation();
+      showSettingsView("data");
+      showToast("Tous les chats ont été supprimés.", "success");
+    } catch (error) {
+      console.error("Erreur suppression des chats :", error);
+      showToast("Impossible de supprimer les chats.", "error");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  document.getElementById("btn-settings-update")?.addEventListener("click", checkEngineUpdates);
+  document.querySelectorAll(".settings-nav-item").forEach((button) => {
+    button.addEventListener("click", () => showSettingsView(button.dataset.settingsSection));
+  });
+
   const newChatBtn = document.getElementById("btn-new-chat");
   if (newChatBtn) {
     newChatBtn.addEventListener("click", () => {
+      closeSettingsView();
       startNewConversation();
+      closeSidebar();
+      document.getElementById("chat-input").focus();
     });
   }
 
@@ -167,10 +305,43 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
   }
+  initAppUrlRouting();
 });
 
+async function initHardwarePreference() {
+  const select = document.getElementById("settings-hardware-preference");
+  const status = document.getElementById("settings-hardware-status");
+  if (!select || !status) return;
+  try {
+    const response = await fetch("/api/settings/hardware");
+    const data = await response.json();
+    if (response.ok) {
+      select.value = data.preference || "auto";
+      select.querySelector('option[value="npu"]').disabled = !data.has_npu;
+      select.querySelector('option[value="gpu"]').disabled = !data.has_gpu;
+    }
+  } catch (_) { status.textContent = "Préférence matérielle indisponible."; }
+  select.addEventListener("change", async () => {
+    const preference = select.value;
+    select.disabled = true;
+    status.textContent = "Redémarrage de MAIA-Beacon…";
+    try {
+      const response = await fetch("/api/settings/hardware", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preference }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Impossible d’appliquer ce réglage");
+      status.textContent = "Préférence appliquée. MAIA-Beacon redémarre avec le matériel choisi.";
+    } catch (error) {
+      status.textContent = error.message;
+      try {
+        const response = await fetch("/api/settings/hardware");
+        if (response.ok) select.value = (await response.json()).preference || "auto";
+      } catch (_) {}
+    } finally { select.disabled = false; }
+  });
+}
+
 async function initApiSettings() {
-  const open = document.getElementById("btn-open-api-settings");
+  const open = document.getElementById("settings-nav-providers");
   const form = document.getElementById("api-settings-form");
   if (!open || !form) return;
   const providerSelect = document.getElementById("api-provider-select");
@@ -453,7 +624,7 @@ async function initApiSettings() {
       setClearKeyState(false);
       setKeyStatus(config.has_api_key);
       renderProviderList(providerSelect.value);
-      openModal("modal-api-settings");
+      showSettingsView("providers");
       await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
     } catch (error) { setSettingsMessage(error.message, "error"); }
   });
@@ -875,7 +1046,9 @@ async function loadHardwareDiagnosis() {
         const npuNames = data.npus.map((n) => n.name).join(", ");
         hwNpu.textContent = `⚡ ${npuNames}`;
         hwNpu.style.color = "#38bdf8";
-        if (moodText) moodText.textContent = "Puce NPU détectée ; backend à confirmer";
+        if (moodText) moodText.textContent = data.installed_backend === "npu"
+          ? "NPU Intel détecté ; moteur OpenVINO installé"
+          : "Puce NPU détectée ; backend à confirmer";
         if (wizardParticles) wizardParticles.setTheme("cyan");
       } else {
         hwNpu.textContent = "Aucun NPU détecté";
@@ -885,11 +1058,16 @@ async function loadHardwareDiagnosis() {
       }
     }
 
-    const backend = (data.backend || "cpu").toUpperCase();
-    if (hwRec) hwRec.textContent = `Accélération : ${backend}`;
+    const backend = data.installed_backend === "npu"
+      ? "NPU OpenVINO"
+      : (data.backend || "cpu").toUpperCase();
+    if (hwRec) hwRec.textContent = data.installed_backend === "npu"
+      ? `Moteur installé : ${backend}`
+      : `Accélération recommandée : ${backend}`;
     if (hwBadge) {
-      hwBadge.textContent = backend === "CPU" ? "Mode CPU" : `GPU ${backend}`;
-      hwBadge.className = `etu-badge ${backend === "CPU" ? "etu-badge-warning" : "etu-badge-success"}`;
+      const isCpu = backend === "CPU";
+      hwBadge.textContent = isCpu ? "Mode CPU" : backend === "NPU OpenVINO" ? backend : `GPU ${backend}`;
+      hwBadge.className = `etu-badge ${isCpu ? "etu-badge-warning" : "etu-badge-success"}`;
     }
   } catch (err) {
     console.error("Erreur diagnostic matériel :", err);
@@ -952,7 +1130,7 @@ async function loadWizardModelSelection(searchQuery = "") {
           if (recs.length > 0) {
             wizardSelectedModels.clear();
             const chosen = allLoadedWizardModels.find((m) => m.filename === recs[0].filename) || recs[0];
-            wizardSelectedModels.set(chosen.filename, { repo: chosen.repo, filename: chosen.filename, npu_compatible: !!chosen.npu_compatible });
+            wizardSelectedModels.set(chosen.filename, { repo: chosen.repo, filename: chosen.filename, npu_compatible: isModelNpuCandidate(chosen) });
             renderWizardModelCards(allLoadedWizardModels, activeWizardCategory);
             const primaryName = data.primary_model?.name || recs[0].name;
             showToast(`⚡ IA optimale sélectionnée pour ce PC : <strong>${escapeHtml(primaryName)}</strong>`, "success", 4000);
@@ -995,14 +1173,23 @@ async function loadWizardModelSelection(searchQuery = "") {
     // Affichage bannière NPU si détecté
     const npuBanner = document.getElementById("wizard-npu-banner");
     if (npuBanner) {
+      const npuChoice = document.getElementById("wizard-npu-choice");
+      const useNpu = document.getElementById("wizard-use-npu");
       if (hardwareData && hardwareData.has_npu && hardwareData.npus && hardwareData.npus.length > 0) {
         const npuName = hardwareData.npus[0].name;
+        const intelNpu = hardwareData.npus.some((item) => /intel/i.test(`${item.name || ""} ${item.manufacturer || ""}`));
         const npuTitle = document.getElementById("npu-banner-title");
         const npuText = document.getElementById("npu-banner-text");
         if (npuTitle) npuTitle.textContent = `Puce NPU Détectée : ${npuName}`;
-        if (npuText) npuText.textContent = `Votre processeur intègre l'unité neurale ${npuName}. Sa présence ne garantit pas que le moteur utilisera ce NPU.`;
+        if (npuText) npuText.textContent = intelNpu
+          ? "OpenVINO v1.0.2 peut utiliser ce NPU avec certains modèles GGUF texte (Qwen 2.5 1,5B a été vérifié). Le contexte initial sera limité à 1 024 tokens ; le moteur sera vérifié avant utilisation."
+          : "Ce NPU est détecté, mais le moteur OpenVINO de l’installateur cible les NPU Intel.";
+        if (npuChoice) npuChoice.hidden = !intelNpu;
+        if (!intelNpu && useNpu) useNpu.checked = false;
         npuBanner.style.display = "flex";
       } else {
+        if (npuChoice) npuChoice.hidden = true;
+        if (useNpu) useNpu.checked = false;
         npuBanner.style.display = "none";
       }
     }
@@ -1030,7 +1217,7 @@ function updateCategoryCounts(models) {
 
   models.forEach((m) => {
     const text = `${m.name} ${m.repo} ${m.description} ${(m.tags || []).join(" ")}`.toLowerCase();
-    const isNpu = m.npu_compatible || (m.size_gib && m.size_gib <= 3.8);
+    const isNpu = isModelNpuCandidate(m);
     const isCode = text.includes("code") || text.includes("coder") || text.includes("starcoder") || text.includes("sql");
     const isReasoning = text.includes("reasoning") || text.includes("deepseek") || text.includes("phi") || text.includes("math") || text.includes("hermes");
     const is7b = text.includes("7b") || text.includes("8b") || (m.size_gib && m.size_gib >= 4.0);
@@ -1048,6 +1235,10 @@ function updateCategoryCounts(models) {
   }
 }
 
+function isModelNpuCandidate(model) {
+  return Boolean(model?.compatibility?.npu_candidate || model?.npu_candidate || model?.npu_compatible);
+}
+
 function renderWizardModelCards(models, categoryFilter = "all") {
   const container = document.getElementById("wizard-model-selection-list");
   const counterEl = document.getElementById("selected-models-count");
@@ -1057,7 +1248,7 @@ function renderWizardModelCards(models, categoryFilter = "all") {
   container.innerHTML = "";
   if (!wizardSelectionInitialized && models.length) {
     const initial = models.find((m) => m.is_installed) || models[0];
-    wizardSelectedModels.set(initial.filename, { repo: initial.repo, filename: initial.filename, npu_compatible: !!initial.npu_compatible });
+    wizardSelectedModels.set(initial.filename, { repo: initial.repo, filename: initial.filename, npu_compatible: isModelNpuCandidate(initial) });
     wizardSelectionInitialized = true;
   }
 
@@ -1065,7 +1256,7 @@ function renderWizardModelCards(models, categoryFilter = "all") {
     if (categoryFilter === "all") return true;
     if (categoryFilter === "installed") return m.is_installed;
     const text = `${m.name} ${m.repo} ${m.description} ${(m.tags || []).join(" ")}`.toLowerCase();
-    if (categoryFilter === "npu") return m.npu_compatible || (m.size_gib && m.size_gib <= 3.8);
+    if (categoryFilter === "npu") return isModelNpuCandidate(m);
     if (categoryFilter === "code") return text.includes("code") || text.includes("coder") || text.includes("starcoder") || text.includes("sql");
     if (categoryFilter === "reasoning") return text.includes("reasoning") || text.includes("deepseek") || text.includes("phi") || text.includes("math") || text.includes("hermes");
     if (categoryFilter === "7b") return text.includes("7b") || text.includes("8b") || (m.size_gib && m.size_gib >= 4.0);
@@ -1092,14 +1283,15 @@ function renderWizardModelCards(models, categoryFilter = "all") {
   filtered.forEach((item) => {
     const isSelected = wizardSelectedModels.has(item.filename);
     const card = document.createElement("div");
-    card.className = `model-select-card ${isSelected ? "selected" : ""} ${item.is_installed ? "is-installed" : ""} ${item.npu_compatible ? "is-npu-card" : ""}`;
+    const npuCandidate = isModelNpuCandidate(item);
+    card.className = `model-select-card ${isSelected ? "selected" : ""} ${item.is_installed ? "is-installed" : ""} ${npuCandidate ? "is-npu-card" : ""}`;
     card.dataset.repo = item.repo;
     card.dataset.filename = item.filename;
-    card.dataset.npu = item.npu_compatible ? "true" : "false";
+    card.dataset.npu = npuCandidate ? "true" : "false";
 
     let badgesHtml = `<span class="etu-badge etu-badge-${item.compatibility?.color || 'info'}">${item.compatibility?.badge || 'Compatible'}</span>`;
-    if (item.npu_compatible) {
-      badgesHtml += ` <span class="etu-badge etu-badge-cyan">⚡ Modèle léger</span>`;
+    if (npuCandidate) {
+      badgesHtml += ` <span class="etu-badge etu-badge-cyan">${window.ETUSVG?.icon("npu", "") || ""} Candidat NPU</span>`;
     }
     if (item.is_installed) {
       const sizeInfo = item.local_size_gib ? `${item.local_size_gib} Go` : `${item.size_gib} Go`;
@@ -1142,7 +1334,7 @@ function renderWizardModelCards(models, categoryFilter = "all") {
 
     // Réactivité au survol
     card.addEventListener("mouseenter", () => {
-      if (item.npu_compatible && wizardParticles) {
+      if (npuCandidate && wizardParticles) {
         wizardParticles.setTheme("cyan");
       } else if (ramRequired >= 8 && wizardParticles) {
         wizardParticles.setTheme("purple");
@@ -1157,7 +1349,7 @@ function renderWizardModelCards(models, categoryFilter = "all") {
       }
       if (chk.checked) {
         card.classList.add("selected");
-        wizardSelectedModels.set(item.filename, { repo: item.repo, filename: item.filename, npu_compatible: !!item.npu_compatible });
+      wizardSelectedModels.set(item.filename, { repo: item.repo, filename: item.filename, npu_compatible: npuCandidate });
       } else {
         card.classList.remove("selected");
         wizardSelectedModels.delete(item.filename);
@@ -1198,7 +1390,10 @@ async function startWizardInstallation() {
     const resp = await fetch("/api/setup/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ selected_models: selectedModels }),
+      body: JSON.stringify({
+        selected_models: selectedModels,
+        backend: document.getElementById("wizard-use-npu")?.checked ? "npu" : "auto",
+      }),
     });
     const data = await resp.json();
     if (data.started || data.status === "running") {
@@ -1325,14 +1520,6 @@ function startPollingSetupProgress() {
 /* Modals Setup                                                               */
 /* -------------------------------------------------------------------------- */
 function initModals() {
-  const openModelsBtn = document.getElementById("btn-open-models");
-  if (openModelsBtn) {
-    openModelsBtn.addEventListener("click", () => {
-      openModal("modal-models");
-      loadModelCatalog();
-    });
-  }
-
   document.querySelectorAll(".modal-close").forEach((btn) => {
     btn.addEventListener("click", () => {
       closeModal(btn.dataset.target);
@@ -1374,6 +1561,20 @@ function initModals() {
   const hfSearchInput = document.getElementById("modal-hf-search-input");
   const btnHfSearch = document.getElementById("btn-modal-hf-search");
   const filterHfCompat = document.getElementById("modal-hf-filter-compatible");
+  const catalogSearchInput = document.getElementById("model-catalog-search");
+  catalogSearchInput?.addEventListener("input", applyModelCatalogSearch);
+  document.getElementById("model-catalog-sort")?.addEventListener("change", sortLocalModelCards);
+  document.addEventListener("click", event => {
+    document.querySelectorAll(".local-model-menu[open]").forEach(menu => {
+      if (!menu.contains(event.target)) menu.open = false;
+    });
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") document.querySelectorAll(".local-model-menu[open]").forEach(menu => {
+      menu.open = false;
+      menu.querySelector("summary").focus();
+    });
+  });
 
   if (btnHfSearch) {
     btnHfSearch.addEventListener("click", () => {
@@ -1400,6 +1601,27 @@ function initModals() {
       loadHfExplorerResults(q, filterHfCompat.checked);
     });
   }
+  ["modal-hf-filter-size", "modal-hf-filter-trusted"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("change", () => loadHfExplorerResults(hfSearchInput.value.trim(), filterHfCompat.checked));
+  });
+  document.querySelectorAll("[data-hf-hardware]").forEach((button) => {
+    const name = button.dataset.hfHardware;
+    if (name) button.querySelector(".hf-filter-icon").innerHTML = window.ETUSVG?.icon(name) || "";
+    button.addEventListener("click", () => {
+      document.querySelectorAll("[data-hf-hardware]").forEach((choice) => {
+        const active = choice === button;
+        choice.classList.toggle("active", active);
+        choice.setAttribute("aria-pressed", String(active));
+      });
+      loadHfExplorerResults(hfSearchInput.value.trim(), filterHfCompat.checked);
+    });
+  });
+  document.getElementById("hf-page-prev")?.addEventListener("click", () => loadHfExplorerResults(hfExplorerState.query, hfExplorerState.onlyCompatible, hfExplorerState.page - 1));
+  document.getElementById("hf-page-next")?.addEventListener("click", () => loadHfExplorerResults(hfExplorerState.query, hfExplorerState.onlyCompatible, hfExplorerState.page + 1));
+  document.getElementById("hf-page-numbers")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-hf-page]");
+    if (button) loadHfExplorerResults(hfExplorerState.query, hfExplorerState.onlyCompatible, Number(button.dataset.hfPage));
+  });
 
   // Bouton Auto-Sélection dans la modale
   const btnModalAuto = document.getElementById("btn-modal-autoselect");
@@ -1442,146 +1664,1274 @@ function initModals() {
       await triggerDownload(repo, filename);
     });
   }
+
+  const ggufDropZone = document.getElementById("gguf-drop-zone");
+  const ggufFileInput = document.getElementById("gguf-local-file");
+  const ggufDropStatus = document.getElementById("gguf-drop-status");
+  if (ggufDropZone && ggufFileInput && ggufDropStatus) {
+    const importGguf = async (file) => {
+      if (!file) return;
+      if (!/\.gguf$/i.test(file.name)) {
+        ggufDropStatus.textContent = "Choisissez un fichier .gguf.";
+        ggufDropStatus.dataset.type = "error";
+        return;
+      }
+      if (file.size > 64 * 1024 ** 3) {
+        ggufDropStatus.textContent = "64 Go maximum par modèle importé.";
+        ggufDropStatus.dataset.type = "error";
+        return;
+      }
+      const filenameInput = document.getElementById("hf-filename");
+      filenameInput.value = file.name;
+      ggufDropZone.setAttribute("aria-busy", "true");
+      ggufDropStatus.textContent = `Import de ${file.name} en cours…`;
+      ggufDropStatus.dataset.type = "info";
+      try {
+        const params = new URLSearchParams({ filename: file.name });
+        const response = await fetch(`/api/models/import?${params}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: file
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Import impossible.");
+        ggufDropStatus.textContent = `${file.name} ajouté à la bibliothèque locale.`;
+        ggufDropStatus.dataset.type = "success";
+        await loadModelCatalog();
+      } catch (error) {
+        ggufDropStatus.textContent = error.message;
+        ggufDropStatus.dataset.type = "error";
+      } finally {
+        ggufDropZone.removeAttribute("aria-busy");
+        ggufFileInput.value = "";
+      }
+    };
+    ggufDropZone.addEventListener("click", (event) => {
+      if (event.target !== ggufFileInput) ggufFileInput.click();
+    });
+    ggufDropZone.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        ggufFileInput.click();
+      }
+    });
+    ggufFileInput.addEventListener("change", () => importGguf(ggufFileInput.files?.[0]));
+    ggufDropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      ggufDropZone.classList.add("drag-over");
+    });
+    ggufDropZone.addEventListener("dragleave", (event) => {
+      if (!ggufDropZone.contains(event.relatedTarget)) ggufDropZone.classList.remove("drag-over");
+    });
+    ggufDropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      ggufDropZone.classList.remove("drag-over");
+      importGguf(event.dataTransfer?.files?.[0]);
+    });
+  }
 }
 
-async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true) {
+const hfExplorerState = { key: "", query: "", onlyCompatible: true, page: 1, models: [], complete: false, requestId: 0, controller: null };
+
+async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, page = 1) {
   const container = document.getElementById("hf-search-results");
   const countLabel = document.getElementById("hf-search-count");
   if (!container) return;
-
-  container.innerHTML = "<p class='etu-text'>Interrogation en direct de l'API Hugging Face...</p>";
-  if (countLabel) countLabel.textContent = "Recherche en cours...";
+  const parameterRange = document.getElementById("modal-hf-filter-size").value;
+  const trustedOnly = document.getElementById("modal-hf-filter-trusted").checked;
+  const hardwareFilter = document.querySelector("[data-hf-hardware].active")?.dataset.hfHardware || "";
+  const key = JSON.stringify([searchQuery, onlyCompatible, parameterRange, trustedOnly, hardwareFilter]);
+  if (hfExplorerState.key !== key) {
+    Object.assign(hfExplorerState, { key, models: [], complete: false });
+  }
+  hfExplorerState.query = searchQuery;
+  hfExplorerState.onlyCompatible = onlyCompatible;
+  page = Math.max(1, page);
+  const requestId = ++hfExplorerState.requestId;
+  hfExplorerState.controller?.abort();
+  const controller = new AbortController();
+  hfExplorerState.controller = controller;
+  const needed = Math.min(page * 10 + 1, 61);
+  const needsFetch = !hfExplorerState.complete && hfExplorerState.models.length < needed;
+  if (needsFetch) {
+    container.innerHTML = '<div class="hf-loading" role="status"><span class="hf-loading-orb" aria-hidden="true"></span><span>Recherche des modèles…</span></div>';
+    if (countLabel) countLabel.textContent = "Chargement…";
+    const pagination = document.getElementById("hf-search-pagination");
+    pagination.hidden = true;
+    document.getElementById("hf-page-numbers")?.replaceChildren();
+    document.getElementById("hf-page-prev").disabled = true;
+    document.getElementById("hf-page-next").disabled = true;
+  }
 
   try {
-    const url = searchQuery
-      ? `/api/models/huggingface/search?q=${encodeURIComponent(searchQuery)}&only_compatible=${onlyCompatible}&limit=25`
-      : `/api/models/huggingface/compatible?limit=25`;
-    const resp = await fetch(url);
-    const data = await resp.json();
-    const models = data.models || [];
-    container.innerHTML = "";
-
-    if (countLabel) {
-      countLabel.textContent = `${models.length} modèle(s) trouvé(s)`;
+    if (needsFetch) {
+      const params = new URLSearchParams({ q: searchQuery, only_compatible: String(onlyCompatible), limit: String(Math.min(needed, 51)), trusted_only: String(trustedOnly), parameter_range: parameterRange, hardware_filter: hardwareFilter, explorer: "true" });
+      const resp = await fetch(`/api/models/huggingface/search?${params}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "Recherche indisponible");
+      if (requestId !== hfExplorerState.requestId) return;
+      hfExplorerState.models = data.models || [];
+      hfExplorerState.complete = hfExplorerState.models.length < needed;
     }
+    if (requestId !== hfExplorerState.requestId) return;
+    hfExplorerState.page = page;
+    const models = hfExplorerState.models.slice((page - 1) * 10, page * 10);
+    const hasNext = hfExplorerState.models.length > page * 10 || !hfExplorerState.complete;
+    const pagination = document.getElementById("hf-search-pagination");
+    const lastPage = Math.max(1, Math.ceil(hfExplorerState.models.length / 10));
+    pagination.hidden = hfExplorerState.complete && lastPage <= 1;
+    document.getElementById("hf-page-prev").disabled = page === 1;
+    document.getElementById("hf-page-next").disabled = !hasNext;
+    const pageNumbers = document.getElementById("hf-page-numbers");
+    pageNumbers.replaceChildren();
+    const visiblePages = new Set();
+    if (page <= 4) {
+      for (let value = 1; value <= (hfExplorerState.complete ? Math.min(4, lastPage) : 4); value++) visiblePages.add(value);
+    } else {
+      for (let value = Math.max(1, page - 1); value <= (hfExplorerState.complete ? Math.min(lastPage, page + 2) : page + 2); value++) visiblePages.add(value);
+    }
+    if (hfExplorerState.complete && lastPage > 4) visiblePages.add(lastPage);
+    const orderedPages = [...visiblePages].sort((a, b) => a - b);
+    let previousPage = 0;
+    orderedPages.forEach((value) => {
+      if (previousPage && value - previousPage > 1) {
+        const ellipsis = document.createElement("span");
+        ellipsis.className = "hf-page-ellipsis";
+        ellipsis.textContent = "…";
+        ellipsis.setAttribute("aria-hidden", "true");
+        pageNumbers.append(ellipsis);
+      }
+      const pageButton = document.createElement("button");
+      pageButton.type = "button";
+      pageButton.className = "hf-page-number";
+      pageButton.dataset.hfPage = String(value);
+      pageButton.textContent = String(value);
+      pageButton.setAttribute("aria-label", `Page ${value}`);
+      if (value === page) {
+        pageButton.classList.add("active");
+        pageButton.setAttribute("aria-current", "page");
+      }
+      pageNumbers.append(pageButton);
+      previousPage = value;
+    });
+    if (!hfExplorerState.complete) {
+      const ellipsis = document.createElement("span");
+      ellipsis.className = "hf-page-ellipsis";
+      ellipsis.textContent = "…";
+      ellipsis.setAttribute("aria-hidden", "true");
+      pageNumbers.append(ellipsis);
+    }
+    if (countLabel) countLabel.textContent = `${models.length} modèle${models.length > 1 ? "s" : ""} sur cette page`;
+    container.replaceChildren();
 
-    if (models.length === 0) {
-      container.innerHTML = `
-        <div style="padding: 24px; text-align: center; color: var(--text-muted);">
-          <p>Aucun modèle trouvé sur Hugging Face pour « ${escapeHtml(searchQuery)} ».</p>
-        </div>
-      `;
+    if (!models.length) {
+      container.innerHTML = `<p class="etu-text">Aucun modèle trouvé pour « ${escapeHtml(searchQuery)} » avec ces filtres.</p>`;
       return;
     }
 
-    models.forEach((item) => {
-      const card = document.createElement("div");
+    models.forEach((item, index) => {
+      const card = document.createElement("article");
       card.className = "hf-model-card";
 
-      let badgesHtml = `<span class="etu-badge etu-badge-${item.compatibility?.color || 'info'}">${item.compatibility?.badge || 'Compatible'}</span>`;
-      if (item.npu_compatible) {
-        badgesHtml += ` <span class="etu-badge etu-badge-cyan">⚡ NPU</span>`;
+      const icon = (name) => window.ETUSVG?.icon(name) || "";
+      const compatibility = item.compatibility || {};
+      const badgeText = String(compatibility.badge || "Compatible").replace(/^[^A-Za-zÀ-ÿ0-9]+/, "");
+      const badgeIcon = compatibility.has_gpu_acceleration ? "gpu" : compatibility.npu_candidate ? "npu" : "cpu";
+      let badgesHtml = `<span class="etu-badge etu-badge-${compatibility.color || 'info'} hf-card-badge">${icon(badgeIcon)}${escapeHtml(badgeText)}</span>`;
+      if (compatibility.npu_candidate) {
+        badgesHtml += ` <span class="etu-badge etu-badge-cyan hf-card-badge" title="Accélération NPU à confirmer avec ce modèle">${icon("npu")} Candidat NPU</span>`;
       }
-      if (item.is_installed) {
-        badgesHtml += ` <span class="etu-badge etu-badge-success">✓ Installé</span>`;
-      }
+      badgesHtml += ` <span class="etu-badge etu-badge-success hf-card-badge hf-installed-badge" hidden>${icon("check")} Installé</span>`;
 
       // Construction du sélecteur de quantification
       const quants = item.quantizations || [{ filename: item.filename, size_gib: item.size_gib, quant: item.quant }];
       let selectOptions = "";
-      quants.forEach((q) => {
-        selectOptions += `<option value="${escapeHtml(q.filename)}" data-size="${q.size_gib}">${escapeHtml(q.quant || 'GGUF')} (~${q.size_gib} Go)</option>`;
+      quants.forEach((quant) => {
+        selectOptions += `<option value="${escapeHtml(quant.filename)}">${escapeHtml(quant.quant || 'GGUF')} (~${Number(quant.size_gib || 0).toLocaleString("fr-FR")} Go)</option>`;
       });
+      const quantId = `hf-quant-${requestId}-${index}`;
+      const modelPage = `https://huggingface.co/${String(item.repo).split("/").map(encodeURIComponent).join("/")}`;
+      const parameters = item.params && !/^inconnu$/i.test(item.params) ? `<span class="hf-parameter-badge">${escapeHtml(item.params)}</span>` : "";
+      const description = item.description && !item.description.startsWith("Modèle GGUF haute performance disponible sur Hugging Face") ? `<p class="hf-model-desc">${escapeHtml(item.description)}</p>` : "";
+      const requiredRam = Number(compatibility.required_ram_gib || item.required_ram_gib);
+      const memoryLabel = requiredRam > 0 ? `~${requiredRam.toLocaleString("fr-FR")} Go` : "Non renseignée";
 
       card.innerHTML = `
-        <div class="hf-model-top">
-          <div>
+        <header class="hf-model-top">
+          <div class="hf-model-identity">
             <div class="hf-model-title-row">
-              <span class="hf-model-title">${escapeHtml(item.name)}</span>
-              <span class="etu-badge etu-badge-info" style="font-size: 0.72rem;">${escapeHtml(item.params || 'IA')}</span>
-              ${badgesHtml}
+              <h4 class="hf-model-title">${escapeHtml(item.name)}</h4>
+              ${parameters}
             </div>
-            <span class="hf-model-author">🤗 ${escapeHtml(item.repo)}</span>
+            <span class="hf-model-author">${escapeHtml(item.repo)}</span>
           </div>
+          <a class="hf-model-page" href="${escapeHtml(modelPage)}" target="_blank" rel="noopener noreferrer" aria-label="Voir ${escapeHtml(item.name)} sur Hugging Face">${icon("externalLink")}<span>Page du modèle</span></a>
+        </header>
+        <div class="hf-model-badges">${badgesHtml}</div>
+        ${description}
+        <div class="hf-model-metrics">
+          <div class="hf-model-metric"><span>${icon("download")}Téléchargements</span><strong>${Number(item.downloads || 0).toLocaleString("fr-FR")}</strong></div>
+          <div class="hf-model-metric"><span>${icon("heart")}Soutiens</span><strong>${Number(item.likes || 0).toLocaleString("fr-FR")}</strong></div>
+          <div class="hf-model-metric"><span>${icon("memory")}Mémoire estimée</span><strong>${memoryLabel}</strong></div>
         </div>
-        <div class="hf-model-meta-row">
-          <span class="hf-meta-item">⬇️ ${(item.downloads || 0).toLocaleString()} dl</span>
-          <span class="hf-meta-item">❤️ ${item.likes || 0}</span>
-          <span class="hf-meta-item">🧠 RAM requise : ~${item.compatibility?.required_ram_gib || item.required_ram_gib || '6'} Go</span>
-          <span class="hf-meta-item">💡 ${escapeHtml(item.compatibility?.recommendation || '')}</span>
-        </div>
-        <p class="hf-model-desc">${escapeHtml(item.description)}</p>
+        ${compatibility.recommendation ? `<p class="hf-model-recommendation">${icon("hint")}<span>${escapeHtml(compatibility.recommendation)}</span></p>` : ""}
         <div class="hf-model-bottom">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <label style="font-size: 0.8rem; color: var(--text-muted);">Quantification :</label>
-            <select class="hf-quant-select">
+          <div class="hf-model-quantification">
+            <label for="${quantId}">Quantification</label>
+            <select id="${quantId}" class="hf-quant-select">
               ${selectOptions}
             </select>
           </div>
-          <div>
-            ${
-              item.is_installed
-                ? `<button class="etu-btn etu-btn-secondary btn-select-hf" data-filename="${escapeHtml(item.filename)}" data-name="${escapeHtml(item.name)}">Activer</button>`
-                : `<button class="etu-btn etu-btn-primary btn-dl-hf" data-repo="${escapeHtml(item.repo)}">Télécharger GGUF</button>`
-            }
-          </div>
+          <div class="hf-model-actions"></div>
         </div>
       `;
 
-      const dlBtn = card.querySelector(".btn-dl-hf");
-      if (dlBtn) {
-        dlBtn.addEventListener("click", () => {
-          const selectEl = card.querySelector(".hf-quant-select");
-          const chosenFile = selectEl ? selectEl.value : item.filename;
-          triggerDownload(item.repo, chosenFile);
-        });
-      }
-
-      const selectBtn = card.querySelector(".btn-select-hf");
-      if (selectBtn) {
-        selectBtn.addEventListener("click", () => {
-          activateModel(item.filename, item.name);
-        });
-      }
+      const select = card.querySelector(".hf-quant-select");
+      const actions = card.querySelector(".hf-model-actions");
+      const installed = new Set(item.installed_filenames || (item.is_installed ? [item.filename] : []));
+      if (installed.size) select.value = [...installed][0];
+      const renderActions = () => {
+        const filename = select.value;
+        const isInstalled = installed.has(filename);
+        card.querySelector(".hf-installed-badge").hidden = !isInstalled;
+        actions.replaceChildren();
+        const primary = document.createElement("button");
+        primary.type = "button";
+        primary.className = `etu-btn ${isInstalled ? "etu-btn-secondary" : "etu-btn-primary"}`;
+        primary.innerHTML = `${icon(isInstalled ? "check" : "download")}<span>${isInstalled ? "Activer" : "Télécharger"}</span>`;
+        primary.addEventListener("click", () => isInstalled ? activateModel(filename, item.name) : triggerDownload(item.repo, filename));
+        actions.append(primary);
+        if (isInstalled) {
+          const uninstall = document.createElement("button");
+          uninstall.type = "button";
+          uninstall.className = "etu-btn etu-btn-secondary";
+          uninstall.textContent = "Désinstaller";
+          uninstall.addEventListener("click", async () => {
+            if (!window.confirm(`Désinstaller « ${filename} » de cet ordinateur ?`)) return;
+            uninstall.disabled = true;
+            try {
+              const response = await fetch(`/api/models/${encodeURIComponent(filename)}`, { method: "DELETE" });
+              const result = await response.json().catch(() => ({}));
+              if (!response.ok) throw new Error(result.detail || "La désinstallation a échoué.");
+              installed.delete(filename);
+              item.installed_filenames = [...installed];
+              item.is_installed = installed.size > 0;
+              renderActions();
+              showToast("Modèle désinstallé.", "success");
+              loadModelCatalog();
+              loadServerStatus();
+            } catch (error) {
+              showToast(error.message || "La désinstallation a échoué.", "warning");
+              uninstall.disabled = false;
+            }
+          });
+          actions.append(uninstall);
+        }
+      };
+      select.addEventListener("change", renderActions);
+      renderActions();
 
       container.appendChild(card);
     });
   } catch (err) {
-    container.innerHTML = `<p class='etu-text etu-badge-warning'>Erreur lors de la recherche Hugging Face : ${err}</p>`;
+    if (requestId !== hfExplorerState.requestId) return;
+    container.replaceChildren();
+    const error = document.createElement("p");
+    error.className = "etu-text etu-badge-warning";
+    error.textContent = err.name === "TimeoutError"
+      ? "La recherche Hugging Face prend trop de temps. Réessayez avec un terme plus précis."
+      : `Erreur lors de la recherche Hugging Face : ${err.message || err}`;
+    container.append(error);
+    document.getElementById("hf-search-pagination").hidden = true;
+    if (countLabel) countLabel.textContent = "";
   }
 }
 
-function openModal(id) {
+function openModal(id, { fromRoute = false } = {}) {
+  if (id === "modal-models") restoreModelCatalogModal();
   const el = document.getElementById(id);
   document.getElementById("sidebar")?.classList.remove("is-open");
   document.getElementById("btn-open-sidebar")?.setAttribute("aria-expanded", "false");
   document.body.classList.remove("sidebar-open");
-  if (el) el.classList.add("active");
+  const component = window.ETUComponents?.getDialog(id);
+  if (component) component.open();
+  else if (el) el.classList.add("active");
+  if (id === "modal-models" && !el?.classList.contains("settings-model-catalog") && !fromRoute) syncModelsRoute();
 }
 
-function closeModal(id) {
+function showSettingsView(section = "general", { fromRoute = false } = {}) {
+  const app = document.getElementById("app-container");
+  const view = document.getElementById("settings-view");
+  if (!app || !view) return;
+  closeDownloadsView({ fromRoute: true });
+  document.getElementById("notification-center").hidden = true;
+  view.hidden = false;
+  app.classList.add("settings-open");
+  document.getElementById("sidebar")?.classList.remove("is-open");
+  document.getElementById("btn-open-sidebar")?.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("sidebar-open");
+  const labels = { general: "Général", models: "Modèles", profiles: "Profils d’IA", providers: "Fournisseurs IA et clés API", data: "Mes données", etu: "ETU", installation: "Installation" };
+  const selected = labels[section] ? section : "general";
+  powerActionMenu?.close();
+  document.getElementById("btn-refresh-library").hidden = selected !== "models";
+  if (selected === "models") mountModelCatalogInSettings();
+  else restoreModelCatalogModal();
+  if (selected === "profiles") loadProfiles().then(renderProfileManager).catch(() => {});
+  document.getElementById("settings-section-title").textContent = labels[selected];
+  document.querySelectorAll(".settings-nav-item").forEach((button) => {
+    const active = button.dataset.settingsSection === selected;
+    button.classList.toggle("is-active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".settings-panel").forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== selected;
+  });
+  if (selected === "etu") window.refreshEtuRemoteConnection?.();
+  if (selected === "installation") loadServerVariants();
+  if (selected === "providers") requestAnimationFrame(updateProviderSidebarHeight);
+  if (!fromRoute) {
+    if (selected === "models") syncModelsRoute();
+    else setAppRoute(`#/settings/${selected}`);
+  }
+}
+
+function closeSettingsView({ fromRoute = false, syncRoute = true } = {}) {
+  powerActionMenu?.close();
+  restoreModelCatalogModal();
+  const app = document.getElementById("app-container");
+  const view = document.getElementById("settings-view");
+  if (view) view.hidden = true;
+  app?.classList.remove("settings-open");
+  if (syncRoute && !fromRoute && document.getElementById("downloads-view")?.hidden !== false) setAppRoute("#/chat");
+}
+
+function showDownloadsView({ fromRoute = false } = {}) {
+  closeSettingsView({ fromRoute: true, syncRoute: false });
+  const app = document.getElementById("app-container");
+  const view = document.getElementById("downloads-view");
+  if (!app || !view) return;
+  document.getElementById("notification-center").hidden = true;
+  document.getElementById("btn-open-notifications")?.setAttribute("aria-expanded", "false");
+  view.hidden = false;
+  app.classList.add("downloads-open");
+  document.getElementById("sidebar")?.classList.remove("is-open");
+  document.getElementById("btn-open-sidebar")?.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("sidebar-open");
+  requestAnimationFrame(drawDownloadSpeedChart);
+  refreshDownloadManager();
+  if (!fromRoute) setAppRoute("#/downloads");
+}
+
+function closeDownloadsView({ fromRoute = false, syncRoute = true } = {}) {
+  const view = document.getElementById("downloads-view");
+  if (view) view.hidden = true;
+  document.getElementById("app-container")?.classList.remove("downloads-open");
+  if (syncRoute && !fromRoute && document.getElementById("settings-view")?.hidden !== false) setAppRoute("#/chat");
+}
+
+let serverVariantPoller = null;
+let serverVariantMenu = null;
+function getServerVariantMenu() {
+  if (!serverVariantMenu) serverVariantMenu = ETUComponents.listMenu(document.getElementById("settings-server-menu"));
+  return serverVariantMenu;
+}
+function serverVariantPresentation(variant) {
+  const match = variant.id.match(/^llama-server-(.+?)-(windows|macos|linux)-(x64|arm64)-(.+)\.(?:zip|tar\.gz)$/);
+  const tag = variant.tag || match?.[1] || "Version inconnue";
+  const platform = variant.platform || match?.[2] || "";
+  const arch = variant.arch || match?.[3] || "";
+  const backend = variant.variant || match?.[4] || "";
+  const compatible = variant.compatible !== false;
+  const isCuda = backend.startsWith("cuda");
+  const isVulkan = backend.startsWith("vulkan");
+  const isOpenVino = backend.includes("openvino");
+  const isMetal = backend === "metal";
+  const cudaVersion = backend.match(/^cuda([0-9.]+)/)?.[1];
+  const title = backend === "cpu" ? "CPU" : [
+    isCuda ? `NVIDIA CUDA${cudaVersion ? ` ${cudaVersion}` : ""}` : null,
+    isVulkan ? "Vulkan" : null,
+    isMetal ? "Metal" : null,
+    isOpenVino ? "OpenVINO" : null,
+  ].filter(Boolean).join(" + ") || backend.toUpperCase();
+  const badges = [
+    backend === "cpu" ? "cpu" : null,
+    isCuda || isVulkan || isMetal ? "gpu" : null,
+    isOpenVino ? "npu" : null,
+    isCuda ? "nvidia" : null,
+    isVulkan ? "vulkan" : null,
+  ].filter(Boolean);
+  const platformNames = { windows: "Windows", macos: "macOS", linux: "Linux" };
+  return {
+    id: variant.id,
+    label: `${tag} · ${title}`,
+    optionLabel: title,
+    group: tag,
+    subgroup: `${platformNames[platform] || platform} · ${arch}`,
+    platform,
+    badges,
+    description: compatible ? "" : "Non compatible avec cet ordinateur",
+    disabled: !compatible,
+  };
+}
+async function loadServerVariants() {
+  const menu = getServerVariantMenu();
+  const status = document.getElementById("settings-server-status");
+  try {
+    const previousSelection = menu.value;
+    const response = await fetch("/api/maintenance/server");
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(failure.detail || `Liste des versions indisponible (${response.status})`);
+    }
+    const data = await response.json();
+    const uniqueVariants = [...new Map(data.variants.map((variant) => [variant.id, variant])).values()];
+    const versions = [...new Set(uniqueVariants.map((variant) => serverVariantPresentation(variant).group))];
+    uniqueVariants.sort((a, b) => {
+      const first = serverVariantPresentation(a);
+      const second = serverVariantPresentation(b);
+      return versions.indexOf(first.group) - versions.indexOf(second.group)
+        || Number(first.disabled) - Number(second.disabled)
+        || first.subgroup.localeCompare(second.subgroup, "fr");
+    });
+    menu.setItems(uniqueVariants.map(serverVariantPresentation), previousSelection || data.selected_variant);
+    status.textContent = data.status === "running" ? (data.message || "Réinstallation en cours…") : data.status === "error" ? data.message : data.catalog_error || `Version installée : ${data.installed_variant || "inconnue"} · ${data.release_tag}`;
+    document.getElementById("btn-settings-reinstall-server").disabled = data.status === "running" || !menu.value;
+    if (data.status === "running") {
+      clearTimeout(serverVariantPoller);
+      serverVariantPoller = setTimeout(loadServerVariants, 1500);
+    } else if (serverVariantPoller) {
+      clearTimeout(serverVariantPoller);
+      serverVariantPoller = null;
+      if (data.status === "completed") loadServerStatus();
+    }
+  } catch (error) {
+    status.textContent = error.message;
+    menu.setItems([]);
+    document.getElementById("btn-settings-reinstall-server").disabled = true;
+  }
+}
+
+async function reinstallServerVariant() {
+  const menu = getServerVariantMenu();
+  const button = document.getElementById("btn-settings-reinstall-server");
+  if (!menu.value || !window.confirm(`Réinstaller ${menu.selectedItem.label} ? Le moteur local redémarrera.`)) return;
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/maintenance/server/reinstall", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant: menu.value }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Réinstallation impossible");
+    loadServerVariants();
+    showDownloadsView();
+  } catch (error) {
+    document.getElementById("settings-server-status").textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+function mountModelCatalogInSettings() {
+  const catalog = document.getElementById("modal-models");
+  const mount = document.getElementById("settings-models-mount");
+  if (!catalog || !mount) return;
+  mount.append(catalog);
+  catalog.classList.add("settings-model-catalog");
+  catalog.classList.remove("active");
+  loadModelCatalog();
+}
+
+function restoreModelCatalogModal() {
+  const catalog = document.getElementById("modal-models");
+  if (!catalog || !catalog.classList.contains("settings-model-catalog")) return;
+  document.body.append(catalog);
+  catalog.classList.remove("settings-model-catalog", "active");
+}
+
+function updateProviderSidebarHeight() {
+  const sidebar = document.querySelector("#settings-provider-mount .api-provider-sidebar");
+  if (!sidebar || !sidebar.getClientRects().length || window.innerWidth <= 700) return;
+  sidebar.style.setProperty("--provider-sidebar-height", `${Math.max(240, window.innerHeight - Math.max(16, sidebar.getBoundingClientRect().top) - 24)}px`);
+}
+
+function initSettingsPage() {
+  const modal = document.getElementById("modal-api-settings");
+  const mount = document.getElementById("settings-provider-mount");
+  const providerLayout = modal?.querySelector(".modal-body");
+  if (providerLayout && mount) {
+    providerLayout.classList.add("settings-provider-layout");
+    mount.append(providerLayout);
+    modal.remove();
+  }
+  document.querySelector(".settings-content")?.addEventListener("scroll", updateProviderSidebarHeight, { passive: true });
+  window.addEventListener("resize", updateProviderSidebarHeight);
+  document.getElementById("btn-refresh-library")?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const data = await loadModelCatalog({ throwOnError: true });
+      const installed = new Set(data.installed || []);
+      for (const item of hfExplorerState.models) {
+        item.installed_filenames = (item.quantizations || []).map(quant => quant.filename).filter(filename => installed.has(filename));
+        item.is_installed = item.installed_filenames.length > 0;
+      }
+      if (document.getElementById("tab-hf-explorer").classList.contains("active")) {
+        await loadHfExplorerResults(hfExplorerState.query, hfExplorerState.onlyCompatible, hfExplorerState.page);
+      }
+      showToast(`Bibliothèque actualisée · ${installed.size} modèle${installed.size > 1 ? "s" : ""} ${installed.size > 1 ? "locaux" : "local"}.`, "success");
+    } catch (error) { showToast(escapeHtml(error.message), "warning"); }
+    finally { button.disabled = false; button.removeAttribute("aria-busy"); }
+  });
+}
+
+function closeModal(id, { fromRoute = false } = {}) {
   const el = document.getElementById(id);
-  if (el) el.classList.remove("active");
+  const component = window.ETUComponents?.getDialog(id);
+  if (component) component.close();
+  else if (el) el.classList.remove("active");
+  if (id === "modal-models" && document.getElementById("settings-view")?.hidden === false
+      && document.getElementById("settings-section-title")?.textContent === "Modèles") {
+    mountModelCatalogInSettings();
+  }
+  if (id === "modal-models" && !fromRoute && document.getElementById("settings-view")?.hidden !== false) setAppRoute("#/chat");
 }
 
 /* -------------------------------------------------------------------------- */
 /* Toast Notifications                                                        */
 /* -------------------------------------------------------------------------- */
-function showToast(message, type = "info", duration = 3500) {
+function addAppNotification(title, detail, kind = "info") {
+  appNotifications.unshift({ id: crypto.randomUUID(), title, detail, kind, time: Date.now(), read: false });
+  appNotifications = appNotifications.slice(0, 50);
+  localStorage.setItem(notificationStorageKey, JSON.stringify(appNotifications));
+  renderAppNotifications();
+  showToast(detail, kind, 6500, title);
+}
+
+function notificationKind(kind) {
+  return ["success", "warning", "error", "download", "power", "response"].includes(kind) ? kind : "info";
+}
+
+function notificationIcon(kind) {
+  const safeKind = notificationKind(kind);
+  if (safeKind === "success" || safeKind === "response") return "check";
+  if (safeKind === "warning" || safeKind === "error") return "alert";
+  if (safeKind === "download") return "download";
+  if (safeKind === "power") return "power";
+  return "bell";
+}
+
+function persistAppNotifications() {
+  localStorage.setItem(notificationStorageKey, JSON.stringify(appNotifications));
+  renderAppNotifications();
+}
+
+function renderAppNotifications() {
+  const list = document.getElementById("notification-list");
+  const count = document.getElementById("notification-count");
+  if (!list || !count) return;
+  const clearButton = document.getElementById("btn-clear-notifications");
+  if (clearButton) clearButton.disabled = appNotifications.length === 0;
+  const unread = appNotifications.filter(item => !item.read).length;
+  count.hidden = unread === 0;
+  count.textContent = unread > 9 ? "9+" : String(unread);
+  list.replaceChildren();
+  if (!appNotifications.length) {
+    list.innerHTML = '<p class="utility-empty">Aucune notification pour le moment.</p>';
+    return;
+  }
+  for (const item of appNotifications) {
+    const row = document.createElement("article");
+    const kind = notificationKind(item.kind);
+    row.className = `notification-item notification-${kind}${item.read ? "" : " is-unread"}`;
+    const icon = document.createElement("span");
+    icon.className = "notification-item-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.innerHTML = window.ETUSVG?.icon(notificationIcon(kind)) || "";
+    const copy = document.createElement("div");
+    copy.className = "notification-item-copy";
+    const heading = document.createElement("strong");
+    heading.textContent = item.title;
+    const detail = document.createElement("p");
+    detail.textContent = item.detail;
+    const time = document.createElement("time");
+    time.dateTime = new Date(item.time).toISOString();
+    time.textContent = new Date(item.time).toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
+    copy.append(heading, detail, time);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "notification-item-remove";
+    remove.setAttribute("aria-label", `Supprimer la notification : ${item.title}`);
+    remove.title = "Supprimer cette notification";
+    remove.innerHTML = '<span aria-hidden="true">×</span>';
+    remove.addEventListener("click", () => {
+      appNotifications = appNotifications.filter(candidate => candidate.id !== item.id);
+      persistAppNotifications();
+    });
+    row.append(icon, copy, remove);
+    list.append(row);
+  }
+}
+
+function formatDownloadBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes === 0) return "0 o";
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(0)} Ko`;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} Go`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} Mo`;
+}
+
+const downloadSpeedHistory = [];
+const previousDownloadedBytes = new Map();
+let engineUpdateActivity = null;
+let dismissedDownloadEntries = new Set();
+try { dismissedDownloadEntries = new Set(JSON.parse(localStorage.getItem("etu-dismissed-downloads") || "[]")); } catch (_) {}
+try { engineUpdateActivity = JSON.parse(localStorage.getItem("etu-engine-update") || "null"); } catch (_) {}
+if (engineUpdateActivity?.status === "checking") engineUpdateActivity = null;
+
+function downloadBrand(task = {}) {
+  const source = [task.repo, task.filename, task.local_filename].filter(Boolean).join(" ").toLowerCase();
+  const brands = [
+    [/qwen|qwq|qvq/, "Qwen", "qwen-color", "#7360ee"],
+    [/mistral|ministral|mixtral|codestral|magistral/, "Mistral", "download-mistral-color", "#f49b39"],
+    [/deepseek/, "DeepSeek", "download-deepseek-color", "#4b83f5"],
+    [/llama|meta-/, "Llama", "meta-color", "#478bfa"],
+    [/gemma|gemini/, "Gemma", "gemma-color", "#65a1ed"],
+    [/phi[-_ .0-9]|microsoft/, "Microsoft", null, "#52a8d8"],
+    [/claude/, "Claude", "download-claude-color", "#d79976"],
+    [/gpt|openai/, "OpenAI", "download-openai", "#4ab497"],
+  ];
+  for (const [pattern, label, icon, color] of brands) {
+    if (pattern.test(source)) return { label, logo: icon ? "/static/provider-icons/" + icon + ".svg" : "/static/platform-icons/windows.svg", color };
+  }
+  if (task.kind === "engine" || task.kind === "update") return { label: "ETU-AI", logo: "/static/logo_etu_ai.svg", color: "#5585df" };
+  return source ? { label: "Modèle GGUF", logo: "/static/provider-icons/huggingface-color.svg", color: "#e9bd52" }
+    : { label: "ETU-AI", logo: "/static/logo_etu_ai.svg", color: "#5585df" };
+}
+
+function createDownloadHeading(titleText, task) {
+  const brand = downloadBrand(task);
+  const heading = document.createElement("div");
+  heading.className = "download-manager-title";
+  const tile = document.createElement("span");
+  tile.className = "download-manager-brand";
+  tile.style.setProperty("--download-brand-color", brand.color);
+  if (task?.kind === "update") {
+    tile.classList.add("download-manager-brand--update");
+    tile.innerHTML = window.ETUSVG?.icon("update") || "";
+  } else {
+    const logo = document.createElement("img");
+    logo.src = brand.logo;
+    logo.alt = brand.label;
+    tile.append(logo);
+  }
+  const title = document.createElement("strong");
+  title.textContent = titleText;
+  heading.append(tile, title);
+  return heading;
+}
+
+function seedDownloadHistory(now = Date.now()) {
+  if (downloadSpeedHistory.length) return;
+  for (let i = 59; i >= 0; i--) downloadSpeedHistory.push({ network: 0, disk: 0, at: now - i * 1000 });
+}
+let downloadPeakSpeed = 0;
+let lastDownloadSampleAt = 0;
+let downloadChart = null;
+
+function getDownloadChart() {
+  const container = document.getElementById("download-speed-chart");
+  if (!container || !window.echarts) return null;
+  if (!downloadChart) downloadChart = window.echarts.init(container, null, { renderer: "canvas" });
+  return downloadChart;
+}
+
+function clearDownloadDashboard() {
+  const dashboard = document.getElementById("download-dashboard");
+  const wasActive = dashboard?.dataset.idle !== "true";
+  if (!dashboard) return;
+  dashboard.hidden = false;
+  dashboard.classList.add("is-idle");
+  dashboard.dataset.idle = "true";
+  const metrics = dashboard.querySelector(".download-metrics");
+  if (metrics) metrics.hidden = true;
+  const panel = document.querySelector(".download-chart-panel");
+  panel?.removeAttribute("data-banner-title");
+  panel?.removeAttribute("data-banner-repo");
+  panel?.style.removeProperty("--download-banner-image");
+  downloadSpeedHistory.length = 0;
+  seedDownloadHistory();
+  resolveDownloadBanner();
+  previousDownloadedBytes.clear();
+  downloadPeakSpeed = 0;
+  lastDownloadSampleAt = 0;
+  const activeCount = document.getElementById("download-active-count");
+  if (activeCount) activeCount.textContent = "";
+  if (wasActive) {
+    downloadChart?.clear();
+  }
+  if ((wasActive || !downloadChart) && !document.getElementById("downloads-view")?.hidden) requestAnimationFrame(drawDownloadSpeedChart);
+}
+
+function resolveDownloadBanner(task = {}) {
+  const dashboard = document.getElementById("download-dashboard");
+  const brand = downloadBrand(task);
+  dashboard?.style.setProperty("--download-brand-color", brand.color);
+  const logo = document.getElementById("download-banner-logo");
+  if (logo && logo.getAttribute("src") !== brand.logo) logo.src = brand.logo;
+}
+
+function recordDownloadSample(tasks, serverInstall = null) {
+  const downloading = tasks.filter(task => task.status === "downloading");
+  if (!downloading.length && serverInstall?.status !== "running") {
+    clearDownloadDashboard();
+    return;
+  }
+  const dashboard = document.getElementById("download-dashboard");
+  dashboard.hidden = false;
+  dashboard.classList.remove("is-idle");
+  dashboard.dataset.idle = "false";
+  const metrics = dashboard.querySelector(".download-metrics");
+  if (metrics) metrics.hidden = false;
+  if (!document.getElementById("downloads-view")?.hidden) resolveDownloadBanner(downloading[0] || { kind: "engine" });
+  const now = Date.now();
+  const elapsedSeconds = lastDownloadSampleAt ? Math.max((now - lastDownloadSampleAt) / 1000, 0.1) : 1;
+  const active = tasks.filter(task => ["queued", "downloading"].includes(task.status));
+  const network = downloading.reduce((sum, task) => sum + (Number(task.speed_mbps) || 0), 0);
+  const total = active.reduce((sum, task) => sum + (Number(task.downloaded_bytes) || 0), 0);
+  let diskBytes = 0;
+  const currentIds = new Set();
+  for (const task of tasks) {
+    const id = task.task_id;
+    currentIds.add(id);
+    const bytes = Number(task.downloaded_bytes) || 0;
+    const previous = previousDownloadedBytes.get(id);
+    if (previous !== undefined && bytes > previous) diskBytes += bytes - previous;
+    previousDownloadedBytes.set(id, bytes);
+  }
+  for (const id of previousDownloadedBytes.keys()) if (!currentIds.has(id)) previousDownloadedBytes.delete(id);
+  const disk = diskBytes / elapsedSeconds / 1024 ** 2;
+  downloadPeakSpeed = Math.max(downloadPeakSpeed, network);
+  seedDownloadHistory(now - 1000);
+  downloadSpeedHistory.push({ network, disk, at: now });
+  if (downloadSpeedHistory.length > 60) downloadSpeedHistory.splice(0, downloadSpeedHistory.length - 60);
+  lastDownloadSampleAt = now;
+  const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
+  setText("download-current-speed", downloading.length ? `${network.toFixed(1)} Mo/s` : "—");
+  setText("download-peak-speed", `${downloadPeakSpeed.toFixed(1)} Mo/s`);
+  setText("download-total-size", formatDownloadBytes(total));
+  setText("download-disk-speed", downloading.length ? `${disk.toFixed(1)} Mo/s` : "—");
+  setText("download-active-count", `${downloading.length || 1} transfert${downloading.length > 1 ? "s" : ""} en cours`);
+  drawDownloadSpeedChart();
+}
+
+function drawDownloadSpeedChart() {
+  const container = document.getElementById("download-speed-chart");
+  if (!container || document.getElementById("download-dashboard")?.hidden || document.getElementById("downloads-view")?.hidden || !container.clientWidth) return;
+  const chart = getDownloadChart();
+  if (!chart) return;
+  chart.resize({ width: container.clientWidth, height: container.clientHeight });
+  const styles = getComputedStyle(document.documentElement);
+  const accent = document.getElementById("download-dashboard")?.style.getPropertyValue("--download-brand-color") || styles.getPropertyValue("--accent-color").trim() || "#58a6ff";
+  const success = styles.getPropertyValue("--success").trim() || accent;
+  const muted = styles.getPropertyValue("--text-muted").trim() || "#8b949e";
+  const border = styles.getPropertyValue("--border-color").trim() || "#30363d";
+  const text = styles.getPropertyValue("--text-main").trim() || "#e6edf3";
+  seedDownloadHistory();
+  const samples = downloadSpeedHistory.slice(-60);
+  chart.setOption({
+    animation: false,
+    color: [accent, success],
+    grid: { top: 16, right: 54, bottom: 8, left: 12 },
+    tooltip: {
+      trigger: "axis",
+      formatter: params => params.map(item => item.marker + item.seriesName + " : " + Number(item.value).toFixed(2) + " Mo/s").join("<br>"),
+      backgroundColor: styles.getPropertyValue("--bg-primary").trim() || "#161b22",
+      borderColor: border,
+      textStyle: { color: text },
+      valueFormatter: value => `${Number(value).toFixed(2)} Mo/s`,
+    },
+    xAxis: {
+      type: "category",
+      data: samples.map(sample => new Date(sample.at).toLocaleTimeString([], { minute: "2-digit", second: "2-digit" })),
+      boundaryGap: true,
+      axisTick: { show: false },
+      axisLine: { show: false },
+      axisLabel: { show: false },
+      axisPointer: { label: { show: false } },
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      position: "right",
+      axisLabel: { color: muted, fontSize: 10, formatter: value => `${value} Mo/s` },
+      splitLine: { lineStyle: { color: border, opacity: .72 } },
+    },
+    series: [
+      { name: "Réseau", type: "bar", data: samples.map(sample => sample.network), barMaxWidth: 12, itemStyle: { color: accent, borderRadius: [3, 3, 0, 0], opacity: .82 } },
+      { name: "Disque", type: "line", data: samples.map(sample => sample.disk), smooth: .25, showSymbol: false, connectNulls: true, lineStyle: { width: 2, color: success }, areaStyle: { color: success, opacity: .08 } },
+    ],
+  }, true);
+  container.setAttribute("aria-label", `Débit réseau actuel ${samples.at(-1)?.network.toFixed(1) || "0.0"} Mo/s, écriture disque ${samples.at(-1)?.disk.toFixed(1) || "0.0"} Mo/s`);
+}
+
+function updateDownloadNavigation(tasks = [], serverInstall = null) {
+  const button = document.getElementById("btn-open-downloads");
+  if (!button) return;
+  const downloading = tasks.filter(task => task.status === "downloading");
+  const queued = tasks.filter(task => task.status === "queued").length;
+  const serverRunning = serverInstall?.status === "running";
+  const running = downloading.length + Number(serverRunning);
+  const indeterminate = Boolean(serverRunning || downloading.some(task => !(Number(task.total_bytes) > 0)));
+  const total = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.total_bytes) || 0), 0);
+  const received = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.downloaded_bytes) || 0), 0);
+  const percentage = total ? Math.min(100, Math.round(received / total * 100)) : 0;
+  button.classList.toggle("is-downloading", running > 0);
+  button.classList.toggle("is-download-indeterminate", running > 0 && indeterminate);
+  button.classList.toggle("has-queued-downloads", running === 0 && queued > 0);
+  button.style.setProperty("--download-nav-progress", `${percentage}%`);
+  const details = [];
+  if (running) details.push(`${running} en cours${indeterminate ? "" : ` · ${percentage} %`}`);
+  if (queued) details.push(`${queued} en attente`);
+  const label = `Téléchargements${details.length ? " · " + details.join(" · ") : ""}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const count = document.getElementById("download-nav-count");
+  if (count) {
+    count.hidden = running + queued === 0;
+    count.textContent = String(running + queued);
+  }
+}
+
+function renderDownloadManager(tasks, serverInstall = null) {
+  updateDownloadNavigation(tasks, serverInstall);
+  const list = document.getElementById("download-manager-list");
+  const summary = document.getElementById("download-summary");
+  if (!list || !summary) return;
+  const active = tasks.filter(task => ["queued", "downloading"].includes(task.status));
+  const serverIsActive = serverInstall?.status === "running";
+  if (serverIsActive) {
+    const previousSize = dismissedDownloadEntries.size;
+    for (const key of dismissedDownloadEntries) if (key.startsWith("server:")) dismissedDownloadEntries.delete(key);
+    if (dismissedDownloadEntries.size !== previousSize) localStorage.setItem("etu-dismissed-downloads", JSON.stringify([...dismissedDownloadEntries]));
+  }
+  const activeCount = active.length + Number(serverIsActive);
+  summary.textContent = activeCount
+    ? `${activeCount} transfert${activeCount > 1 ? "s" : ""} à traiter`
+    : "";
+  list.replaceChildren();
+  const groups = {};
+  for (const [key, label, empty] of [["running", "En cours", "Aucun téléchargement en cours."], ["queued", "En attente", "Aucun téléchargement en attente."], ["done", "Fait", "Aucun téléchargement terminé."]]) {
+    const section = document.createElement("section");
+    section.className = "download-task-group";
+    section.dataset.downloadGroup = key;
+    const heading = document.createElement("div");
+    heading.className = "download-group-heading";
+    const title = document.createElement("h3");
+    title.textContent = label;
+    heading.append(title);
+    const entries = document.createElement("div");
+    entries.className = "download-group-entries";
+    section.append(heading, entries);
+    list.append(section);
+    groups[key] = { section, heading, title, entries, label, empty };
+  }
+  const serverHistoryKey = "server:" + JSON.stringify([serverInstall?.release_tag, serverInstall?.variant, serverInstall?.message]);
+  const showServerInstall = ["running", "completed", "error"].includes(serverInstall?.status)
+    && (serverIsActive || !dismissedDownloadEntries.has(serverHistoryKey));
+  if (showServerInstall) {
+    const row = document.createElement("article");
+    row.className = "download-manager-item download-manager-item--server";
+    const heading = createDownloadHeading("Installation / mise à jour du moteur", { kind: "engine" });
+    const status = document.createElement("span");
+    const serverLabels = { running: "Téléchargement / installation en cours", completed: "Terminé", error: "Erreur" };
+    status.textContent = serverLabels[serverInstall.status];
+    const progress = document.createElement("progress");
+    progress.max = 100;
+    if (serverInstall.status === "completed") progress.value = 100;
+    else if (serverInstall.status === "error") progress.value = 0;
+    const details = document.createElement("small");
+    const version = serverInstall.release_tag ? `Version ${serverInstall.release_tag}` : "Moteur llama.cpp";
+    details.textContent = `${version} · ${serverInstall.message || "Préparation…"}`;
+    row.append(heading, status, progress, details);
+    groups[serverIsActive ? "running" : "done"].entries.append(row);
+  }
+  if (engineUpdateActivity) renderEngineUpdateActivity(groups[engineUpdateActivity.status === "checking" ? "running" : engineUpdateActivity.status === "available" ? "queued" : "done"].entries);
+  for (const task of [...tasks].reverse()) {
+    const group = task.status === "downloading" ? "running" : task.status === "queued" ? "queued" : "done";
+    if (group === "done" && dismissedDownloadEntries.has(task.task_id)) continue;
+    const row = document.createElement("article");
+    row.className = "download-manager-item";
+    const title = createDownloadHeading(task.local_filename || task.filename, task);
+    row.style.setProperty("--download-brand-color", downloadBrand(task).color);
+    const status = document.createElement("span");
+    const labels = { queued: "En attente", downloading: "Téléchargement", completed: "Terminé", cancelled: "Annulé", error: "Erreur" };
+    status.textContent = `${labels[task.status] || task.status} · ${Math.round(Number(task.percentage) || 0)} %`;
+    const progress = document.createElement("progress");
+    progress.max = 100;
+    progress.value = Number(task.percentage) || 0;
+    const stats = document.createElement("small");
+    const speedDetail = task.status === "downloading" ? ` · ${(Number(task.speed_mbps) || 0).toFixed(2)} Mo/s` : "";
+    stats.textContent = `${formatDownloadBytes(task.downloaded_bytes)} / ${task.total_bytes ? formatDownloadBytes(task.total_bytes) : "taille inconnue"}${speedDetail}${task.error_message ? ` · ${task.error_message}` : ""}`;
+    row.append(title, status, progress, stats);
+    if (["queued", "downloading"].includes(task.status)) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "etu-btn etu-btn-secondary";
+      cancel.textContent = "Annuler";
+      cancel.addEventListener("click", async () => {
+        cancel.disabled = true;
+        await fetch(`/api/models/tasks/${encodeURIComponent(task.task_id)}/cancel`, { method: "POST" });
+      });
+      row.append(cancel);
+    }
+    groups[group].entries.append(row);
+  }
+  for (const [key, group] of Object.entries(groups)) {
+    const count = group.entries.children.length;
+    if (!count) {
+      group.section.remove();
+      continue;
+    }
+    group.title.textContent = `${group.label} (${count})`;
+    if (key === "done") {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "download-clear-history";
+      clear.textContent = "Effacer l’historique";
+      clear.addEventListener("click", () => {
+        tasks.filter(task => !["downloading", "queued"].includes(task.status)).forEach(task => dismissedDownloadEntries.add(task.task_id));
+        if (showServerInstall && !serverIsActive) dismissedDownloadEntries.add(serverHistoryKey);
+        if (engineUpdateActivity && !["checking", "available"].includes(engineUpdateActivity.status)) {
+          engineUpdateActivity = null;
+          localStorage.removeItem("etu-engine-update");
+        }
+        localStorage.setItem("etu-dismissed-downloads", JSON.stringify([...dismissedDownloadEntries]));
+        renderDownloadManager(tasks, serverInstall);
+      });
+      group.heading.append(clear);
+    }
+  }
+  if (!list.children.length) {
+    list.innerHTML = `<div class="download-manager-empty" role="img" aria-label="Aucun téléchargement en cours"><span aria-hidden="true">${window.ETUSVG?.icon("download") || ""}</span></div>`;
+  }
+}
+
+function renderEngineUpdateActivity(list) {
+  const activity = engineUpdateActivity;
+  const row = document.createElement("article");
+  row.className = "download-manager-item download-manager-item--update";
+  const heading = createDownloadHeading("Mises à jour du moteur", { kind: "update" });
+  const status = document.createElement("span");
+  status.textContent = { checking: "Recherche en cours", available: "Mise à jour disponible", current: "Moteur à jour", error: "Recherche impossible" }[activity.status] || "";
+  const progress = document.createElement("progress");
+  progress.max = 100;
+  if (activity.status !== "checking") progress.value = activity.status === "current" ? 100 : 0;
+  const detail = document.createElement("small");
+  detail.textContent = activity.message;
+  row.append(heading, status);
+  if (activity.status === "checking") row.append(progress);
+  row.append(detail);
+  if (activity.status === "available") {
+    const choose = document.createElement("button");
+    choose.type = "button";
+    choose.className = "etu-btn etu-btn-primary";
+    choose.textContent = "Choisir la version à installer";
+    choose.addEventListener("click", () => showSettingsView("installation"));
+    row.append(choose);
+  }
+  list.append(row);
+}
+
+async function checkEngineUpdates() {
+  if (engineUpdateActivity?.status === "checking") return;
+  engineUpdateActivity = { status: "checking", message: "Recherche des versions compatibles du moteur sur GitHub…" };
+  showDownloadsView();
+  const buttons = ["btn-settings-update", "btn-downloads-check-updates"].map(id => document.getElementById(id)).filter(Boolean);
+  buttons.forEach(button => { button.disabled = true; });
+  try {
+    const response = await fetch("/api/maintenance/server?refresh=true", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.catalog_error) throw new Error(data.detail || data.catalog_error || "Les versions sont indisponibles.");
+    const versionParts = tag => /^v?\d+(?:\.\d+){1,3}$/i.test(tag || "") ? tag.replace(/^v/i, "").split(".").map(Number) : null;
+    const compare = (a, b) => {
+      for (let i = 0; i < Math.max(a.length, b.length); i++) {
+        const delta = (a[i] || 0) - (b[i] || 0);
+        if (delta) return delta;
+      }
+      return 0;
+    };
+    const installed = versionParts(data.release_tag);
+    if (!installed) throw new Error("La version installée ne permet pas une comparaison automatique. Consultez les versions dans Installation.");
+    const newer = data.variants.filter(item => item.compatible && versionParts(item.tag)
+      && (!data.installed_variant || item.variant === data.installed_variant)
+      && compare(versionParts(item.tag), installed) > 0)
+      .sort((a, b) => compare(versionParts(b.tag), versionParts(a.tag)));
+    engineUpdateActivity = newer.length
+      ? { status: "available", message: "Version " + newer[0].tag + " disponible · version configurée " + data.release_tag }
+      : { status: "current", message: "Version " + data.release_tag + " · aucune version compatible plus récente trouvée." };
+  } catch (error) {
+    engineUpdateActivity = { status: "error", message: error.message };
+  } finally {
+    localStorage.setItem("etu-engine-update", JSON.stringify(engineUpdateActivity));
+    buttons.forEach(button => { button.disabled = false; });
+    refreshDownloadManager();
+  }
+}
+
+async function refreshDownloadManager() {
+  if (appPowerState !== "awake") { clearDownloadDashboard(); updateDownloadNavigation(); return; }
+  if (downloadRefreshInFlight) return;
+  downloadRefreshInFlight = true;
+  try {
+    const response = await fetch("/api/models/tasks");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const tasks = (await response.json()).tasks || [];
+    let serverInstall = null;
+    try {
+      const serverResponse = await fetch("/api/maintenance/server/progress", { cache: "no-store" });
+      if (serverResponse.ok) serverInstall = await serverResponse.json();
+    } catch (_) { /* Le suivi des téléchargements de modèles reste disponible. */ }
+    recordDownloadSample(tasks, serverInstall);
+    for (const task of tasks) {
+      const previous = seenDownloadStatuses.get(task.task_id);
+      if (previous && previous !== "completed" && task.status === "completed") {
+        addAppNotification("Modèle téléchargé", `${task.local_filename || task.filename} est prêt à être utilisé.`, "download");
+      }
+      seenDownloadStatuses.set(task.task_id, task.status);
+    }
+    renderDownloadManager(tasks, serverInstall);
+  } catch (_) {
+    updateDownloadNavigation();
+    const summary = document.getElementById("download-summary");
+    const list = document.getElementById("download-manager-list");
+    if (summary) summary.textContent = "Suivi temporairement indisponible";
+    if (list) list.innerHTML = '<p class="download-empty">Le gestionnaire se reconnectera au serveur.</p>';
+  } finally {
+    downloadRefreshInFlight = false;
+  }
+}
+
+async function refreshPowerState() {
+  if (appPowerState === "shutting_down") return;
+  try {
+    const response = await fetch("/api/power/state");
+    if (!response.ok) return;
+    const state = await response.json();
+    appPowerState = state.state;
+    const text = document.getElementById("settings-power-status");
+    if (text) text.textContent = state.error || (state.state === "sleeping" ? "ETU-AI est en veille." : state.state === "entering_sleep" ? "Mise en veille après les réponses en cours…" : "");
+    applyLaunchMode(state.mode);
+  } catch (_) { /* Le redémarrage interrompt temporairement la connexion. */ }
+}
+
+function applyLaunchMode(mode) {
+  if (!["normal", "local", "server"].includes(mode)) return;
+  currentLaunchMode = mode;
+  document.querySelectorAll("[data-restart-mode]").forEach(button => {
+    const active = button.dataset.restartMode === mode;
+    button.classList.toggle("is-current", active);
+    if (active) button.setAttribute("aria-current", "true");
+    else button.removeAttribute("aria-current");
+  });
+}
+
+async function wakeApp() {
+  const response = await fetch("/api/power/wake", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "Réveil impossible");
+  appPowerState = "awake";
+  if (data.woke) addAppNotification("ETU-AI réveillé", "Le modèle peut recevoir de nouvelles demandes.", "power");
+  refreshPowerState();
+}
+
+function showPowerTransition(action) {
+  const overlay = document.getElementById("power-transition-overlay");
+  if (!overlay) return;
+  const labels = { restart: "Redémarrage d’ETU-AI…", sleep: "Mise en veille d’ETU-AI…", shutdown: "Arrêt d’ETU-AI…" };
+  const icons = { restart: "restart", sleep: "sleep", shutdown: "power" };
+  const label = document.getElementById("power-transition-label");
+  if (label) label.textContent = labels[action] || labels.restart;
+  const fallback = overlay.querySelector(".power-transition-fallback");
+  if (fallback) {
+    fallback.dataset.svgIcon = icons[action] || "restart";
+    fallback.innerHTML = window.ETUSVG?.icon(fallback.dataset.svgIcon) || "";
+  }
+  overlay.dataset.action = action;
+  overlay.hidden = false;
+  overlay.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => overlay.classList.add("is-visible"));
+}
+
+function hidePowerTransition() {
+  const overlay = document.getElementById("power-transition-overlay");
+  if (!overlay) return;
+  overlay.classList.remove("is-visible");
+  overlay.setAttribute("aria-hidden", "true");
+  overlay.hidden = true;
+}
+
+async function restartInMode(mode) {
+  const status = document.getElementById("settings-launch-mode-status");
+  status.textContent = `Redémarrage en mode ${mode}…`;
+  const response = await fetch("/api/power/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.detail || "Redémarrage impossible");
+  appPowerState = "shutting_down";
+  showPowerTransition("restart");
+  const deadline = Date.now() + 90000;
+  const waitForRestart = async () => {
+    if (Date.now() > deadline) { hidePowerTransition(); status.textContent = "Le redémarrage prend trop de temps. Rechargez la page après avoir relancé ETU-AI."; return; }
+    try {
+      const ready = await fetch("/api/launch-mode", { cache: "no-store" });
+      if (ready.ok) {
+        const current = await ready.json();
+        if (current.pid !== data.old_pid && current.mode === mode) { location.reload(); return; }
+      }
+    } catch (_) { /* L'ancien serveur vient de s'arrêter. */ }
+    setTimeout(waitForRestart, 1000);
+  };
+  setTimeout(waitForRestart, 1000);
+}
+
+function initAppUtilities() {
+  document.querySelectorAll("[data-svg-icon]").forEach(holder => { holder.innerHTML = window.ETUSVG?.icon(holder.dataset.svgIcon) || ""; });
+  const togglePanel = id => {
+    const panel = document.getElementById(id);
+    panel.hidden = !panel.hidden;
+    if (id === "notification-center") closeDownloadsView();
+    if (id === "notification-center" && !document.getElementById(id).hidden) {
+      appNotifications.forEach(item => { item.read = true; });
+      localStorage.setItem(notificationStorageKey, JSON.stringify(appNotifications));
+      renderAppNotifications();
+    }
+    document.getElementById("btn-open-notifications").setAttribute("aria-expanded", String(!document.getElementById("notification-center").hidden));
+  };
+  document.getElementById("btn-open-downloads")?.addEventListener("click", showDownloadsView);
+  document.getElementById("btn-downloads-back")?.addEventListener("click", closeDownloadsView);
+  document.getElementById("btn-downloads-check-updates")?.addEventListener("click", checkEngineUpdates);
+  document.getElementById("btn-open-notifications")?.addEventListener("click", () => togglePanel("notification-center"));
+  document.getElementById("btn-clear-notifications")?.addEventListener("click", () => {
+    appNotifications = [];
+    persistAppNotifications();
+  });
+  document.querySelectorAll("[data-close-panel]").forEach(button => button.addEventListener("click", () => { document.getElementById(button.dataset.closePanel).hidden = true; document.getElementById("btn-open-notifications").setAttribute("aria-expanded", "false"); }));
+  const powerButton = document.getElementById("btn-settings-power");
+  const powerMenu = document.getElementById("settings-power-menu");
+  powerActionMenu = window.ETUComponents.actionMenu(powerButton, powerMenu);
+  document.querySelectorAll("[data-power-action]").forEach(button => button.addEventListener("click", async () => {
+    powerActionMenu.close(true);
+    try {
+      const action = button.dataset.powerAction;
+      if (action === "sleep") {
+        const response = await fetch("/api/power/sleep", { method: "POST" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail);
+        appPowerState = data.state;
+        showPowerTransition("sleep");
+        refreshPowerState();
+      } else if (action === "restart") {
+        await restartInMode(currentLaunchMode);
+      } else if (action === "shutdown") {
+        const response = await fetch("/api/power/shutdown", { method: "POST" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail);
+        appPowerState = "shutting_down";
+        showPowerTransition("shutdown");
+        document.getElementById("settings-power-status").textContent = "ETU-AI s’arrête. Fermez cet onglet après l’arrêt.";
+      }
+    } catch (error) { showToast(escapeHtml(error.message), "warning"); refreshPowerState(); }
+  }));
+  document.querySelectorAll("[data-restart-mode]").forEach(button => button.addEventListener("click", async () => {
+    try { await restartInMode(button.dataset.restartMode); }
+    catch (error) { document.getElementById("settings-launch-mode-status").textContent = error.message; }
+  }));
+  fetch("/api/launch-mode").then(response => response.ok ? response.json() : null).then(state => { if (state) applyLaunchMode(state.mode); }).catch(() => {});
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      powerActionMenu.close();
+      closeDownloadsView();
+      document.getElementById("notification-center").hidden = true;
+      document.getElementById("btn-open-notifications").setAttribute("aria-expanded", "false");
+    }
+  });
+  renderAppNotifications();
+  renderDownloadManager([]);
+  window.addEventListener("resize", drawDownloadSpeedChart);
+  refreshPowerState();
+  refreshDownloadManager();
+  setInterval(refreshPowerState, 3000);
+  setInterval(refreshDownloadManager, 1000);
+}
+
+function appendSafeToastContent(container, message) {
+  const template = document.createElement("template");
+  template.innerHTML = String(message ?? "");
+  const append = (parent, node) => {
+    if (node.nodeType === Node.TEXT_NODE) { parent.append(document.createTextNode(node.textContent)); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.tagName === "BR") { parent.append(document.createElement("br")); return; }
+    const target = node.tagName === "STRONG" || node.tagName === "EM" ? document.createElement(node.tagName.toLowerCase()) : parent;
+    if (target !== parent) parent.append(target);
+    [...node.childNodes].forEach(child => append(target, child));
+  };
+  [...template.content.childNodes].forEach(node => append(container, node));
+}
+
+function showToast(message, type = "info", duration = 4500, title = "") {
   const container = document.getElementById("toast-container");
   if (!container) return;
 
   const toast = document.createElement("div");
-  toast.className = `toast-message toast-${type}`;
-  toast.innerHTML = `<span>${message}</span>`;
+  const safeType = notificationKind(type);
+  toast.className = `toast-message toast-${safeType}`;
+  toast.setAttribute("role", "status");
+  toast.setAttribute("aria-live", "polite");
+  const icon = document.createElement("span");
+  icon.className = "toast-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = window.ETUSVG?.icon(notificationIcon(safeType)) || "";
+  const copy = document.createElement("div");
+  copy.className = "toast-copy";
+  const heading = document.createElement("strong");
+  heading.textContent = title || ({success:"Terminé",warning:"Attention",error:"Erreur",download:"Téléchargement terminé",power:"ETU-AI réveillé",response:"Réponse terminée"}[safeType] || "Information");
+  const detail = document.createElement("div");
+  detail.className = "toast-detail";
+  appendSafeToastContent(detail, message);
+  copy.append(heading, detail);
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "toast-close";
+  close.setAttribute("aria-label", "Fermer la notification");
+  close.textContent = "×";
+  const progress = document.createElement("span");
+  progress.className = "toast-duration";
+  progress.setAttribute("aria-hidden", "true");
+  progress.style.animationDuration = `${Math.max(1000, duration)}ms`;
+  toast.append(icon, copy, close, progress);
   container.appendChild(toast);
 
-  setTimeout(() => {
+  let remaining = duration;
+  let timerStarted = Date.now();
+  let timer = setTimeout(dismiss, remaining);
+  function dismiss() {
+    clearTimeout(timer);
     toast.classList.add("toast-out");
     setTimeout(() => {
       if (toast.parentNode) toast.parentNode.removeChild(toast);
     }, 300);
-  }, duration);
+  }
+  close.addEventListener("click", dismiss);
+  toast.addEventListener("mouseenter", () => {
+    clearTimeout(timer);
+    remaining = Math.max(0, remaining - (Date.now() - timerStarted));
+    progress.style.animationPlayState = "paused";
+  });
+  toast.addEventListener("mouseleave", () => {
+    timerStarted = Date.now();
+    progress.style.animationPlayState = "running";
+    timer = setTimeout(dismiss, remaining);
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1706,35 +3056,29 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   }
   if (remoteModels && Array.isArray(remoteModels)) remoteApiModels = remoteModels;
   const selectableModels = [...availableInstalledModels, ...remoteApiModels];
+  const providerLogoIds = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models"]);
+  const displayedModel = getActiveProfile().model || currentActiveModel;
 
   const activeNameEl = document.getElementById("active-model-name");
-  const badgeIconEl = document.getElementById("model-badge-icon");
-  const countBadgeEl = document.getElementById("model-count-badge");
   const listEl = document.getElementById("model-dropdown-list");
 
   // Déterminer le modèle d'affichage et ses métadonnées
-  let currentDisplay = currentActiveModel || "Ministral 3B";
+  let currentDisplay = displayedModel || "Ministral 3B";
 
-  const matched = currentActiveModel && selectableModels.find(
+  const matched = displayedModel && selectableModels.find(
     (m) =>
-      (m.id && m.id === currentActiveModel) ||
-      (m.filename && m.filename.toLowerCase().includes((currentActiveModel || "").toLowerCase())) ||
-      (m.name && m.name.toLowerCase().includes((currentActiveModel || "").toLowerCase()))
+      (m.id && m.id === displayedModel) ||
+      (m.filename && m.filename.toLowerCase().includes((displayedModel || "").toLowerCase())) ||
+      (m.name && m.name.toLowerCase().includes((displayedModel || "").toLowerCase()))
   );
 
   if (matched) {
     currentDisplay = matched.source === "api" ? `${matched.name} · ${matched.provider_label}` : (matched.name || matched.filename.replace(".gguf", ""));
-  } else if (currentActiveModel) {
-    currentDisplay = currentActiveModel.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
+  } else if (displayedModel) {
+    currentDisplay = displayedModel.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
   }
 
   if (activeNameEl) activeNameEl.textContent = currentDisplay;
-  const icon = "🧠";
-  if (badgeIconEl) badgeIconEl.textContent = icon;
-
-  if (countBadgeEl) {
-    countBadgeEl.textContent = `${selectableModels.length} disponible${selectableModels.length > 1 ? "s" : ""}`;
-  }
 
   // Remplir le menu déroulant
   if (listEl) {
@@ -1745,9 +3089,9 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
       selectableModels.forEach((item) => {
         const itemStem = item.source === "api" ? item.id : (item.filename ? item.filename.replace(/\.gguf$/i, "") : item.id);
         const isActive =
-          currentActiveModel &&
-          (currentActiveModel.toLowerCase() === itemStem.toLowerCase() ||
-            (item.filename && item.filename.toLowerCase() === currentActiveModel.toLowerCase()));
+          displayedModel &&
+          (displayedModel.toLowerCase() === itemStem.toLowerCase() ||
+            (item.filename && item.filename.toLowerCase() === displayedModel.toLowerCase()));
 
         const itemEl = document.createElement("button");
         itemEl.type = "button";
@@ -1761,11 +3105,23 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
         
         let badgesHtml = "";
         if (item.source === "api") {
-          badgesHtml += '<span class="model-source-badge api">API</span>';
-        } else if (item.npu_compatible) {
-          badgesHtml += `<span class="etu-badge etu-badge-cyan" style="font-size: 0.68rem; padding: 1px 5px;">⚡ Léger</span>`;
-        } else if (item.compatibility?.has_gpu_acceleration) {
-          badgesHtml += `<span class="etu-badge etu-badge-success" style="font-size: 0.68rem; padding: 1px 5px;">GPU possible</span>`;
+          const providerId = providerLogoIds.has(item.provider) ? item.provider : "";
+          const providerName = item.provider_label || item.provider || "Fournisseur";
+          const providerImage = providerId ? `<img src="/static/provider-icons/${escapeHtml(providerId)}.svg" alt="" aria-hidden="true">` : "";
+          badgesHtml = `<span class="model-provider-logo" title="${escapeHtml(providerName)}" aria-label="Fournisseur : ${escapeHtml(providerName)}">${providerImage}<span>${escapeHtml(providerName.slice(0, 2).toUpperCase())}</span></span>`;
+        } else {
+          const compatibility = item.compatibility || {};
+          const supported = [];
+          if (compatibility.has_gpu_acceleration) supported.push({ id: "gpu", label: "GPU" });
+          if (compatibility.npu_supported || item.npu_supported || compatibility.has_npu_acceleration) {
+            supported.push({ id: "npu", label: "NPU OpenVINO validé" });
+          } else if (isModelNpuCandidate(item)) {
+            supported.push({ id: "npu", label: "NPU candidat, non validé" });
+          }
+          if (!supported.length) supported.push({ id: "cpu", label: "CPU" });
+          badgesHtml = supported.map(({ id, label }) =>
+            `<span class="model-hardware-badge ${id}" title="${label}" aria-label="${label}">${window.ETUSVG?.icon(id) || ""}</span>`
+          ).join("");
         }
 
         const metaLabel = getModelParameterCount(item) || "";
@@ -1988,16 +3344,7 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
   const indicator = document.getElementById("model-status-indicator");
   if (indicator) indicator.classList.add("loading");
 
-  const loadingOverlay = document.getElementById("model-loading-overlay");
-  if (source === "local" && loadingOverlay) {
-    const loadingName = document.getElementById("model-loading-name");
-    if (loadingName) loadingName.textContent = `Chargement de ${friendlyName} dans llama.cpp…`;
-    loadingOverlay.hidden = false;
-    loadingOverlay.setAttribute("aria-hidden", "false");
-  }
-
-  showToast(`🔄 Activation du modèle <strong>${escapeHtml(friendlyName)}</strong>...`, "info", 2500);
-  const loadStartedAt = performance.now();
+  showToast(`Sélection de <strong>${escapeHtml(friendlyName)}</strong>…`, "info", 2000);
 
   try {
     const resp = await fetch("/api/models/select", {
@@ -2010,18 +3357,16 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
 
     if (data.success) {
       currentActiveModel = data.active_model_id || data.active_model || cleanStem;
-      if (source === "local") {
-        const loadMs = Math.round(performance.now() - loadStartedAt);
-        fetch("/api/models/performance", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model_id: currentActiveModel, model_name: friendlyName, source, total_ms: 0, load_ms: loadMs, measurement: "activation", hardware: currentHardwareSnapshot || {} }),
-        }).catch((error) => console.warn("Le temps de chargement du modèle n’a pas été enregistré.", error));
-      }
       if (source === "local") localModelHasResponded = false;
       updateModelUI(currentActiveModel, availableInstalledModels);
-      loadServerStatus();
-      showToast(`✅ Modèle <strong>${escapeHtml(friendlyName)}</strong> activé et prêt !`, "success", 3500);
+      if (source === "local") {
+        currentModelReady = false;
+        currentModelState = "selected";
+        showToast(`<strong>${escapeHtml(friendlyName)}</strong> sélectionné. Il sera chargé à votre prochain message.`, "success", 4000);
+      } else {
+        loadServerStatus();
+        showToast(`<strong>${escapeHtml(friendlyName)}</strong> sélectionné pour la prochaine demande.`, "success", 3500);
+      }
     } else {
       showToast(`⚠️ Avertissement : ${data.error || "Impossible de basculer"}`, "warning", 4000);
     }
@@ -2029,10 +3374,6 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
     showToast(`❌ Erreur de basculement : ${err}`, "warning", 4000);
   } finally {
     if (indicator) indicator.classList.remove("loading");
-    if (loadingOverlay) {
-      loadingOverlay.hidden = true;
-      loadingOverlay.setAttribute("aria-hidden", "true");
-    }
   }
 }
 
@@ -2169,6 +3510,9 @@ async function loadConversations() {
 }
 
 async function selectConversation(convId) {
+  closeSettingsView({ syncRoute: false });
+  closeDownloadsView({ fromRoute: true });
+  setAppRoute(`#/chat/${encodeURIComponent(convId)}`);
   cancelChatStream();
   const viewVersion = chatViewVersion;
   currentConversationId = convId;
@@ -2194,7 +3538,11 @@ async function selectConversation(convId) {
 }
 
 function startNewConversation() {
+  closeSettingsView({ syncRoute: false });
+  closeDownloadsView({ fromRoute: true });
+  setAppRoute("#/chat");
   cancelChatStream();
+  document.getElementById("chat-input").value = "";
   pendingChatFiles = [];
   renderAttachments(document.getElementById("chat-attachments"), [], true);
   document.getElementById("attachment-error").textContent = "";
@@ -2205,6 +3553,7 @@ function startNewConversation() {
   if (container) {
     container.innerHTML = '<div class="chat-welcome"><div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div><h2>Comment puis-je vous aider ?</h2><p>Un assistant local pour apprendre, coder et explorer vos idées.</p><div class="welcome-suggestions"><button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button><button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button><button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button></div></div>';
   }
+  resizeChatInput();
   loadConversations();
 }
 
@@ -2287,6 +3636,8 @@ function initChatForm() {
   const form = document.getElementById("chat-form");
   const input = document.getElementById("chat-input");
   if (!form || !input) return;
+  input.addEventListener("input", resizeChatInput);
+  resizeChatInput();
   document.getElementById("btn-stop").addEventListener("click", cancelChatStream);
   const picker = document.getElementById("chat-file-input");
   document.getElementById("btn-attach").addEventListener("click", () => picker.click());
@@ -2311,7 +3662,7 @@ function initChatForm() {
   });
 
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       form.dispatchEvent(new Event("submit"));
     }
@@ -2329,6 +3680,7 @@ function initChatForm() {
     let accepted = false;
     document.getElementById("attachment-error").textContent = "";
     input.value = "";
+    resizeChatInput();
 
     // Commande slash pour changer de modèle : /model ou /models
     if (!submittedFiles.length && (rawMessage.startsWith("/model") || rawMessage.startsWith("/switch"))) {
@@ -2353,7 +3705,8 @@ function initChatForm() {
     const requestViewVersion = chatViewVersion;
     activeChatStream = { controller, bubble: bubbleContent, requestId, accepted: false, rawMessage, userBubble };
     document.getElementById("btn-stop").hidden = false;
-    const localModelMayNeedWarmup = !String(currentActiveModel || "").startsWith("api:") && (
+    const profileModel = getActiveProfile().model || currentActiveModel;
+    const localModelMayNeedWarmup = !String(profileModel || "").startsWith("api:") && (
       !localModelHasResponded || currentModelReady !== true || ["sleeping", "loading", "offline", "unknown"].includes(currentModelState)
     );
     setAssistantActivity(
@@ -2365,10 +3718,11 @@ function initChatForm() {
     // 3. Appel au flux SSE avec le modèle sélectionné
     try {
       const encodedAttachments = await Promise.all(submittedFiles.map(fileBase64));
+      if (appPowerState !== "awake") await wakeApp();
       bubbleContent.dataset.generationStarted = String(performance.now());
-      bubbleContent.dataset.modelId = String(currentActiveModel || "");
-      bubbleContent.dataset.modelName = document.getElementById("active-model-name")?.textContent || currentActiveModel || "";
-      bubbleContent.dataset.modelSource = String(currentActiveModel || "").startsWith("api:") ? "api" : "local";
+      bubbleContent.dataset.modelId = String(profileModel || "");
+      bubbleContent.dataset.modelName = document.getElementById("active-model-name")?.textContent || profileModel || "";
+      bubbleContent.dataset.modelSource = String(profileModel || "").startsWith("api:") ? "api" : "local";
       bubbleContent.dataset.hardwareProfile = JSON.stringify(currentHardwareSnapshot || {});
       const resp = await fetch("/api/chat/stream", {
         method: "POST",
@@ -2377,7 +3731,7 @@ function initChatForm() {
         body: JSON.stringify({
           conversation_id: requestConversationId,
           message: rawMessage,
-          model: currentActiveModel,
+          model: profileModel,
           profile_id: activeProfileId,
           attachments: encodedAttachments,
           request_id: requestId,
@@ -2400,6 +3754,7 @@ function initChatForm() {
       const convHeader = resp.headers.get("X-Conversation-Id");
       if (convHeader && !currentConversationId) {
         currentConversationId = convHeader;
+        setAppRoute(`#/chat/${encodeURIComponent(convHeader)}`);
         loadConversations();
       }
 
@@ -2447,6 +3802,7 @@ function initChatForm() {
       if (controller.signal.aborted || requestViewVersion !== chatViewVersion) return;
       if (!accepted) {
         input.value = rawMessage;
+        resizeChatInput();
         userBubble.remove();
         document.getElementById("attachment-error").textContent = err.message;
       }
@@ -2486,7 +3842,7 @@ function handleModelSlashCommand(commandStr) {
       availableInstalledModels.forEach((m) => {
         const stem = m.filename ? m.filename.replace(/\.gguf$/i, "") : m.id;
         const isActive = currentActiveModel && currentActiveModel.toLowerCase() === stem.toLowerCase();
-        const npuTag = m.npu_compatible ? " ⚡ NPU" : "";
+        const npuTag = isModelNpuCandidate(m) ? " ⚡ NPU" : "";
         const sizeTag = m.local_size_gib ? ` (${m.local_size_gib} Go)` : "";
         modelsListHtml += `
           <button type="button" class="model-switch-btn ${isActive ? "active" : ""}" data-model="${escapeHtml(m.filename || stem)}" data-name="${escapeHtml(m.name || stem)}">
@@ -2568,6 +3924,7 @@ function handleStreamEvent(data, bubbleEl) {
     if (data.generation_tps !== null && data.generation_tps !== undefined && Number.isFinite(Number(data.generation_tps))) bubbleEl.dataset.generationTps = String(data.generation_tps);
     updateAssistantTelemetry(bubbleEl, true);
   } else if (data.event === "done") {
+    if (bubbleEl.dataset.generationCompleted !== "true") addAppNotification("Réponse terminée", "Le modèle a fini sa réponse.", "response");
     bubbleEl.dataset.generationCompleted = "true";
     finishStreamRender(bubbleEl);
     bubbleEl.closest(".message")?.classList.remove("streaming");
@@ -2801,6 +4158,7 @@ function submitGeneratedPrompt(value) {
   input.value = String(value).slice(0, 14000);
   form.requestSubmit();
   input.value = draft;
+  resizeChatInput();
   return true;
 }
 
@@ -3192,6 +4550,95 @@ function getActiveProfile() {
     { id: "default", name: "ETU-AI", avatar: "✦", instructions: "" };
 }
 
+function profileOrigin(profile) {
+  return profile.id === "default" ? "Intégré à ETU-AI" : "Créé sur cet appareil";
+}
+
+function profileModelLabel(model) {
+  if (!model) return "Modèle actif par défaut";
+  const item = [...availableInstalledModels, ...remoteApiModels]
+    .find((candidate) => (candidate.source === "api" ? candidate.id : candidate.filename || candidate.id) === model);
+  return item ? (item.name || item.filename || item.id) : model;
+}
+
+let profileManagerPage = 1;
+const PROFILE_MANAGER_PAGE_SIZE = 10;
+
+function renderProfileManager() {
+  const list = document.getElementById("settings-profile-list");
+  if (!list) return;
+  const search = document.getElementById("profile-search-local").value.trim().toLocaleLowerCase();
+  const matching = assistantProfiles.filter((profile) =>
+    [profile.name, profileOrigin(profile), profileModelLabel(profile.model)]
+      .some((value) => value.toLocaleLowerCase().includes(search)));
+  const pageCount = Math.max(1, Math.ceil(matching.length / PROFILE_MANAGER_PAGE_SIZE));
+  profileManagerPage = Math.min(profileManagerPage, pageCount);
+  const start = (profileManagerPage - 1) * PROFILE_MANAGER_PAGE_SIZE;
+  list.replaceChildren();
+  matching.slice(start, start + PROFILE_MANAGER_PAGE_SIZE).forEach((profile) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "profile-manager-card";
+    card.innerHTML = `
+      <span class="profile-manager-avatar" aria-hidden="true">${avatarMarkup(profile.avatar)}</span>
+      <span class="profile-manager-copy">
+        <span class="profile-manager-name">${escapeHtml(profile.name)}</span>
+        <span class="profile-manager-origin">${escapeHtml(profileOrigin(profile))}</span>
+        <span class="profile-manager-model">${escapeHtml(profileModelLabel(profile.model))}</span>
+      </span>
+      ${profile.id === activeProfileId ? '<span class="profile-manager-active">Actif</span>' : ""}
+      <span class="profile-manager-edit" aria-hidden="true">Modifier →</span>`;
+    card.addEventListener("click", () => openProfileDialog(profile));
+    list.append(card);
+  });
+  const createCard = document.createElement("button");
+  createCard.type = "button";
+  createCard.className = "profile-manager-create-card";
+  createCard.innerHTML = '<span aria-hidden="true">＋</span><strong>Créer un profil</strong><span>Ajouter un nouvel assistant</span>';
+  createCard.addEventListener("click", () => openProfileDialog());
+  list.append(createCard);
+  const pagination = document.getElementById("settings-profile-pagination");
+  if (pagination) {
+    pagination.replaceChildren();
+    pagination.hidden = pageCount <= 1;
+    if (pageCount > 1) {
+      const summary = document.createElement("span");
+      summary.className = "profile-manager-page-summary";
+      summary.textContent = `${matching.length} profils · page ${profileManagerPage} sur ${pageCount}`;
+      const previous = document.createElement("button");
+      previous.type = "button";
+      previous.className = "etu-btn etu-btn-secondary";
+      previous.textContent = "Précédent";
+      previous.disabled = profileManagerPage === 1;
+      previous.addEventListener("click", () => { profileManagerPage--; renderProfileManager(); });
+      const next = document.createElement("button");
+      next.type = "button";
+      next.className = "etu-btn etu-btn-secondary";
+      next.textContent = "Suivant";
+      next.disabled = profileManagerPage === pageCount;
+      next.addEventListener("click", () => { profileManagerPage++; renderProfileManager(); });
+      pagination.append(summary, previous, next);
+    }
+  }
+  document.getElementById("settings-profile-empty").hidden = matching.length > 0;
+}
+
+function populateProfileModels(selectedModel = "") {
+  const select = document.getElementById("profile-model");
+  select.replaceChildren(new Option("Modèle actif par défaut", ""));
+  const seen = new Set();
+  for (const item of [...availableInstalledModels, ...remoteApiModels]) {
+    const value = item.source === "api" ? item.id : (item.filename || item.id);
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const label = item.source === "api" ? `${item.name || value} · ${item.provider_label || "API"}` : (item.name || value);
+    select.add(new Option(label, value));
+  }
+  if (selectedModel && !seen.has(selectedModel)) select.add(new Option(`${selectedModel} (indisponible)`, selectedModel));
+  select.value = selectedModel || "";
+  window.refreshWorkshopModelChoices?.();
+}
+
 function avatarMarkup(avatar) {
   return /^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(avatar || "")
     ? `<img src="${avatar}" alt="" class="profile-avatar-image">`
@@ -3222,6 +4669,13 @@ function setDisplayedProfile(profileId) {
   document.querySelectorAll("#chat-messages .assistant .ai-avatar").forEach((avatar) => {
     avatar.innerHTML = avatarMarkup(getActiveProfile().avatar);
   });
+  const modelButton = document.getElementById("btn-model-selector");
+  if (modelButton) {
+    modelButton.disabled = Boolean(activeProfile.model);
+    modelButton.title = activeProfile.model ? "Modèle défini dans ce profil. Modifiez le profil pour en changer." : "Choisir un modèle";
+  }
+  updateModelUI(null, availableInstalledModels, remoteApiModels);
+  renderProfileManager();
 }
 
 async function loadProfiles() {
@@ -3244,32 +4698,30 @@ async function loadProfiles() {
     options.appendChild(option);
   });
   setDisplayedProfile(activeProfileId);
-  const list = document.getElementById("profile-list");
-  list.replaceChildren();
-  assistantProfiles.forEach((profile) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "profile-item" + (profile.id === activeProfileId ? " active" : "");
-    button.innerHTML = `<span class="profile-mini-image">${avatarMarkup(profile.avatar)}</span><span>${escapeHtml(profile.name)}</span>`;
-    button.addEventListener("click", () => editProfile(profile));
-    list.appendChild(button);
-  });
 }
 
 function editProfile(profile = null) {
-  pendingAvatarData = profile?.avatar?.startsWith("data:image/webp;base64,") ? profile.avatar : null;
+  profileAvatarFallback = profile?.avatar || "✦";
+  pendingAvatarData = null;
   document.getElementById("profile-id").value = profile?.id || "";
   document.getElementById("profile-name").value = profile?.name || "";
-  document.getElementById("profile-avatar").value = pendingAvatarData ? "" : (profile?.avatar || "✦");
   document.getElementById("profile-image-file").value = "";
-  updateProfilePreview(profile?.avatar || "✦");
+  updateProfilePreview(profileAvatarFallback);
   document.getElementById("profile-instructions").value = profile?.instructions || "";
+  populateProfileModels(profile?.model || "");
   document.getElementById("profile-form-title").textContent = profile ? `Modifier ${profile.name}` : "Créer un profil";
   document.getElementById("profile-delete").hidden = !profile || profile.id === "default";
   document.getElementById("profile-form-error").textContent = "";
+  window.refreshWorkshopPublication?.(profile);
+}
+
+function openProfileDialog(profile = null) {
+  editProfile(profile);
+  openModal("modal-profiles");
 }
 
 function initProfiles() {
+  ETUComponents.dialog(document.getElementById("modal-profiles"));
   loadProfiles().catch((error) => console.warn(error));
   const picker = document.getElementById("profile-picker");
   const trigger = document.getElementById("profile-select");
@@ -3316,14 +4768,19 @@ function initProfiles() {
   document.addEventListener("click", (event) => {
     if (!picker.contains(event.target)) setPickerOpen(false);
   });
-  document.getElementById("btn-open-profiles").addEventListener("click", () => {
-    editProfile(getActiveProfile());
-    openModal("modal-profiles");
-  });
-  document.getElementById("profile-new").addEventListener("click", () => editProfile());
-  document.getElementById("profile-avatar").addEventListener("input", (event) => {
-    pendingAvatarData = null;
-    updateProfilePreview(event.target.value || "✦");
+  document.getElementById("btn-create-profile").addEventListener("click", () => openProfileDialog());
+  document.getElementById("profile-search-local").addEventListener("input", () => { profileManagerPage = 1; renderProfileManager(); });
+  document.querySelectorAll("[data-profile-tab]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const selected = tab.dataset.profileTab;
+      document.querySelectorAll("[data-profile-tab]").forEach((button) => {
+        const active = button.dataset.profileTab === selected;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      document.getElementById("profile-panel-local").hidden = selected !== "local";
+      document.getElementById("profile-panel-workshop").hidden = selected !== "workshop";
+    });
   });
   document.getElementById("profile-image-file").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
@@ -3342,7 +4799,6 @@ function initProfiles() {
       const dataUrl = canvas.toDataURL("image/webp", 0.78);
       if (dataUrl.length > 95000) throw new Error("Image trop volumineuse après réduction.");
       pendingAvatarData = dataUrl;
-      document.getElementById("profile-avatar").value = "";
       updateProfilePreview(dataUrl);
       error.textContent = "";
     } catch (problem) {
@@ -3367,9 +4823,9 @@ function initProfiles() {
     const id = document.getElementById("profile-id").value;
     const body = {
       name: document.getElementById("profile-name").value.trim(),
-      avatar: pendingAvatarData || document.getElementById("profile-avatar").value.trim() || "✦",
+      avatar: pendingAvatarData || profileAvatarFallback,
       instructions: document.getElementById("profile-instructions").value.trim(),
-      model: null,
+      model: document.getElementById("profile-model").value || null,
     };
     try {
       const response = await fetch(id ? `/api/profiles/${encodeURIComponent(id)}` : "/api/profiles", {
@@ -3381,6 +4837,10 @@ function initProfiles() {
       const profile = await response.json();
       await loadProfiles();
       editProfile(profile);
+      document.getElementById("profile-search-local").value = "";
+      document.getElementById("profile-tab-local").click();
+      renderProfileManager();
+      closeModal("modal-profiles");
       showToast("Profil enregistré", "success");
     } catch (error) {
       document.getElementById("profile-form-error").textContent = error.message;
@@ -3401,6 +4861,7 @@ function initProfiles() {
     }
     await loadProfiles();
     editProfile(getActiveProfile());
+    closeModal("modal-profiles");
   });
 }
 
@@ -3413,12 +4874,68 @@ function scrollToBottom() {
 /* Catalogue & Téléchargement Hugging Face                                    */
 /* -------------------------------------------------------------------------- */
 let modelCatalogItems = [];
+let modelRuntimeHardware = {};
 
 function isTextOnlyModel(model) {
   return Boolean(model.mmproj?.text_only || /(?:^|[-_.])text[-_.]instruct(?:[-_.]|$)/i.test(model.filename || ""));
 }
 
-function showModelsTab(targetTabId) {
+function applyModelCatalogSearch() {
+  const input = document.getElementById("model-catalog-search");
+  const query = (input?.value || "").trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
+  const cards = [...document.querySelectorAll("[data-catalog-search]")];
+  let visibleCount = 0;
+  const visibleBySection = new Map();
+  cards.forEach((card) => {
+    const matches = !query || card.dataset.catalogSearch.includes(query);
+    card.hidden = !matches;
+    if (matches) {
+      visibleCount += 1;
+      const section = card.closest(".catalog-section");
+      if (section) visibleBySection.set(section, (visibleBySection.get(section) || 0) + 1);
+    }
+  });
+  document.querySelectorAll(".catalog-section").forEach((section) => {
+    const count = visibleBySection.get(section) || 0;
+    section.hidden = Boolean(query) && count === 0;
+  });
+  const countLabel = document.getElementById("model-catalog-search-count");
+  if (countLabel) countLabel.textContent = query ? `${visibleCount} modèle${visibleCount > 1 ? "s" : ""} trouvé${visibleCount > 1 ? "s" : ""}` : "";
+}
+
+function sortLocalModelCards() {
+  const list = document.getElementById("catalog-local-list");
+  const sort = document.getElementById("model-catalog-sort")?.value || "name";
+  if (!list) return;
+  const direction = sort.endsWith("desc") ? -1 : 1;
+  const field = sort.startsWith("disk") ? "disk" : sort.startsWith("ram") ? "ram" : sort.startsWith("params") ? "params" : "name";
+  const cards = [...list.querySelectorAll(":scope > .catalog-item")];
+  cards.sort((a, b) => {
+    if (field === "name") return a.dataset.name.localeCompare(b.dataset.name, "fr", { sensitivity: "base" });
+    return (Number(a.dataset[field]) - Number(b.dataset[field])) * direction || a.dataset.name.localeCompare(b.dataset.name, "fr", { sensitivity: "base" });
+  });
+  cards.forEach(card => list.append(card));
+}
+
+function renderModelRuntimeIcons(item) {
+  const icons = [{ name: "CPU", shortName: "CPU", markup: window.ETUSVG?.icon("cpu", "") || "" }];
+  const compatibility = item.compatibility || {};
+  const backend = String(modelRuntimeHardware.recommended_backend || "cpu").toLowerCase();
+  if (compatibility.has_gpu_acceleration) {
+    if (backend.startsWith("cuda")) icons.push({ name: "NVIDIA CUDA", shortName: "GPU", markup: '<img src="/static/provider-icons/nvidia.svg" alt="">' });
+    else if (backend.startsWith("vulkan")) icons.push({ name: "GPU Vulkan", shortName: "GPU", markup: window.ETUSVG?.icon("gpu", "") || "" });
+    else if (backend === "metal") icons.push({ name: "GPU Metal", shortName: "GPU", markup: '<img src="/static/platform-icons/macos.svg" alt="">' });
+    else icons.push({ name: "GPU", shortName: "GPU", markup: window.ETUSVG?.icon("gpu", "") || "" });
+  }
+  if (modelRuntimeHardware.npus?.length && (compatibility.npu_supported || item.npu_supported || compatibility.has_npu_acceleration)) {
+    icons.push({ name: "NPU Intel OpenVINO validé pour ce modèle", shortName: "NPU", markup: window.ETUSVG?.icon("npu", "") || "" });
+  } else if (modelRuntimeHardware.npus?.length && (compatibility.npu_candidate || item.npu_candidate)) {
+    icons.push({ name: "Candidat NPU · modèle non validé avec ce moteur", shortName: "NPU ?", markup: window.ETUSVG?.icon("npu", "") || "" });
+  }
+  return icons.map(({ name, shortName, markup }) => `<span class="local-model-runtime-icon" role="img" title="${escapeHtml(name)}" aria-label="${escapeHtml(name)}">${markup}<small>${escapeHtml(shortName)}</small></span>`).join("");
+}
+
+function showModelsTab(targetTabId, { fromRoute = false } = {}) {
   document.querySelectorAll(".modal-tab-btn").forEach(button => {
     const active = button.dataset.tab === targetTabId;
     button.classList.toggle("active", active);
@@ -3430,15 +4947,21 @@ function showModelsTab(targetTabId) {
     const resultsEl = document.getElementById("hf-search-results");
     if (resultsEl && (!resultsEl.children.length || resultsEl.textContent.includes("Prêt"))) loadHfExplorerResults();
   }
+  if (!fromRoute && (document.getElementById("modal-models")?.classList.contains("active")
+      || (!document.getElementById("settings-view")?.hidden && document.querySelector('[data-settings-panel="models"]:not([hidden])')))) {
+    syncModelsRoute();
+  }
 }
 
-async function loadModelCatalog() {
+async function loadModelCatalog({ throwOnError = false } = {}) {
   try {
-    const resp = await fetch("/api/models/catalog");
+    const resp = await fetch("/api/models/catalog", { cache: "no-store" });
     const data = await resp.json();
-    const catalogList = document.getElementById("catalog-list");
-    if (!catalogList) return;
-    catalogList.innerHTML = "";
+    if (!resp.ok) throw new Error(data.detail || "La bibliothèque locale ne peut pas être actualisée.");
+    const localList = document.getElementById("catalog-local-list");
+    if (!localList) return;
+    modelRuntimeHardware = data.hardware || {};
+    localList.replaceChildren();
 
     const installed = data.catalog.filter((m) => m.is_installed);
     modelCatalogItems = data.catalog;
@@ -3462,66 +4985,94 @@ async function loadModelCatalog() {
     remoteApiModels = Array.isArray(data.remote_models) ? data.remote_models : [];
     updateModelUI(currentActiveModel, availableInstalledModels);
 
-    data.catalog.forEach((item) => {
+    installed.forEach((item) => {
       const card = document.createElement("div");
-      card.className = `catalog-item ${item.is_installed ? "is-installed" : ""}`;
-      let extraBadges = "";
-      if (item.npu_compatible) {
-        extraBadges += `<span class="etu-badge etu-badge-cyan" style="margin-left: 6px;">⚡ NPU</span>`;
-      }
-      if (item.is_installed) {
-        extraBadges += `<span class="etu-badge etu-badge-success" style="margin-left: 6px;">✓ Déjà Présent</span>`;
-      }
+      card.className = "catalog-item is-installed local-model-row";
+      card.dataset.name = item.name || item.filename;
+      card.dataset.disk = Number(item.local_size_gib || item.size_gib || 0);
+      card.dataset.ram = Number(item.required_ram_gib || item.compatibility?.required_ram_gib || 0);
+      const parameterCount = String(item.name || item.filename).match(/(?:^|[^\d])(\d+(?:\.\d+)?)\s*[bB](?:\b|[-_])/);
+      card.dataset.params = parameterCount ? Number(parameterCount[1]) : 0;
+      card.dataset.catalogSearch = `${item.name} ${item.filename} ${item.description} ${item.category || ""} ${item.repo || ""}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase();
+      const brand = downloadBrand(item);
+      const displayName = (item.name || item.filename).replace(/\s*\(Modèle Local Détecté\)/i, "");
+      const quant = item.filename.match(/(?:^|[-_.])(IQ\d[\w]*|Q\d[\w]*|BF16|F16|F32)(?=[-.]|$)/i)?.[1] || item.quant || "GGUF";
+      const formatSize = value => Number(value) > 0 ? `${Number(value).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} Go` : "—";
 
       card.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <div>
-            <strong>${escapeHtml(item.name)}</strong>
-            ${extraBadges}
-          </div>
-          <span class="etu-badge etu-badge-${item.compatibility.color}">${item.compatibility.badge}</span>
-        </div>
-        <p style="font-size: 0.85rem; color: var(--text-muted);">${escapeHtml(item.description)}</p>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
-          <span style="font-size: 0.8rem; color: var(--text-muted);">${item.size_gib} Go | RAM requise: ~${item.required_ram_gib} Go</span>
-          <div>
-            ${
-              item.is_installed
-                ? `<button class="etu-btn etu-btn-secondary btn-select-model" data-filename="${escapeHtml(item.filename)}" data-name="${escapeHtml(item.name)}">Activer</button>`
-                : `<button class="etu-btn etu-btn-primary btn-dl-model" data-repo="${escapeHtml(item.repo)}" data-filename="${escapeHtml(item.filename)}">Télécharger</button>`
-            }
+        <div class="local-model-identity">
+          <span class="local-model-logo"><img src="${escapeHtml(brand.logo)}" alt="" loading="lazy"></span>
+          <div class="local-model-copy">
+            <strong title="${escapeHtml(item.name)}">${escapeHtml(displayName)}</strong>
+            <span class="local-model-filename" title="${escapeHtml(item.filename)}">${escapeHtml(item.filename)}</span>
+            <p title="${escapeHtml(item.description || "")}">${escapeHtml(item.description || "")}</p>
+            <div class="local-model-tags">
+              ${parameterCount ? `<span>${escapeHtml(parameterCount[1])} B paramètres</span>` : ""}
+              ${isModelNpuCandidate(item) ? `<span class="local-model-npu-tag" title="Candidat NPU ; backend et accélération à confirmer">${window.ETUSVG?.icon("npu", "") || ""} NPU</span>` : ""}
+              <span class="local-model-fit" title="Estimation de la charge sur cet ordinateur">${escapeHtml(item.compatibility?.badge || "Compatibilité inconnue")}</span>
+            </div>
+            <div class="local-model-runtime" aria-label="Matériel et accélérateurs">${renderModelRuntimeIcons(item)}</div>
           </div>
         </div>
+        <div class="local-model-stat"><span class="local-model-mobile-label">Disque</span>${formatSize(card.dataset.disk)}</div>
+        <div class="local-model-stat"><span class="local-model-mobile-label">RAM estimée</span>${formatSize(card.dataset.ram)}</div>
+        <div class="local-model-quant"><span>${escapeHtml(quant.toUpperCase())}</span></div>
+        <details class="local-model-menu">
+          <summary aria-label="Actions pour ${escapeHtml(displayName)}" title="Actions du modèle"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg></summary>
+          <div class="local-model-menu-panel">
+            <button class="etu-btn etu-btn-secondary btn-local-model-details" type="button">Voir la fiche technique</button>
+            <button class="btn-uninstall-local" type="button" data-filename="${escapeHtml(item.filename)}">Désinstaller</button>
+          </div>
+        </details>
       `;
 
-      const dlBtn = card.querySelector(".btn-dl-model");
-      if (dlBtn) {
-        dlBtn.addEventListener("click", () => {
-          triggerDownload(item.repo, item.filename);
+      const uninstallButton = card.querySelector(".btn-uninstall-local");
+      card.querySelector(".btn-local-model-details").addEventListener("click", () => {
+        card.querySelector(".local-model-menu").open = false;
+        void openModelIdentity(item, item.filename.replace(/\.gguf$/i, ""));
+      });
+      card.querySelector(".local-model-menu").addEventListener("toggle", event => {
+        if (event.currentTarget.open) localList.querySelectorAll(".local-model-menu[open]").forEach(menu => {
+          if (menu !== event.currentTarget) menu.open = false;
         });
-      }
+      });
+      uninstallButton.addEventListener("click", async () => {
+        if (!window.confirm(`Désinstaller « ${item.filename} » de cet ordinateur ?`)) return;
+        uninstallButton.disabled = true;
+        try {
+          const response = await fetch(`/api/models/${encodeURIComponent(item.filename)}`, { method: "DELETE" });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result.detail || "La désinstallation a échoué.");
+          showToast("Modèle désinstallé.", "success");
+          await loadModelCatalog();
+          await loadServerStatus();
+        } catch (error) {
+          showToast(error.message || "La désinstallation a échoué.", "warning");
+          uninstallButton.disabled = false;
+        }
+      });
 
-      const selectBtn = card.querySelector(".btn-select-model");
-      if (selectBtn) {
-        selectBtn.addEventListener("click", () => {
-          activateModel(item.filename, item.name);
-        });
-      }
-
-      catalogList.appendChild(card);
+      localList.appendChild(card);
       if (item.is_installed) {
         const projectorButton = document.createElement("button");
         projectorButton.type = "button";
         projectorButton.className = "etu-btn etu-btn-secondary catalog-vision-btn";
         const info = item.mmproj || {};
         const textOnly = isTextOnlyModel(item);
-        projectorButton.textContent = textOnly ? "Vision indisponible · modèle textuel" : (info.installed ? "Gérer le projecteur vision" : "Ajouter un projecteur vision");
-        projectorButton.disabled = textOnly;
-        if (!textOnly) projectorButton.addEventListener("click", () => openProjectorManager(item));
-        card.appendChild(projectorButton);
+        projectorButton.textContent = info.installed ? "Gérer le projecteur vision" : "Ajouter un projecteur vision";
+        if (!textOnly) {
+          projectorButton.addEventListener("click", () => openProjectorManager(item));
+          card.querySelector(".local-model-menu-panel").prepend(projectorButton);
+        }
       }
     });
+    const localEmpty = document.getElementById("catalog-local-empty");
+    if (localEmpty) localEmpty.hidden = installed.length > 0;
+    sortLocalModelCards();
+    applyModelCatalogSearch();
+    return data;
   } catch (err) {
+    if (throwOnError) throw err;
     console.error("Erreur chargement catalogue :", err);
   }
 }
@@ -3540,10 +5091,10 @@ async function openProjectorManager(item) {
       <input class="mmproj-local" type="file" accept=".gguf" hidden>
       <button type="button" class="etu-btn etu-btn-primary mmproj-pick">Choisir un fichier .gguf</button>
     </div>
-    <details class="mmproj-online">
+    <details class="mmproj-online" open>
       <summary>Rechercher sur Hugging Face</summary>
       <label>Dépôt exact du modèle <input class="mmproj-repo" type="text" placeholder="auteur/modèle-GGUF"></label>
-      <button type="button" class="etu-btn etu-btn-secondary mmproj-search">Rechercher le bon projecteur</button>
+      <button type="button" class="etu-btn etu-btn-secondary mmproj-search">Rechercher les projecteurs correspondants</button>
       <div class="mmproj-candidates"></div>
     </details>
     <div class="mmproj-actions">
@@ -3573,6 +5124,11 @@ async function openProjectorManager(item) {
   };
   showAssociation(item.mmproj || {});
   const search = async () => {
+    const searchButton = panel.querySelector(".mmproj-search");
+    if (searchButton.disabled) return;
+    searchButton.disabled = true;
+    searchButton.textContent = "Recherche en cours…";
+    panel.setAttribute("aria-busy", "true");
     setStatus("Vérification du dépôt et de la variante du modèle…");
     const params = new URLSearchParams({ model });
     if (repoInput.value.trim()) params.set("repo", repoInput.value.trim());
@@ -3622,6 +5178,12 @@ async function openProjectorManager(item) {
       });
     } catch (error) {
       setStatus(error.message, "error");
+    } finally {
+      if (panel.dataset.model === model) {
+        searchButton.disabled = false;
+        searchButton.textContent = "Rechercher les projecteurs correspondants";
+        panel.removeAttribute("aria-busy");
+      }
     }
   };
   panel.querySelector(".mmproj-search").addEventListener("click", search);
@@ -3659,6 +5221,7 @@ async function openProjectorManager(item) {
     loadModelCatalog();
   });
   panel.querySelector(".mmproj-apply").addEventListener("click", () => switchActiveModel(model, item.name || model));
+  search();
 }
 
 async function triggerDownload(repo, filename) {
@@ -3679,6 +5242,8 @@ async function triggerDownload(repo, filename) {
 }
 
 function pollDownloadProgress(taskId, filename, onComplete = null) {
+  if (!seenDownloadStatuses.has(taskId)) seenDownloadStatuses.set(taskId, "queued");
+  refreshDownloadManager();
   const container = document.getElementById("active-tasks-container");
   if (!container) return;
   const taskBox = document.createElement("div");
@@ -3722,6 +5287,10 @@ function pollDownloadProgress(taskId, filename, onComplete = null) {
 
       if (t.status === "completed") {
         clearInterval(poller);
+        if (seenDownloadStatuses.get(taskId) !== "completed") {
+          seenDownloadStatuses.set(taskId, "completed");
+          addAppNotification("Modèle téléchargé", `${filename} est prêt à être utilisé.`, "download");
+        }
         if (onComplete) onComplete();
         cancelButton.remove();
         if (statusEl) {

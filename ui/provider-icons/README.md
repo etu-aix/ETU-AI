@@ -7,3 +7,6 @@ These SVG marks are stored locally so the interface does not depend on a remote 
 - `xai.svg` is the Grok SVG supplied by the user.
 
 Provider names, marks, and trademarks remain the property of their respective owners. Generic compatible endpoints retain a text mark because they have no single provider brand.
+
+Download banners also use `qwen-color.svg`, `meta-color.svg`, `gemma-color.svg` and `huggingface-color.svg` from `@lobehub/icons-static-svg` 1.95.1 (MIT).
+Download-specific color marks `download-deepseek-color.svg`, `download-mistral-color.svg`, `download-claude-color.svg` and `download-openai.svg` use the same package/version/license; the OpenAI monochrome mark is tinted green.

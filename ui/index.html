@@ -4,8 +4,89 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=model-hover-stats-6">
+  <link rel="stylesheet" href="/static/style.css?v=hf-search-recovery-4">
+  <link rel="stylesheet" href="/static/styles/settings.css?v=model-runtime-icons-3">
+  <link rel="stylesheet" href="/static/styles/components.css?v=server-icons-3">
+  <link rel="stylesheet" href="/static/styles/workshop.css?v=workshop-3">
   <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
+  <style>
+    /* Le même fond continue derrière les messages et la zone de saisie. */
+    #chat-main {
+      background-color: var(--bg-primary);
+      background-image: radial-gradient(color-mix(in srgb, var(--accent-color) 10%, transparent) 1px, transparent 1px);
+      background-size: 34px 34px;
+    }
+    #chat-messages,
+    #chat-input-container {
+      background: transparent;
+    }
+    #chat-messages {
+      padding-bottom: calc(var(--chat-composer-height, 110px) + 48px);
+      -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - var(--chat-composer-height, 110px) - 60px), transparent calc(100% - var(--chat-composer-height, 110px) - 4px));
+      mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - var(--chat-composer-height, 110px) - 60px), transparent calc(100% - var(--chat-composer-height, 110px) - 4px));
+    }
+    #chat-messages .message.assistant {
+      display: grid !important;
+      grid-template-columns: 32px minmax(0, 1fr);
+      column-gap: 12px;
+      align-items: start;
+    }
+    #chat-messages .message.assistant > .avatar.ai-avatar {
+      display: grid !important;
+      grid-column: 1;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      overflow: hidden;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--accent-color) 16%, var(--bg-secondary));
+      color: var(--accent-color);
+    }
+    .message.assistant > .avatar.ai-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .message.assistant > .message-bubble { grid-column: 2; min-width: 0; }
+    #chat-input-container {
+      position: absolute;
+      inset-inline: 0;
+      bottom: 0;
+      z-index: 30;
+    }
+    #btn-attach { order: 0; }
+    #chat-input { order: 1; }
+    #chat-form .model-selector-toolbar { order: 2; flex: none; align-self: center; }
+    #btn-send, #btn-stop { order: 3; }
+    #chat-form .model-selector-btn {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-muted);
+    }
+    #chat-form .model-selector-btn:hover,
+    #chat-form .model-selector-btn.open { background: color-mix(in srgb, var(--text-muted) 13%, transparent); color: var(--text-main); }
+    #chat-form #model-badge-icon { display: grid; place-items: center; line-height: 0; }
+    #chat-form .model-selector-info,
+    #chat-form .model-status-indicator { display: none; }
+    #chat-form .model-selector-toolbar .model-dropdown-menu { right: 0; left: auto; }
+    #model-dropdown-menu { gap: 0; }
+    #model-dropdown-menu .model-dropdown-search {
+      min-height: 40px;
+      margin: 0 0 4px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      box-shadow: none;
+    }
+    #model-dropdown-menu .model-dropdown-search:focus-within {
+      border: 0;
+      background: color-mix(in srgb, var(--bg-tertiary) 68%, transparent);
+      box-shadow: none;
+    }
+  </style>
 </head>
 <body>
 
@@ -160,6 +241,10 @@
             <div class="npu-banner-body">
               <strong id="npu-banner-title">Puce NPU Détectée</strong>
               <p id="npu-banner-text">Un NPU a été détecté. Son utilisation dépendra du backend réellement disponible dans Beacon.</p>
+              <label id="wizard-npu-choice" class="wizard-npu-choice" hidden>
+                <input id="wizard-use-npu" type="checkbox">
+                <span>Essayer le moteur OpenVINO sur le NPU Intel (expérimental, modèles texte GGUF)</span>
+              </label>
             </div>
           </div>
 
@@ -210,7 +295,7 @@
             <div class="step-item" id="step-item-0">
               <div class="step-circle"><span class="step-icon">1</span></div>
               <div class="step-text">
-                <strong>Moteur llama-server</strong>
+                <strong>Moteur d’inférence</strong>
                 <span>Validation du binaire et accélération</span>
               </div>
             </div>
@@ -297,7 +382,6 @@
           </button>
           <div id="profile-options" class="profile-picker-menu" role="listbox" aria-label="Profils disponibles" hidden></div>
         </div>
-        <button id="btn-open-profiles" type="button" class="nav-btn">✦ Gérer les profils</button>
       </div>
 
       <div class="history-heading"><span>Discussions</span><span id="history-count" aria-live="polite"></span></div>
@@ -310,43 +394,199 @@
       </div>
 
       <div class="sidebar-footer">
-        <button id="btn-open-models" class="nav-btn" aria-label="Modèles" title="Modèles">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-          <span>Modèles</span>
+        <button id="btn-open-downloads" class="nav-btn" aria-label="Téléchargements" title="Téléchargements">
+          <span class="nav-icon" data-svg-icon="download" aria-hidden="true"></span><span>Téléchargements</span><span id="download-nav-count" class="notification-count" aria-hidden="true" hidden></span>
         </button>
-        <button id="btn-reopen-wizard" class="nav-btn" style="color: var(--accent-color);" aria-label="Configuration" title="Configuration">
+        <button id="btn-open-notifications" class="nav-btn" aria-label="Notifications" title="Notifications" aria-expanded="false">
+          <span class="nav-icon" data-svg-icon="bell"></span><span>Notifications</span><span id="notification-count" class="notification-count" hidden>0</span>
+        </button>
+        <button id="btn-open-settings" class="nav-btn" aria-label="Paramètres" title="Paramètres">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-          <span>Configuration</span>
+          <span>Paramètres</span>
         </button>
-        <button id="btn-open-api-settings" class="nav-btn" aria-label="Clés API" title="Clés API">🔑 <span>Clés API</span></button>
       </div>
     </aside>
 
     <!-- Main Chat Area -->
     <main id="chat-main">
-      <header>
-        <div class="chat-header-start">
-          <button id="btn-open-sidebar" class="sidebar-toggle" type="button" aria-label="Ouvrir le menu et l’historique" aria-controls="sidebar" aria-expanded="false" title="Ouvrir le menu">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+      <div class="chat-quick-actions">
+        <button id="btn-open-sidebar" class="sidebar-toggle" type="button" aria-label="Ouvrir le menu et l’historique" aria-controls="sidebar" aria-expanded="false" title="Ouvrir le menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>
+        </button>
+        <button id="btn-chat-view" class="chat-view-toggle" type="button" hidden>Voir la discussion</button>
+        <button id="btn-theme" class="theme-toggle" type="button" aria-label="Changer le thème" title="Changer le thème">☀</button>
+      </div>
+
+      <section id="settings-view" aria-label="Paramètres" hidden>
+        <aside class="settings-nav" aria-label="Sections des paramètres">
+          <button id="btn-settings-close" class="settings-nav-back" type="button" aria-label="Retour au chat" title="Retour au chat">
+            <span aria-hidden="true">←</span><span>Retour au chat</span>
           </button>
-          <div class="chat-header-title">ETU-AI <span>· sur votre ordinateur</span></div>
-        </div>
-        <div class="header-status">
-          <div class="status-badge" id="backend-badge">
-            <span class="status-dot"></span>
-            <span id="backend-text">Moteur : Détection...</span>
+          <div class="settings-nav-heading"><span>ETU-AI</span><strong>Paramètres</strong></div>
+          <nav>
+            <button type="button" class="settings-nav-item is-active" data-settings-section="general" aria-current="page">Général</button>
+            <button type="button" class="settings-nav-item" data-settings-section="models">Modèles</button>
+            <button type="button" class="settings-nav-item" data-settings-section="profiles">Profils d’IA</button>
+            <button type="button" id="settings-nav-providers" class="settings-nav-item" data-settings-section="providers">Fournisseurs IA et clés API</button>
+            <button type="button" class="settings-nav-item" data-settings-section="data">Mes données</button>
+            <button type="button" id="settings-nav-etu" class="settings-nav-item" data-settings-section="etu">ETU</button>
+            <button type="button" class="settings-nav-item" data-settings-section="installation">Installation</button>
+          </nav>
+          <div class="settings-power">
+            <button id="btn-settings-power" class="settings-power-button" type="button" aria-label="Options d’ETU-AI" title="Options d’ETU-AI" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-power-menu"><span data-svg-icon="power"></span></button>
+            <div id="settings-power-menu" class="settings-power-menu" hidden>
+              <button type="button" data-power-action="sleep"><span data-svg-icon="sleep"></span> Mettre en veille</button>
+              <button type="button" data-power-action="restart"><span data-svg-icon="restart"></span> Redémarrer</button>
+              <button type="button" data-power-action="shutdown"><span data-svg-icon="power"></span> Éteindre</button>
+            </div>
+            <p id="settings-power-status" role="status" aria-live="polite"></p>
           </div>
-          <div class="status-badge" id="beacon-badge">
-            <span class="status-dot" id="beacon-dot"></span>
-            <span id="beacon-text">Beacon (11343) : Vérification...</span>
+        </aside>
+        <div class="settings-content">
+          <div class="settings-content-top">
+            <div><span class="settings-eyebrow">ETU-AI</span><h2 id="settings-section-title">Général</h2></div>
+            <button id="btn-refresh-library" class="etu-btn etu-btn-secondary settings-library-refresh" type="button" hidden><span data-svg-icon="restart"></span><span>Actualiser la bibliothèque</span></button>
           </div>
-          <div class="status-badge" id="pairing-badge"><span id="pairing-text">Etu2 : à venir</span></div>
+          <section class="settings-panel" data-settings-panel="general">
+            <div class="settings-card settings-card-copy">
+              <h3>Matériel d’inférence</h3>
+              <p>Choisissez le processeur utilisé pour les modèles locaux. Le redémarrage de MAIA-Beacon applique le changement ; l’accélération dépend aussi du backend installé.</p>
+              <label for="settings-hardware-preference">Préférence matérielle</label>
+              <select id="settings-hardware-preference">
+                <option value="auto">Préférence de l’ordinateur</option>
+                <option value="gpu">GPU</option>
+                <option value="npu">NPU</option>
+              </select>
+              <p id="settings-hardware-status" class="settings-mode-status" role="status" aria-live="polite"></p>
+            </div>
+            <div class="settings-card">
+              <div><h3>Apparence</h3><p>Choisissez le thème de l’interface.</p></div>
+              <button id="btn-settings-theme" class="etu-btn etu-btn-secondary" type="button">Changer de thème</button>
+            </div>
+            <div class="settings-card settings-card-copy">
+              <h3>Mode d’exécution</h3>
+              <p>Choisissez comment ETU-AI redémarre et partage son moteur sur cet ordinateur.</p>
+              <div class="settings-mode-controls" aria-label="Redémarrer ETU-AI">
+                <button class="settings-mode-button" type="button" data-restart-mode="normal" aria-label="Redémarrer en mode normal"><span data-svg-icon="restart"></span><strong>Normal</strong><small>Usage personnel</small></button>
+                <button class="settings-mode-button" type="button" data-restart-mode="local" aria-label="Redémarrer en mode local"><span data-svg-icon="restart"></span><strong>Local</strong><small>Connexions depuis localhost</small></button>
+                <button class="settings-mode-button" type="button" data-restart-mode="server" aria-label="Redémarrer en mode serveur"><span data-svg-icon="restart"></span><strong>Serveur</strong><small>Partage sur le réseau local</small></button>
+              </div>
+              <p id="settings-launch-mode-status" class="settings-mode-status" role="status" aria-live="polite"></p>
+            </div>
+          </section>
+          <section class="settings-panel" data-settings-panel="models" hidden>
+            <div class="settings-panel-intro"><h3>Modèles</h3><p>Choisissez le modèle actif, installez un modèle ou gérez les fichiers téléchargés.</p></div>
+            <div id="settings-models-mount"></div>
+          </section>
+          <section class="settings-panel" data-settings-panel="profiles" hidden>
+            <div class="settings-profiles-heading">
+              <div class="settings-panel-intro"><h3>Vos assistants</h3><p>Retrouvez vos profils, leur origine et leurs réglages.</p></div>
+              <button id="btn-create-profile" class="etu-btn etu-btn-primary" type="button">+ Créer un profil</button>
+            </div>
+            <div class="profile-manager-tabs" role="tablist" aria-label="Bibliothèque de profils">
+              <button type="button" class="profile-manager-tab is-active" id="profile-tab-local" role="tab" aria-selected="true" aria-controls="profile-panel-local" data-profile-tab="local">Mes profils</button>
+              <button type="button" class="profile-manager-tab" id="profile-tab-workshop" role="tab" aria-selected="false" aria-controls="profile-panel-workshop" data-profile-tab="workshop">Workshop</button>
+            </div>
+            <div id="profile-panel-local" class="profile-manager-panel" role="tabpanel" aria-labelledby="profile-tab-local">
+              <label class="profile-manager-search"><span class="sr-only">Rechercher dans mes profils</span><input id="profile-search-local" type="search" placeholder="Rechercher un profil, une origine ou un modèle…" autocomplete="off"></label>
+              <div id="settings-profile-list" class="settings-profile-list"></div>
+              <nav id="settings-profile-pagination" class="profile-manager-pagination" aria-label="Pages des profils" hidden></nav>
+              <p id="settings-profile-empty" class="profile-manager-empty" hidden>Aucun profil trouvé.</p>
+            </div>
+            <div id="profile-panel-workshop" class="profile-manager-panel" role="tabpanel" aria-labelledby="profile-tab-workshop" hidden>
+              <label class="profile-manager-search"><span class="sr-only">Rechercher dans le Workshop</span><input id="profile-search-workshop" type="search" placeholder="Rechercher dans le Workshop…" autocomplete="off"></label>
+              <div class="profile-manager-empty"><strong>Workshop</strong><p>Découvrez les profils de la communauté dans le Workshop ETU. Le bouton « Télécharger dans ETU-AI » installe le profil et lance le téléchargement de son modèle ici.</p><a href="https://etu-aix.alwaysdata.net/workshop" target="_blank" rel="noopener" class="etu-btn etu-btn-primary">Ouvrir le Workshop</a></div>
+            </div>
+          </section>
+          <section class="settings-panel settings-provider-panel" data-settings-panel="providers" hidden>
+            <div class="settings-panel-intro"><h3>Fournisseurs IA et clés API</h3><p>Configurez les fournisseurs et gérez leurs clés enregistrées.</p></div>
+            <div id="settings-provider-mount"></div>
+          </section>
+          <section class="settings-panel" data-settings-panel="data" hidden>
+            <div class="settings-panel-intro"><h3>Mes données</h3><p>Choisissez si les informations ETU peuvent être transmises au fournisseur IA sélectionné.</p></div>
+            <section class="settings-consent-card" aria-labelledby="settings-etu-consent-title">
+              <div class="settings-panel-intro"><h3 id="settings-etu-consent-title">Fournisseurs IA</h3><p>Autorisez les fournisseurs tiers à recevoir les informations ETU nécessaires aux fonctions qu’ils prennent en charge.</p></div>
+              <label class="etu-connection-checkbox"><input id="etu-remote-tools-consent" type="checkbox"><span>Accepter le partage de mes informations ETU avec les fournisseurs tiers</span></label>
+              <p class="settings-data-note"><sup>*</sup> Si cette option est activée, seuls votre groupe et votre emploi du temps sont transmis au fournisseur IA actif, en lecture seule, pour répondre à vos demandes.</p>
+              <div class="etu-connection-details-body"><p id="etu-remote-tools-status" role="status" aria-live="polite"></p></div>
+            </section>
+            <section class="settings-danger-card" aria-labelledby="settings-history-title">
+              <div><h3 id="settings-history-title">Historique des chats</h3><p>Supprimez toutes les discussions et leurs messages enregistrés sur cet ordinateur.</p></div>
+              <button id="btn-settings-delete-chats" class="etu-btn etu-btn-danger" type="button">Supprimer tous les chats</button>
+            </section>
+          </section>
+          <section class="settings-panel" data-settings-panel="etu" hidden>
+            <div class="settings-panel-intro"><h3>ETU</h3><p>Gérez la connexion entre ETU-AI et ETU 2. Vous pouvez y mettre fin à tout moment.</p></div>
+            <div id="settings-etu-mount"></div>
+          </section>
+          <section class="settings-panel" data-settings-panel="installation" hidden>
+            <section class="settings-update-card" aria-label="Mises à jour">
+              <div class="settings-update-banner" role="status" aria-live="polite">
+                <span class="settings-update-symbol" aria-hidden="true">
+                  <img src="/static/logo_etu_ai.svg" alt="">
+                  <span class="settings-update-check" data-svg-icon="download"></span>
+                </span>
+                <div class="settings-update-copy"><strong>Mises à jour du moteur</strong><p>Recherchez les versions disponibles et suivez leur installation dans Téléchargements.</p></div>
+                <button id="btn-settings-update" class="etu-btn etu-btn-primary" type="button">Rechercher des mises à jour</button>
+              </div>
+            </section>
+            <section class="settings-maintenance-card" aria-labelledby="settings-maintenance-title">
+              <div><h3 id="settings-maintenance-title">Maintenance</h3><p>Réparez l’installation en relançant l’assistant de configuration.</p></div>
+              <div class="settings-maintenance-actions">
+                <button id="btn-settings-repair" class="etu-btn etu-btn-primary" type="button">Réparer</button>
+                <button id="btn-settings-uninstall" class="etu-btn etu-btn-secondary" type="button">Désinstaller</button>
+                <button id="btn-settings-dependencies" class="etu-btn etu-btn-secondary" type="button">Désinstaller les dépendances</button>
+              </div>
+              <p class="settings-uninstall-hint">La désinstallation complète nécessite le programme d’installation de bureau, qui n’est pas encore fourni avec cette version.</p>
+            </section>
+            <section class="settings-maintenance-card" aria-labelledby="settings-server-title">
+              <div><h3 id="settings-server-title">Moteur d’inférence</h3><p>Choisissez une version adaptée à cet ordinateur. Vos modèles et conversations sont conservés.</p></div>
+              <div class="settings-server-actions">
+                <span id="settings-server-label" class="settings-server-label">Version du moteur</span>
+                <div id="settings-server-menu" class="etu-list-menu">
+                  <button id="settings-server-variant" class="etu-list-menu-trigger" data-menu-trigger type="button" aria-labelledby="settings-server-label settings-server-chosen" aria-haspopup="listbox" aria-expanded="false" aria-controls="settings-server-options" disabled>
+                    <span class="etu-list-menu-icon" data-menu-icon aria-hidden="true"></span>
+                    <span id="settings-server-chosen" class="etu-list-menu-chosen" data-menu-chosen>Choisir une version</span>
+                    <span class="etu-list-menu-badges" data-menu-badges aria-hidden="true"></span>
+                    <span class="etu-list-menu-chevron" aria-hidden="true">⌄</span>
+                  </button>
+                  <div id="settings-server-options" class="etu-list-menu-options" data-menu-list role="listbox" aria-labelledby="settings-server-label" hidden></div>
+                </div>
+                <button id="btn-settings-reinstall-server" class="etu-btn etu-btn-secondary settings-server-download-btn" type="button"><span data-svg-icon="download" aria-hidden="true"></span><span>Réinstaller cette version</span></button>
+              </div>
+              <p id="settings-server-status" class="settings-uninstall-hint" role="status" aria-live="polite"></p>
+            </section>
+          </section>
         </div>
-        <div class="header-actions">
-          <button id="btn-chat-view" class="chat-view-toggle" type="button" hidden>Voir la discussion</button>
-          <button id="btn-theme" class="theme-toggle" type="button" aria-label="Changer le thème" title="Changer le thème">☀</button>
+      </section>
+
+      <section id="downloads-view" aria-label="Gestionnaire des téléchargements" hidden>
+        <div class="downloads-content">
+          <header class="downloads-page-header">
+            <span class="downloads-title-icon" data-svg-icon="download" aria-hidden="true"></span>
+            <button id="btn-downloads-back" class="downloads-back-button" type="button"><span aria-hidden="true">←</span><span>Retour au chat</span></button>
+            <div class="downloads-title-block"><div><span class="settings-eyebrow">ETU-AI</span><h2>Téléchargements</h2></div></div>
+          </header>
+          <section id="download-dashboard" class="download-dashboard is-idle" data-idle="true" aria-label="Débit des téléchargements">
+            <div class="download-chart-panel">
+              <div class="download-chart-heading"><span id="download-active-count" class="download-live-status"></span></div>
+              <div class="download-banner-brand" aria-hidden="true"><img id="download-banner-logo" src="/static/logo_etu_ai.svg" alt=""></div>
+              <div id="download-speed-chart" role="img" aria-label="Graphique du débit réseau et de l’écriture disque pendant les téléchargements"></div>
+              <div class="download-chart-legend"><span><i class="download-legend-network"></i> Réseau</span><span><i class="download-legend-disk"></i> Disque</span></div>
+            </div>
+            <div class="download-metrics" aria-label="Statistiques de téléchargement" hidden>
+              <div><strong id="download-current-speed">0 Mo/s</strong><span>Actuel</span></div>
+              <div><strong id="download-peak-speed">0 Mo/s</strong><span>Pic</span></div>
+              <div><strong id="download-total-size">0 o</strong><span>Total reçu</span></div>
+              <div><strong id="download-disk-speed">0 Mo/s</strong><span>Écriture disque</span></div>
+            </div>
+          </section>
+          <section class="download-queue-section" aria-label="File des téléchargements">
+            <div class="download-queue-heading"><p id="download-summary" class="download-summary" role="status"></p><button id="btn-downloads-check-updates" type="button" class="etu-btn etu-btn-secondary">Rechercher des mises à jour</button></div>
+            <div id="download-manager-list" class="download-manager-list"></div>
+          </section>
         </div>
-      </header>
+      </section>
 
       <div id="model-loading-overlay" class="model-loading-overlay" role="status" aria-live="polite" aria-hidden="true" hidden>
         <div class="model-loading-card">
@@ -356,6 +596,12 @@
           <div class="model-loading-progress" aria-hidden="true"><span></span></div>
           <small>La première réponse peut prendre quelques secondes.</small>
         </div>
+      </div>
+
+      <div id="power-transition-overlay" class="power-transition-overlay" role="status" aria-live="assertive" aria-hidden="true" hidden>
+        <div class="power-transition-orb" aria-hidden="true"><span class="power-transition-orb-glow"></span><img src="/static/logo_etu_ai.svg" alt=""></div>
+        <span class="power-transition-fallback" data-svg-icon="restart" aria-hidden="true"></span>
+        <p id="power-transition-label">Redémarrage d’ETU-AI…</p>
       </div>
 
       <div id="chat-messages" aria-live="off">
@@ -373,45 +619,31 @@
       </div>
 
       <div id="chat-input-container">
-        <div class="chat-input-toolbar">
-          <div class="quick-model-wrapper">
-            <span class="toolbar-label">Modèle actif :</span>
-            <div class="model-selector-wrapper model-selector-toolbar" id="model-selector-wrapper">
-              <button id="btn-model-selector" class="model-selector-btn quick-model-pill" title="Changer de modèle d’IA" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-dropdown-menu">
-                <span class="model-badge-icon" id="model-badge-icon">🧠</span>
-                <div class="model-selector-info">
-                  <span class="model-selector-label">Modèle IA</span>
-                  <span id="active-model-name" class="model-selector-name">Chargement...</span>
-                </div>
-                <span class="model-status-indicator" id="model-status-indicator" title="Prêt"></span>
-                <svg class="model-dropdown-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
-              </button>
-              <div class="model-dropdown-menu" id="model-dropdown-menu" role="listbox" aria-label="Modèles disponibles">
-                <div class="model-dropdown-header">
-                  <span>Modèles disponibles</span>
-                  <span class="model-count-badge" id="model-count-badge">0 disponible</span>
-                </div>
-                <label class="model-dropdown-search">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
-                  <input id="model-dropdown-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off">
-                </label>
-                <div class="model-dropdown-list" id="model-dropdown-list"></div>
-                <div class="model-dropdown-footer">
-                  <button type="button" id="btn-dropdown-open-models" class="dropdown-manage-btn">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
-                    Gérer & Télécharger des modèles…
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="chat-shortcuts-hint" id="chat-privacy-hint">Les réponses restent sur cet ordinateur.</div>
-        </div>
         <div id="chat-attachments" class="attachment-list" aria-live="polite"></div>
         <p id="attachment-error" class="attachment-error" role="alert"></p>
         <form id="chat-form" class="input-box">
           <input type="file" id="chat-file-input" multiple hidden accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sql,.java,.c,.h,.cpp,.cs,.sh,.ps1,.toml,.ini,.rst,.tex,.png,.jpg,.jpeg,.webp,.gif">
           <button type="button" id="btn-attach" class="attach-btn" title="Joindre des fichiers (6 maximum, 10 Mo par fichier)" aria-label="Joindre des fichiers">＋</button>
+          <div class="model-selector-wrapper model-selector-toolbar" id="model-selector-wrapper">
+            <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d’IA" type="button" aria-label="Changer de modèle d’IA" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-dropdown-menu">
+              <span class="model-badge-icon" id="model-badge-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M12 9.5c-1.1-2.4-3.8-3.3-5.7-1.8-2 .2-3.2 2.4-2.3 4.4-1.3 1.7-.4 4.2 1.7 4.7.5 2.1 3.2 2.8 4.6 1.1.5.9 1.2 1.2 1.7 1.2"/><path d="M12 9.5c1.1-2.4 3.8-3.3 5.7-1.8 2 .2 3.2 2.4 2.3 4.4 1.3 1.7.4 4.2-1.7 4.7-.5 2.1-3.2 2.8-4.6 1.1-.5.9-1.2 1.2-1.7 1.2"/><path d="M7.2 10.2c1.4-.1 2.4.7 2.7 1.8m7-1.8c-1.4-.1-2.4.7-2.7 1.8"/></svg></span>
+              <span class="model-selector-info"><span id="active-model-name" class="model-selector-name">Chargement...</span></span>
+              <span class="model-status-indicator" id="model-status-indicator" title="Prêt"></span>
+            </button>
+            <div class="model-dropdown-menu" id="model-dropdown-menu" role="listbox" aria-label="Modèles disponibles">
+              <label class="model-dropdown-search">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+                <input id="model-dropdown-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off">
+              </label>
+              <div class="model-dropdown-list" id="model-dropdown-list"></div>
+              <div class="model-dropdown-footer">
+                <button type="button" id="btn-dropdown-open-models" class="dropdown-manage-btn">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+                  Gérer & Télécharger des modèles…
+                </button>
+              </div>
+            </div>
+          </div>
           <textarea id="chat-input" placeholder="Écrivez votre message ou joignez un fichier…" rows="1"></textarea>
           <button type="submit" id="btn-send" class="send-btn" title="Envoyer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
@@ -425,32 +657,54 @@
 
   <!-- Conteneur Toast Notifications -->
   <div id="toast-container" class="toast-container"></div>
+  <section id="notification-center" class="utility-panel" aria-label="Notifications" hidden><div class="utility-panel-header"><h2>Notifications</h2><div class="utility-panel-actions"><button id="btn-clear-notifications" type="button" class="utility-panel-clear">Tout effacer</button><button type="button" class="utility-panel-close" data-close-panel="notification-center" aria-label="Fermer">×</button></div></div><div id="notification-list" class="notification-list"></div></section>
 
-  <div id="modal-profiles" class="modal-overlay">
-    <div class="modal-content profile-dialog">
+  <div id="modal-profiles" class="modal-overlay" aria-hidden="true" inert>
+    <div class="modal-content profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-form-title">
       <div class="modal-header">
-        <h3>Mes assistants</h3>
+        <h3>Profil d’IA</h3>
         <button class="modal-close" data-target="modal-profiles" aria-label="Fermer">&times;</button>
       </div>
       <div class="modal-body">
-        <div id="profile-list" class="profile-list"></div>
         <form id="profile-form" class="profile-form">
           <input type="hidden" id="profile-id">
           <div class="profile-form-heading">
             <h4 id="profile-form-title">Créer un profil</h4>
-            <button type="button" id="profile-new" class="etu-btn etu-btn-secondary">Nouveau</button>
           </div>
           <label>Nom <input id="profile-name" maxlength="50" required placeholder="Ex. Mon tuteur de code"></label>
-          <label>Tête de l'IA <input id="profile-avatar" maxlength="20" placeholder="✦ ou un emoji"></label>
+          <label>Modèle <select id="profile-model"><option value="">Modèle actif par défaut</option></select></label>
           <div class="profile-image-row">
             <span id="profile-image-preview" class="profile-image-preview">✦</span>
-            <label class="profile-upload-label">Choisir une image locale
+            <label class="profile-upload-label">Choisir une image
               <input id="profile-image-file" type="file" accept="image/png,image/jpeg,image/webp">
             </label>
           </div>
-          <label>Instructions personnelles <textarea id="profile-instructions" maxlength="3000" rows="5" placeholder="Ex. Explique les notions pas à pas, avec un exemple en Python."></textarea></label>
-          <p class="profile-hint">Ces instructions sont ajoutées aux conversations de ce profil. Restez concis pour économiser le contexte.</p>
-          <div class="profile-form-actions">
+          <label>Prompt système <textarea id="profile-instructions" maxlength="3000" rows="5" placeholder="Ex. Explique les notions pas à pas, avec un exemple en Python."></textarea></label>
+          <p class="profile-hint">Ce prompt est ajouté aux conversations de ce profil.</p>
+          <details id="profile-workshop-publication">
+              <summary>Publier dans le Workshop</summary>
+              <p class="profile-hint">Enregistrez le profil, puis publiez-le sur votre compte ETU appairé.</p>
+              <label>Description publique <textarea id="profile-workshop-description" maxlength="4000" rows="3" placeholder="À quoi sert ce profil ?"></textarea></label>
+              <div class="profile-workshop-model-field">
+                <span class="profile-workshop-model-label">Modèle à proposer (facultatif)</span>
+                <div class="model-selector-wrapper profile-workshop-model-selector">
+                  <button id="profile-workshop-model-button" class="model-selector-btn" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="profile-workshop-model-list">
+                    <span class="model-badge-icon" aria-hidden="true">🧠</span>
+                    <span class="model-selector-info"><span class="model-selector-label">Modèle Workshop</span><span id="profile-workshop-model-name" class="model-selector-name">Aucun modèle associé</span></span>
+                    <svg class="model-dropdown-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                  <div id="profile-workshop-model-menu" class="model-dropdown-menu" aria-label="Modèle à associer au profil">
+                    <div class="model-dropdown-header"><span>Modèles du sélecteur ETU-AI</span></div>
+                    <div id="profile-workshop-model-list" class="model-dropdown-list" role="listbox"></div>
+                  </div>
+                </div>
+              </div>
+              <p id="profile-workshop-api-hint" class="profile-workshop-api-hint" hidden>La clé API n’est pas partagée.</p>
+              <label><input type="checkbox" id="profile-workshop-terms"> J’accepte les <a href="https://etu-aix.alwaysdata.net/workshop#publication-terms" target="_blank" rel="noopener">conditions de publication du Workshop</a> et j’ai le droit de partager ce profil et la référence du modèle.</label>
+              <button type="button" id="profile-workshop-publish" class="etu-btn etu-btn-secondary">Publier dans le Workshop</button>
+              <p id="profile-workshop-status" role="status" aria-live="polite"></p>
+            </details>
+            <div class="profile-form-actions">
             <button type="submit" class="etu-btn etu-btn-primary">Enregistrer</button>
             <button type="button" id="profile-delete" class="etu-btn etu-btn-secondary">Supprimer</button>
           </div>
@@ -488,7 +742,6 @@
       </div>
       <div class="modal-body">
         <p class="etu-text">Une seule association pour utiliser votre assistant dans Workspace et consulter votre groupe et votre emploi du temps depuis ETU-AI.</p>
-        <div id="etu-remote-connection"></div>
         <details id="etu-local-connection" class="etu-connection-disclosure" hidden>
         <summary>Anciennes connexions locales</summary>
         <div class="etu-connection-details-body">
@@ -558,14 +811,6 @@
           <button class="etu-btn etu-btn-primary" type="submit">Enregistrer</button>
           <div id="api-settings-message" role="status" aria-live="polite"></div>
         </form>
-        <details class="etu-connection-disclosure">
-          <summary>Données ETU avec les fournisseurs IA</summary>
-          <div class="etu-connection-details-body">
-            <p class="etu-text">Avec un modèle local, les résultats des outils ETU restent sur cet ordinateur.</p>
-            <label class="etu-connection-checkbox"><input id="etu-remote-tools-consent" type="checkbox"><span>Autoriser l’envoi de mon groupe et de mon emploi du temps au fournisseur IA actif pour répondre à mes questions.</span></label>
-            <p id="etu-remote-tools-status" role="status" aria-live="polite"></p>
-          </div>
-        </details>
         </section>
       </div>
     </div>
@@ -577,14 +822,13 @@
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 10px;">
           <h3>Catalogue de Modèles & Hugging Face</h3>
-          <span class="etu-badge etu-badge-cyan">API Public Sans Credential</span>
         </div>
         <button class="modal-close" data-target="modal-models">&times;</button>
       </div>
       <div class="modal-body">
         <!-- Onglets du Gestionnaire de Modèles -->
         <div class="modal-tabs" role="tablist" aria-label="Gestion des modèles">
-          <button type="button" id="tab-btn-catalog" class="modal-tab-btn active" data-tab="tab-catalog" role="tab" aria-controls="tab-catalog" aria-selected="true">Catalogue Local & Recommandé</button>
+          <button type="button" id="tab-btn-catalog" class="modal-tab-btn active" data-tab="tab-catalog" role="tab" aria-controls="tab-catalog" aria-selected="true">Modèles locaux</button>
           <button type="button" id="tab-btn-vision" class="modal-tab-btn" data-tab="tab-vision" role="tab" aria-controls="tab-vision" aria-selected="false">Vision / mmproj</button>
           <button type="button" id="tab-btn-hf-explorer" class="modal-tab-btn" data-tab="tab-hf-explorer" role="tab" aria-controls="tab-hf-explorer" aria-selected="false">Explorer Hugging Face Hub</button>
           <button type="button" id="tab-btn-hf-custom" class="modal-tab-btn" data-tab="tab-hf-custom" role="tab" aria-controls="tab-hf-custom" aria-selected="false">Téléchargement Direct</button>
@@ -601,34 +845,64 @@
           <section id="mmproj-panel" class="etu-card mmproj-panel" hidden aria-live="polite"></section>
         </div>
 
-        <!-- Onglet 1 : Catalogue Local & Recommandé -->
+        <!-- Onglet 1 : Recommandations et modèles locaux -->
         <div id="tab-catalog" class="modal-tab-content active" role="tabpanel" aria-labelledby="tab-btn-catalog">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <p class="etu-text" style="margin: 0;">Modèles suggérés selon la mémoire et le matériel détectés.</p>
-            <button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary" style="margin: 0;">
-              ⚡ Auto-Sélection Config PC
-            </button>
+          <div class="catalog-toolbar">
+            <label class="catalog-search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path></svg>
+              <input id="model-catalog-search" type="search" placeholder="Rechercher un modèle installé…" autocomplete="off" aria-label="Rechercher dans les modèles locaux">
+            </label>
+          <label class="catalog-sort-control" for="model-catalog-sort">Trier par
+            <select id="model-catalog-sort" aria-label="Trier les modèles installés">
+              <option value="name">Nom</option>
+              <option value="disk-asc">Taille disque · croissante</option>
+              <option value="disk-desc">Taille disque · décroissante</option>
+              <option value="ram-asc">RAM requise · croissante</option>
+              <option value="ram-desc">RAM requise · décroissante</option>
+              <option value="params-asc">Paramètres · croissant</option>
+              <option value="params-desc">Paramètres · décroissant</option>
+            </select>
+          </label>
           </div>
-          <div id="catalog-list" style="display: flex; flex-direction: column; gap: 10px;">
-            <!-- Injecté dynamiquement -->
-          </div>
+          <p id="model-catalog-search-count" class="catalog-search-count" role="status" aria-live="polite"></p>
+          <section id="catalog-local-section" class="catalog-section">
+            <div class="catalog-section-heading"><h4>Modèles installés</h4><button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary">Auto-sélection selon mon PC</button></div>
+            <div class="local-model-columns" aria-hidden="true"><span>Modèle</span><span>Disque</span><span>RAM estimée</span><span>Quantification</span><span></span></div>
+            <div id="catalog-local-list" class="catalog-model-list"></div>
+            <p id="catalog-local-empty" class="catalog-empty" hidden>Aucun modèle local installé.</p>
+          </section>
         </div>
 
         <!-- Onglet 2 : Explorer Hugging Face (Public sans credential) -->
         <div id="tab-hf-explorer" class="modal-tab-content" role="tabpanel" aria-labelledby="tab-btn-hf-explorer">
-          <p class="etu-text">
-            Recherche en direct sur <strong>Hugging Face Hub</strong> via l'API publique sans compte ni token requis.
-            La mémoire nécessaire est estimée pour chaque modèle ; l'accélération réelle dépend du moteur chargé.
-          </p>
-
           <div class="hf-search-container">
             <div style="display: flex; gap: 8px; margin-bottom: 10px;">
               <input type="text" id="modal-hf-search-input" placeholder="Rechercher sur Hugging Face (ex: Qwen, Gemma, Llama, Mistral, DeepSeek)..." style="flex: 1; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main);">
               <button type="button" id="btn-modal-hf-search" class="etu-btn etu-btn-primary" style="margin: 0;">Rechercher</button>
             </div>
+            <div class="hf-explorer-filters">
+              <label>Nombre de paramètres
+                <select id="modal-hf-filter-size">
+                  <option value="">Toutes les tailles</option>
+                  <option value="1to2">1–2B</option>
+                  <option value="2to4">2–4B</option>
+                  <option value="4to7">4–7B</option>
+                  <option value="7to14">7–14B</option>
+                  <option value="14to35">14–35B</option>
+                  <option value="35plus">35B+</option>
+                </select>
+              </label>
+              <label class="hf-trusted-toggle" title="Dépôts officiels de Mistral AI, Qwen, Alibaba, DeepSeek et Meta Llama"><input type="checkbox" id="modal-hf-filter-trusted"><span>Dépôts de confiance uniquement</span></label>
+              <div class="hf-hardware-filter" role="group" aria-label="Matériel compatible">
+                <button type="button" class="active" data-hf-hardware="" aria-pressed="true">Tous</button>
+                <button type="button" data-hf-hardware="cpu" aria-pressed="false"><span class="hf-filter-icon"></span>CPU</button>
+                <button type="button" data-hf-hardware="gpu" aria-pressed="false"><span class="hf-filter-icon"></span>GPU</button>
+                <button type="button" data-hf-hardware="npu" aria-pressed="false" title="Candidats NPU selon leur taille et votre matériel ; accélération à confirmer"><span class="hf-filter-icon"></span>NPU</button>
+              </div>
+            </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
               <label class="hf-compat-toggle">
-                <input type="checkbox" id="modal-hf-filter-compatible" checked>
+                <input type="checkbox" id="modal-hf-filter-compatible">
                 <span>Afficher uniquement les IA compatibles avec ma config</span>
               </label>
               <span id="hf-search-count" style="font-size: 0.85rem; color: var(--text-muted);">Prêt pour la recherche</span>
@@ -638,6 +912,15 @@
           <div id="hf-search-results" style="display: flex; flex-direction: column; gap: 10px; min-height: 120px;">
             <!-- Injecté dynamiquement par app.js -->
           </div>
+          <nav id="hf-search-pagination" class="hf-search-pagination" aria-label="Pages des modèles Hugging Face" hidden>
+            <button type="button" id="hf-page-prev" class="hf-page-arrow" aria-label="Page précédente" title="Page précédente">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <div id="hf-page-numbers" class="hf-page-numbers" aria-label="Numéros de page"></div>
+            <button type="button" id="hf-page-next" class="hf-page-arrow" aria-label="Page suivante" title="Page suivante">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+          </nav>
         </div>
 
         <!-- Onglet 3 : Téléchargement direct HF -->
@@ -653,6 +936,12 @@
               <div>
                 <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">Nom du fichier GGUF (Filename)</label>
                 <input type="text" id="hf-filename" placeholder="ex: Llama-3.2-3B-Instruct-Q4_K_M.gguf" style="width: 100%; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main);" required>
+              </div>
+              <div id="gguf-drop-zone" class="gguf-drop-zone" role="button" tabindex="0" aria-label="Importer un fichier GGUF depuis cet ordinateur">
+                <input type="file" id="gguf-local-file" accept=".gguf,application/octet-stream" hidden>
+                <strong>Glissez-déposez un fichier GGUF ici</strong>
+                <span>ou cliquez pour choisir un fichier sur cet ordinateur</span>
+                <span id="gguf-drop-status" role="status" aria-live="polite"></span>
               </div>
               <button type="submit" class="etu-btn etu-btn-primary" style="align-self: flex-start; margin-top: 4px;">Lancer le Téléchargement</button>
             </form>
@@ -697,9 +986,12 @@
   <script src="/static/generative-ui.js?v=chat-ui-6"></script>
   <script src="/static/vendor/marked-18.0.14.umd.js"></script>
   <script src="/static/vendor/highlight-11.12.0.min.js"></script>
-  <script src="/static/svg-manager.js?v=model-identity-6"></script>
-  <script src="/static/app.js?v=model-hover-stats-6"></script>
-  <script src="/static/etu-bridge.js?v=connection-ui-4"></script>
-  <script src="/static/etu-remote.js?v=connection-ui-4"></script>
+  <script src="/static/vendor/echarts-6.1.0.min.js?v=6.1.0"></script>
+  <script src="/static/svg-manager.js?v=downloads-polish-1"></script>
+  <script src="/static/components.js?v=settings-library-1"></script>
+  <script src="/static/app.js?v=chat-composer-1"></script>
+  <script src="/static/etu-bridge.js?v=connection-ui-6"></script>
+  <script src="/static/etu-remote.js?v=connection-ui-5"></script>
+  <script src="/static/workshop.js?v=workshop-3"></script>
 </body>
 </html>

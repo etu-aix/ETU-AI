@@ -19,11 +19,12 @@ from integration.bridge import bridge, digest, ALLOW_LOCALHOST_ORIGINS
 logger = logging.getLogger(__name__)
 
 SCOPES = {"ai.chat": None, "group.read": "etu.profile.group", "timetable.read": "etu.schedule.read",
-          "workspace.read": "etu.workspace.read", "ai.models.read": "etu.ai.models.read", "ai.models.select": "etu.ai.model.select"}
+          "workspace.read": "etu.workspace.read", "ai.models.read": "etu.ai.models.read", "ai.models.select": "etu.ai.model.select", "workshop.profiles": "etu.workshop.profiles"}
 ROUTES = {("GET", "/v1/status"): [], ("GET", "/v1/identity"): [],
           ("GET", "/v1/profile"): ["workspace.read"], ("GET", "/v1/models"): ["ai.models.read"],
           ("GET", "/v1/models/status"): ["ai.models.read"],
           ("POST", "/v1/models/select"): ["ai.models.read", "ai.models.select"],
+          ("POST", "/v1/workshop/import"): ["workshop.profiles"],
           ("POST", "/v1/chat/completions"): ["ai.chat"]}
 
 
@@ -47,6 +48,7 @@ class RemoteClient:
         self.task = None
         self.ws = None
         self.jobs = {}
+        self.publications = {}
         self.state = "disabled"
         self.pairing = None
         self.scopes = []
@@ -160,7 +162,29 @@ class RemoteClient:
             if self.ws:
                 await self.ws.send(json.dumps({"v": 1, "type": kind, "timestamp": int(time.time()), **values}, ensure_ascii=False, separators=(",", ":")))
 
+    async def publish_profile(self, profile):
+        from uuid import uuid4
+        pair = self.stored()
+        if self.state != "connected" or not self.ws or not pair:
+            raise HTTPException(409, "Appairez ETU-AI avec ETU 2 avant de publier.")
+        if "workshop.profiles" not in pair["scopes"]:
+            raise HTTPException(403, "Reconnectez ETU 2 avec l’autorisation Workshop.")
+        if len(self.publications) >= 2:
+            raise HTTPException(429, "Une publication est déjà en cours.")
+        request_id = str(uuid4())
+        future = asyncio.get_running_loop().create_future()
+        self.publications[request_id] = future
+        try:
+            await self.send("workshop.publish", request_id=request_id, profile=profile)
+            return await asyncio.wait_for(future, 15)
+        except TimeoutError:
+            raise HTTPException(504, "Le Workshop n’a pas confirmé la publication. Réessayez.")
+        finally:
+            self.publications.pop(request_id, None)
+
     async def cancel_jobs(self):
+        for future in self.publications.values():
+            if not future.done(): future.set_exception(HTTPException(503, "Connexion ETU interrompue"))
         jobs = list(self.jobs.values())
         for job in jobs: job.cancel()
         if jobs: await asyncio.gather(*jobs, return_exceptions=True)
@@ -272,6 +296,11 @@ class RemoteClient:
             else:
                 self.identity.sessions.pop(self.tool_key, None)
                 self.tool_key = None
+        elif kind == "workshop.published" or kind == "ai.response.error" and m.get("request_id") in self.publications:
+            future = self.publications.get(m.get("request_id"))
+            if future and not future.done():
+                if kind == "workshop.published": future.set_result(m.get("data", {}))
+                else: future.set_exception(HTTPException(403, "Publication refusée par le Workshop. Vérifiez les autorisations et réessayez."))
         elif kind == "tools.result":
             from integration.tool_relay import tool_relay
             if self.tool_key:
@@ -386,6 +415,9 @@ class RemoteClient:
         if key[1] == "/v1/status": return routes.status()
         if key[1] == "/v1/identity": return self.identity.identity()
         if key[1] == "/v1/profile": return await asyncio.to_thread(routes.workspace_profile, request)
+        if key[1] == "/v1/workshop/import":
+            from integration.workshop import import_profile, ImportProfile
+            return await asyncio.to_thread(import_profile, ImportProfile.model_validate(payload.get("body")), request)
         if key[1] == "/v1/models": return await asyncio.to_thread(routes.installed_models, request)
         if key[1] == "/v1/models/status": return await routes.selected_model_status(request)
         if key[1] == "/v1/models/select": return await asyncio.to_thread(routes.select_workspace_model, routes.ModelSelectionRequest.model_validate(payload.get("body")), request)
@@ -413,7 +445,7 @@ router = APIRouter()
 class PairBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # One code associates the complete ETU integration. Scope checks remain enforced on every route.
-    scopes: list[str] = Field(default_factory=lambda: sorted(SCOPES), min_length=1, max_length=6)
+    scopes: list[str] = Field(default_factory=lambda: sorted(SCOPES), min_length=1, max_length=7)
     device_name: str = Field(default=socket.gethostname()[:100], min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]+$")
 
 

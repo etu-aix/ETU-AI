@@ -1,0 +1,32 @@
+.etu-list-menu { position: relative; min-width: min(100%, 350px); max-width: 100%; }
+.etu-list-menu-trigger { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 42px; padding: 8px 11px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-primary); color: var(--text-main); font: inherit; text-align: left; cursor: pointer; }
+.etu-list-menu-trigger:hover, .etu-list-menu-trigger[aria-expanded="true"] { border-color: var(--accent-color); }
+.etu-list-menu-trigger:disabled { opacity: .55; cursor: not-allowed; }
+.etu-list-menu-icon { display: grid; flex: 0 0 23px; place-items: center; width: 23px; height: 23px; }
+.etu-list-menu-icon img, .etu-list-menu-icon svg { display: block; width: 20px; height: 20px; }
+.etu-list-menu-chosen { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.etu-list-menu-chevron { color: var(--text-muted); font-size: 1.2rem; line-height: 1; }
+.etu-list-menu-options { position: absolute; z-index: 55; top: calc(100% + 5px); left: 0; width: min(620px, calc(100vw - 36px)); max-height: min(380px, 52vh); overflow: auto; padding: 5px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-secondary); box-shadow: 0 16px 36px #0007; }
+.etu-list-menu-options[hidden] { display: none; }
+.etu-list-menu-up .etu-list-menu-options { top: auto; bottom: calc(100% + 5px); }
+.etu-list-menu-group { padding: 10px 10px 5px; color: var(--text-muted); font-size: .72rem; font-weight: 700; letter-spacing: .04em; }
+.etu-list-menu-group:not(:first-child) { margin-top: 6px; border-top: 1px solid var(--border-color); }
+.etu-list-menu-subgroup { padding: 5px 10px 3px; color: var(--text-muted); font-size: .7rem; font-weight: 600; }
+.etu-list-menu-option { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 49px; padding: 7px 10px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--text-main); font: inherit; text-align: left; cursor: pointer; }
+.etu-list-menu-option:hover, .etu-list-menu-option:focus-visible { background: var(--bg-tertiary); }
+.etu-list-menu-option[aria-selected="true"] { border-color: color-mix(in srgb, var(--accent-color) 35%, transparent); background: color-mix(in srgb, var(--accent-color) 11%, var(--bg-tertiary)); }
+.etu-list-menu-option:disabled { opacity: .48; cursor: not-allowed; }
+.etu-list-menu-copy { display: grid; min-width: 0; gap: 2px; }
+.etu-list-menu-copy strong { overflow-wrap: anywhere; font-size: .8rem; font-weight: 600; }
+.etu-list-menu-copy small { color: var(--text-muted); font-size: .72rem; }
+.etu-list-menu-badges { display: flex; flex: none; align-items: center; gap: 5px; }
+.etu-list-menu-badge { display: grid; place-items: center; width: 23px; height: 23px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-tertiary); color: var(--text-muted); }
+.etu-list-menu-badge svg, .etu-list-menu-badge img { width: 16px; height: 16px; }
+.etu-list-menu-badge-cpu { color: #78b8ff; }
+.etu-list-menu-badge-gpu { color: #aa9dff; }
+.etu-list-menu-badge-npu { color: #55d3ad; }
+.etu-list-menu-badge-nvidia, .etu-list-menu-badge-vulkan { border-color: transparent; background: transparent; }
+.etu-list-menu-badge-nvidia img { width: 21px; height: 21px; }
+.etu-list-menu-badge-vulkan { width: 44px; }
+.etu-list-menu-badge-vulkan img { width: 42px; height: 30px; }
+@media (max-width: 700px) { .etu-list-menu-option .etu-list-menu-badges { gap: 2px; } .etu-list-menu-option .etu-list-menu-badge { width: 19px; height: 19px; } }

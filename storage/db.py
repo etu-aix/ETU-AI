@@ -176,6 +176,14 @@ class StorageManager:
             res = conn.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
             return res.rowcount > 0
 
+    def delete_all_conversations(self) -> int:
+        """Supprime tout l'historique et renvoie le nombre de discussions supprimées."""
+        with self._connection() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            conn.execute("DELETE FROM messages")
+            conn.execute("DELETE FROM conversations")
+            return int(count)
+
     # -------------------------------------------------------------------------
     # Messages
     # -------------------------------------------------------------------------
