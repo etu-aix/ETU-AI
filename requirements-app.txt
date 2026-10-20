@@ -6,3 +6,4 @@ pypdf>=5,<7
 Pillow>=11,<13
 cryptography>=44,<52
 websockets>=14,<16
+ddgs==9.16.0

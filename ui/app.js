@@ -10,6 +10,7 @@ let setupPollingInterval = null;
 let currentActiveModel = null;
 let availableInstalledModels = [];
 let remoteApiModels = [];
+let installedNativeModels = [];
 let assistantProfiles = [];
 let activeProfileId = "default";
 let preferredProfileId = "default";
@@ -32,6 +33,21 @@ const notificationStorageKey = "etu-app-notifications";
 let appNotifications = [];
 try { appNotifications = JSON.parse(localStorage.getItem(notificationStorageKey) || "[]"); } catch (_) { appNotifications = []; }
 if (!Array.isArray(appNotifications)) appNotifications = [];
+// Les anciennes alertes de réponse sans conversation ne peuvent plus être consultées utilement.
+const storedNotificationKeys = new Set();
+appNotifications = appNotifications.filter(item => {
+  if (!item || !Number.isFinite(item.time) || (item.kind === "response" && !item.conversationId)) return false;
+  const key = item.eventKey || `${item.kind}:${item.title}:${item.detail}`;
+  if (storedNotificationKeys.has(key)) return false;
+  storedNotificationKeys.add(key);
+  return true;
+}).slice(0, 50);
+const notificationEventStorageKey = "etu-notification-events";
+let notificationEventKeys = new Set(appNotifications.map(item => item.eventKey).filter(Boolean));
+try {
+  const keys = JSON.parse(localStorage.getItem(notificationEventStorageKey) || "[]");
+  if (Array.isArray(keys)) keys.filter(key => typeof key === "string").slice(-200).forEach(key => notificationEventKeys.add(key));
+} catch (_) { /* Les notifications restent utilisables si le cache est invalide. */ }
 const seenDownloadStatuses = new Map();
 let downloadRefreshInFlight = false;
 let applyingAppRoute = false;
@@ -46,6 +62,7 @@ const modelTabRoutes = {
 const modelRouteTabs = Object.fromEntries(Object.entries(modelTabRoutes).map(([tab, route]) => [route, tab]));
 
 function setAppRoute(route, replace = false) {
+  requestAnimationFrame(dismissViewedResponseNotifications);
   if (applyingAppRoute || window.location.hash === route) return;
   window.history[replace ? "replaceState" : "pushState"]({}, "", route);
   lastAppliedAppRoute = route;
@@ -66,7 +83,7 @@ function restoreAppRoute() {
   applyingAppRoute = true;
   try {
     if (route[0] === "settings") {
-      const section = ["general", "models", "profiles", "providers", "data", "etu", "installation"].includes(route[1]) ? route[1] : "general";
+      const section = ["general", "models", "profiles", "providers", "data", "wiki", "etu", "installation"].includes(route[1]) ? route[1] : "general";
       closeDownloadsView({ fromRoute: true });
       showSettingsView(section, { fromRoute: true });
       if (section === "models") showModelsTab(modelRouteTabs[route[2]] || "tab-catalog", { fromRoute: true });
@@ -99,14 +116,18 @@ function initAppUrlRouting() {
   if (!window.location.hash) setAppRoute("#/chat", true);
   window.addEventListener("popstate", restoreAppRoute);
   window.addEventListener("hashchange", restoreAppRoute);
+  window.addEventListener("popstate", dismissViewedResponseNotifications);
+  window.addEventListener("hashchange", dismissViewedResponseNotifications);
   restoreAppRoute();
 }
 
 function resizeChatInput() {
   const input = document.getElementById("chat-input");
   if (!input) return;
+  input.style.overflowY = "hidden";
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
+  input.style.overflowY = input.value.length && input.scrollHeight > input.clientHeight + 1 ? "auto" : "hidden";
 }
 
 function trackChatComposerHeight() {
@@ -309,35 +330,59 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function initHardwarePreference() {
-  const select = document.getElementById("settings-hardware-preference");
+  const control = document.getElementById("settings-hardware-preference");
   const status = document.getElementById("settings-hardware-status");
-  if (!select || !status) return;
+  if (!control || !status) return;
+  const choices = [...control.querySelectorAll("[data-hardware-preference]")];
+  let hardwareCapabilities = { has_gpu: false, has_npu: false };
+  const setSelectedPreference = (preference) => {
+    choices.forEach((choice) => {
+      const selected = choice.dataset.hardwarePreference === preference;
+      choice.setAttribute("aria-pressed", String(selected));
+      choice.classList.toggle("is-selected", selected);
+    });
+  };
+  const setAvailableHardware = (data) => {
+    hardwareCapabilities = data;
+    choices.forEach((choice) => {
+      const preference = choice.dataset.hardwarePreference;
+      choice.disabled = (preference === "gpu" && !data.has_gpu) || (preference === "npu" && !data.has_npu);
+      if (choice.disabled) choice.title = `Aucun ${preference.toUpperCase()} détecté sur cet ordinateur`;
+      else choice.removeAttribute("title");
+    });
+  };
   try {
     const response = await fetch("/api/settings/hardware");
     const data = await response.json();
     if (response.ok) {
-      select.value = data.preference || "auto";
-      select.querySelector('option[value="npu"]').disabled = !data.has_npu;
-      select.querySelector('option[value="gpu"]').disabled = !data.has_gpu;
+      setSelectedPreference(data.preference || "auto");
+      setAvailableHardware(data);
     }
   } catch (_) { status.textContent = "Préférence matérielle indisponible."; }
-  select.addEventListener("change", async () => {
-    const preference = select.value;
-    select.disabled = true;
+  choices.forEach((choice) => choice.addEventListener("click", async () => {
+    const preference = choice.dataset.hardwarePreference;
+    if (choice.disabled || choice.getAttribute("aria-pressed") === "true") return;
+    choices.forEach((item) => { item.disabled = true; });
     status.textContent = "Redémarrage de MAIA-Beacon…";
     try {
       const response = await fetch("/api/settings/hardware", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ preference }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Impossible d’appliquer ce réglage");
+      setSelectedPreference(data.preference || preference);
+      setAvailableHardware(data);
       status.textContent = "Préférence appliquée. MAIA-Beacon redémarre avec le matériel choisi.";
     } catch (error) {
       status.textContent = error.message;
       try {
         const response = await fetch("/api/settings/hardware");
-        if (response.ok) select.value = (await response.json()).preference || "auto";
+        if (response.ok) {
+          const data = await response.json();
+          setSelectedPreference(data.preference || "auto");
+          setAvailableHardware(data);
+        }
       } catch (_) {}
-    } finally { select.disabled = false; }
-  });
+    } finally { setAvailableHardware(hardwareCapabilities); }
+  }));
 }
 
 async function initApiSettings() {
@@ -1601,7 +1646,7 @@ function initModals() {
       loadHfExplorerResults(q, filterHfCompat.checked);
     });
   }
-  ["modal-hf-filter-size", "modal-hf-filter-trusted"].forEach((id) => {
+  ["modal-hf-filter-size", "modal-hf-filter-trusted", "modal-hf-filter-format", "modal-hf-filter-precision"].forEach((id) => {
     document.getElementById(id)?.addEventListener("change", () => loadHfExplorerResults(hfSearchInput.value.trim(), filterHfCompat.checked));
   });
   document.querySelectorAll("[data-hf-hardware]").forEach((button) => {
@@ -1661,7 +1706,9 @@ function initModals() {
       const repo = document.getElementById("hf-repo").value.trim();
       const filename = document.getElementById("hf-filename").value.trim();
       if (!repo || !filename) return;
-      await triggerDownload(repo, filename);
+      const button = formCustomDl.querySelector('button[type="submit"]');
+      if (button?.disabled) return;
+      await triggerDownload(repo, filename, button, true);
     });
   }
 
@@ -1733,6 +1780,19 @@ function initModals() {
 
 const hfExplorerState = { key: "", query: "", onlyCompatible: true, page: 1, models: [], complete: false, requestId: 0, controller: null };
 
+function validateHfExplorerResponse(data, requestedFormat) {
+  if (requestedFormat === "gguf") return;
+  if (data.model_format !== requestedFormat) {
+    throw new Error("Le serveur ne reconnaît pas le filtre de format. Redémarrez ETU-AI pour charger la mise à jour.");
+  }
+  const formats = requestedFormat === "npu" ? ["openvino", "onnx"] : [requestedFormat];
+  if ((data.models || []).some((item) => !formats.includes(item.format)
+      || (item.format === "openvino" && !/\.xml$/i.test(item.filename || ""))
+      || (item.format === "onnx" && !/\.onnx$/i.test(item.filename || "")))) {
+    throw new Error("La recherche a renvoyé un modèle dans un autre format. Relancez la recherche après avoir redémarré ETU-AI.");
+  }
+}
+
 async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, page = 1) {
   const container = document.getElementById("hf-search-results");
   const countLabel = document.getElementById("hf-search-count");
@@ -1740,7 +1800,14 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
   const parameterRange = document.getElementById("modal-hf-filter-size").value;
   const trustedOnly = document.getElementById("modal-hf-filter-trusted").checked;
   const hardwareFilter = document.querySelector("[data-hf-hardware].active")?.dataset.hfHardware || "";
-  const key = JSON.stringify([searchQuery, onlyCompatible, parameterRange, trustedOnly, hardwareFilter]);
+  const modelFormat = document.getElementById("modal-hf-filter-format")?.value || "auto";
+  const nativeFormat = ["openvino", "onnx"].includes(modelFormat) || (modelFormat === "auto" && hardwareFilter === "npu");
+  const precisionFilter = document.getElementById("modal-hf-filter-precision");
+  if (precisionFilter) precisionFilter.disabled = !nativeFormat;
+  const precision = nativeFormat ? precisionFilter?.value || "" : "";
+  const formatNotice = document.getElementById("hf-native-format-notice");
+  if (formatNotice) formatNotice.hidden = !nativeFormat;
+  const key = JSON.stringify([searchQuery, onlyCompatible, parameterRange, trustedOnly, hardwareFilter, modelFormat, precision]);
   if (hfExplorerState.key !== key) {
     Object.assign(hfExplorerState, { key, models: [], complete: false });
   }
@@ -1766,10 +1833,13 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
   try {
     if (needsFetch) {
       const params = new URLSearchParams({ q: searchQuery, only_compatible: String(onlyCompatible), limit: String(Math.min(needed, 51)), trusted_only: String(trustedOnly), parameter_range: parameterRange, hardware_filter: hardwareFilter, explorer: "true" });
+      params.set("model_format", modelFormat);
+      params.set("precision", precision);
       const resp = await fetch(`/api/models/huggingface/search?${params}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]) });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || "Recherche indisponible");
       if (requestId !== hfExplorerState.requestId) return;
+      validateHfExplorerResponse(data, modelFormat === "auto" ? (hardwareFilter === "npu" ? "npu" : "gguf") : modelFormat);
       hfExplorerState.models = data.models || [];
       hfExplorerState.complete = hfExplorerState.models.length < needed;
     }
@@ -1825,6 +1895,10 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
     container.replaceChildren();
 
     if (!models.length) {
+      if (nativeFormat && onlyCompatible) {
+        container.innerHTML = '<p class="etu-text">Les exports OpenVINO et ONNX ne sont pas encore exécutables dans Beacon. Décochez « Afficher uniquement les IA compatibles avec ma config » pour les explorer.</p>';
+        return;
+      }
       container.innerHTML = `<p class="etu-text">Aucun modèle trouvé pour « ${escapeHtml(searchQuery)} » avec ces filtres.</p>`;
       return;
     }
@@ -1836,7 +1910,7 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
       const icon = (name) => window.ETUSVG?.icon(name) || "";
       const compatibility = item.compatibility || {};
       const badgeText = String(compatibility.badge || "Compatible").replace(/^[^A-Za-zÀ-ÿ0-9]+/, "");
-      const badgeIcon = compatibility.has_gpu_acceleration ? "gpu" : compatibility.npu_candidate ? "npu" : "cpu";
+      const badgeIcon = compatibility.has_gpu_acceleration ? "gpu" : nativeFormat || compatibility.npu_candidate ? "npu" : "cpu";
       let badgesHtml = `<span class="etu-badge etu-badge-${compatibility.color || 'info'} hf-card-badge">${icon(badgeIcon)}${escapeHtml(badgeText)}</span>`;
       if (compatibility.npu_candidate) {
         badgesHtml += ` <span class="etu-badge etu-badge-cyan hf-card-badge" title="Accélération NPU à confirmer avec ce modèle">${icon("npu")} Candidat NPU</span>`;
@@ -1847,7 +1921,8 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
       const quants = item.quantizations || [{ filename: item.filename, size_gib: item.size_gib, quant: item.quant }];
       let selectOptions = "";
       quants.forEach((quant) => {
-        selectOptions += `<option value="${escapeHtml(quant.filename)}">${escapeHtml(quant.quant || 'GGUF')} (~${Number(quant.size_gib || 0).toLocaleString("fr-FR")} Go)</option>`;
+        const variantLabel = item.format ? `${quant.quant} · ${quant.filename}` : quant.quant || "GGUF";
+        selectOptions += `<option value="${escapeHtml(quant.filename)}">${escapeHtml(variantLabel)} (~${Number(quant.size_gib || 0).toLocaleString("fr-FR")} Go)</option>`;
       });
       const quantId = `hf-quant-${requestId}-${index}`;
       const modelPage = `https://huggingface.co/${String(item.repo).split("/").map(encodeURIComponent).join("/")}`;
@@ -1886,10 +1961,72 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
         </div>
       `;
 
+      if (item.can_install === false) {
+        card.querySelector(".hf-model-quantification").textContent = `Format : ${item.format === "openvino" ? "OpenVINO IR" : "ONNX"} · dépôt complet requis`;
+        card.querySelector(".hf-model-actions").innerHTML = '<span class="etu-text">Installation dans Beacon à venir</span>';
+        container.appendChild(card);
+        return;
+      }
+
       const select = card.querySelector(".hf-quant-select");
       const actions = card.querySelector(".hf-model-actions");
       const installed = new Set(item.installed_filenames || (item.is_installed ? [item.filename] : []));
       if (installed.size) select.value = [...installed][0];
+      if (["openvino", "onnx"].includes(item.format)) {
+        card.querySelector(".hf-model-quantification label").textContent = "Quantification / variante publiée";
+        const renderNativeActions = () => {
+          const variant = quants.find(quant => quant.filename === select.value);
+          const isInstalled = installed.has(select.value);
+          card.querySelector(".hf-installed-badge").hidden = !isInstalled;
+          actions.replaceChildren();
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "etu-btn etu-btn-primary";
+          button.textContent = isInstalled ? "Fichiers installés" : "Installer cette variante";
+          button.disabled = isInstalled;
+          button.addEventListener("click", () => {
+            const filename = select.value;
+            select.disabled = true;
+            void triggerDownload(item.repo, filename, button, false, item.format, task => {
+              select.disabled = false;
+              if (task.status === "completed") {
+                installed.add(filename);
+                item.installed_filenames = [...installed];
+                item.is_installed = true;
+              }
+              renderNativeActions();
+            });
+          });
+          actions.append(button);
+          if (isInstalled && variant) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "etu-btn etu-btn-secondary";
+            remove.textContent = "Désinstaller";
+            remove.addEventListener("click", async () => {
+              if (!window.confirm(`Désinstaller ${item.name} (${variant.quant}) ?`)) return;
+              remove.disabled = true;
+              try {
+                const response = await fetch(`/api/models/native/${encodeURIComponent(variant.id)}`, { method: "DELETE" });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || "Désinstallation impossible");
+                installed.delete(variant.filename);
+                item.installed_filenames = [...installed];
+                renderNativeActions();
+                void loadModelCatalog();
+              } catch (error) {
+                remove.disabled = false;
+                showToast(error.message, "warning");
+              }
+            });
+            actions.append(remove);
+          }
+        };
+        select.addEventListener("change", renderNativeActions);
+        renderNativeActions();
+        container.appendChild(card);
+        return;
+      }
       const renderActions = () => {
         const filename = select.value;
         const isInstalled = installed.has(filename);
@@ -1899,7 +2036,7 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
         primary.type = "button";
         primary.className = `etu-btn ${isInstalled ? "etu-btn-secondary" : "etu-btn-primary"}`;
         primary.innerHTML = `${icon(isInstalled ? "check" : "download")}<span>${isInstalled ? "Activer" : "Télécharger"}</span>`;
-        primary.addEventListener("click", () => isInstalled ? activateModel(filename, item.name) : triggerDownload(item.repo, filename));
+        primary.addEventListener("click", () => isInstalled ? activateModel(filename, item.name) : triggerDownload(item.repo, filename, primary));
         actions.append(primary);
         if (isInstalled) {
           const uninstall = document.createElement("button");
@@ -1956,6 +2093,7 @@ function openModal(id, { fromRoute = false } = {}) {
   const component = window.ETUComponents?.getDialog(id);
   if (component) component.open();
   else if (el) el.classList.add("active");
+  if (id === "modal-models") loadModelCatalog();
   if (id === "modal-models" && !el?.classList.contains("settings-model-catalog") && !fromRoute) syncModelsRoute();
 }
 
@@ -1970,7 +2108,7 @@ function showSettingsView(section = "general", { fromRoute = false } = {}) {
   document.getElementById("sidebar")?.classList.remove("is-open");
   document.getElementById("btn-open-sidebar")?.setAttribute("aria-expanded", "false");
   document.body.classList.remove("sidebar-open");
-  const labels = { general: "Général", models: "Modèles", profiles: "Profils d’IA", providers: "Fournisseurs IA et clés API", data: "Mes données", etu: "ETU", installation: "Installation" };
+  const labels = { general: "Général", models: "Modèles", profiles: "Profils d’IA", providers: "Fournisseurs IA et clés API", data: "Mes données", wiki: "Wiki et mémoire", etu: "ETU", installation: "Installation" };
   const selected = labels[section] ? section : "general";
   powerActionMenu?.close();
   document.getElementById("btn-refresh-library").hidden = selected !== "models";
@@ -1988,6 +2126,7 @@ function showSettingsView(section = "general", { fromRoute = false } = {}) {
     panel.hidden = panel.dataset.settingsPanel !== selected;
   });
   if (selected === "etu") window.refreshEtuRemoteConnection?.();
+  if (selected === "wiki") window.ETUWiki?.refresh();
   if (selected === "installation") loadServerVariants();
   if (selected === "providers") requestAnimationFrame(updateProviderSidebarHeight);
   if (!fromRoute) {
@@ -2172,8 +2311,11 @@ function initSettingsPage() {
     try {
       const data = await loadModelCatalog({ throwOnError: true });
       const installed = new Set(data.installed || []);
+      const installedNative = new Set((data.native_models || []).map(model => model.id));
       for (const item of hfExplorerState.models) {
-        item.installed_filenames = (item.quantizations || []).map(quant => quant.filename).filter(filename => installed.has(filename));
+        item.installed_filenames = (item.quantizations || [])
+          .filter(quant => item.format ? installedNative.has(quant.id) : installed.has(quant.filename))
+          .map(quant => quant.filename);
         item.is_installed = item.installed_filenames.length > 0;
       }
       if (document.getElementById("tab-hf-explorer").classList.contains("active")) {
@@ -2200,12 +2342,41 @@ function closeModal(id, { fromRoute = false } = {}) {
 /* -------------------------------------------------------------------------- */
 /* Toast Notifications                                                        */
 /* -------------------------------------------------------------------------- */
-function addAppNotification(title, detail, kind = "info") {
-  appNotifications.unshift({ id: crypto.randomUUID(), title, detail, kind, time: Date.now(), read: false });
+function isConversationVisible(conversationId) {
+  return Boolean(conversationId && conversationId === currentConversationId
+    && !document.hidden && document.hasFocus()
+    && ["#/chat", `#/chat/${encodeURIComponent(conversationId)}`].includes(window.location.hash)
+    && document.getElementById("chat-messages")?.getClientRects().length
+    && !document.querySelector('.modal-overlay.active'));
+}
+
+function dismissViewedResponseNotifications() {
+  const remaining = appNotifications.filter(item => item.kind !== "response" || !isConversationVisible(item.conversationId));
+  if (remaining.length !== appNotifications.length) {
+    appNotifications = remaining;
+    persistAppNotifications();
+  }
+  document.querySelectorAll('.toast-response').forEach(toast => {
+    if (isConversationVisible(toast.dataset.conversationId)) toast.remove();
+  });
+}
+
+function addAppNotification(title, detail, kind = "info", { eventKey, conversationId } = {}) {
+  if (kind === "response" && isConversationVisible(conversationId)) return;
+  if (kind === "power" && !document.hidden && document.hasFocus()) return;
+  if (eventKey && notificationEventKeys.has(eventKey)) return;
+  if (eventKey) {
+    notificationEventKeys.add(eventKey);
+    const keys = [...notificationEventKeys].slice(-200);
+    notificationEventKeys = new Set(keys);
+    localStorage.setItem(notificationEventStorageKey, JSON.stringify(keys));
+  }
+  const centerOpen = document.getElementById("notification-center")?.hidden === false && !document.hidden && document.hasFocus();
+  appNotifications.unshift({ id: crypto.randomUUID(), title, detail, kind, time: Date.now(), read: centerOpen, eventKey, conversationId });
   appNotifications = appNotifications.slice(0, 50);
   localStorage.setItem(notificationStorageKey, JSON.stringify(appNotifications));
   renderAppNotifications();
-  showToast(detail, kind, 6500, title);
+  if (!centerOpen) showToast(detail, kind, 6500, title, conversationId);
 }
 
 function notificationKind(kind) {
@@ -2281,6 +2452,34 @@ function formatDownloadBytes(value) {
   return `${(bytes / 1024 ** 2).toFixed(1)} Mo`;
 }
 
+const downloadTimeEstimates = new Map();
+
+function downloadRemainingTime(task, now = Date.now()) {
+  if (task.status !== "downloading") {
+    downloadTimeEstimates.delete(task.task_id);
+    return "";
+  }
+  const total = Number(task.total_bytes);
+  const received = Math.max(0, Number(task.downloaded_bytes) || 0);
+  const previous = downloadTimeEstimates.get(task.task_id);
+  const elapsed = previous ? (now - previous.at) / 1000 : 0;
+  const moved = previous && received > previous.bytes;
+  const reported = Math.max(0, Number(task.speed_mbps) || 0) * 1024 ** 2;
+  const measured = elapsed > 0 && moved ? (received - previous.bytes) / elapsed : 0;
+  const sample = measured || reported;
+  const speed = previous?.speed && sample ? previous.speed * .7 + sample * .3 : sample || previous?.speed || 0;
+  const lastProgressAt = !previous || moved ? now : previous.lastProgressAt;
+  downloadTimeEstimates.set(task.task_id, { bytes: received, at: now, speed, lastProgressAt });
+  if (!Number.isFinite(total) || total <= 0) return "Temps restant : calcul en cours…";
+  if (received >= total) return "Finalisation…";
+  if (!Number.isFinite(speed) || speed <= 0 || now - lastProgressAt >= 15000) return "Temps restant : en attente du débit…";
+  const seconds = Math.max(1, Math.ceil((total - received) / speed));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const duration = hours ? `${hours} h ${minutes} min` : minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
+  return `Temps restant estimé : ~${duration}`;
+}
+
 const downloadSpeedHistory = [];
 const previousDownloadedBytes = new Map();
 let engineUpdateActivity = null;
@@ -2302,7 +2501,7 @@ function downloadBrand(task = {}) {
     [/gpt|openai/, "OpenAI", "download-openai", "#4ab497"],
   ];
   for (const [pattern, label, icon, color] of brands) {
-    if (pattern.test(source)) return { label, logo: icon ? "/static/provider-icons/" + icon + ".svg" : "/static/platform-icons/windows.svg", color };
+    if (pattern.test(source)) return { label, logo: icon ? `/static/provider-icons/${icon}.svg${label === "OpenAI" ? "?v=logo-2" : ""}` : "/static/platform-icons/windows.svg", color };
   }
   if (task.kind === "engine" || task.kind === "update") return { label: "ETU-AI", logo: "/static/logo_etu_ai.svg", color: "#5585df" };
   return source ? { label: "Modèle GGUF", logo: "/static/provider-icons/huggingface-color.svg", color: "#e9bd52" }
@@ -2562,17 +2761,24 @@ function renderDownloadManager(tasks, serverInstall = null) {
     if (group === "done" && dismissedDownloadEntries.has(task.task_id)) continue;
     const row = document.createElement("article");
     row.className = "download-manager-item";
-    const title = createDownloadHeading(task.local_filename || task.filename, task);
+    row.dataset.status = task.status;
+    const title = createDownloadHeading(task.filename || task.local_filename, task);
     row.style.setProperty("--download-brand-color", downloadBrand(task).color);
     const status = document.createElement("span");
     const labels = { queued: "En attente", downloading: "Téléchargement", completed: "Terminé", cancelled: "Annulé", error: "Erreur" };
-    status.textContent = `${labels[task.status] || task.status} · ${Math.round(Number(task.percentage) || 0)} %`;
+    status.textContent = task.status === "downloading" && !task.total_bytes && !task.downloaded_bytes
+      ? "Connexion à Hugging Face…"
+      : `${labels[task.status] || task.status} · ${Math.round(Number(task.percentage) || 0)} %`;
     const progress = document.createElement("progress");
     progress.max = 100;
-    progress.value = Number(task.percentage) || 0;
+    progress.value = Math.max(0, Math.min(100, Number(task.percentage) || 0));
+    progress.setAttribute("aria-label", `Progression du téléchargement de ${task.filename || task.local_filename}`);
+    if (task.status === "downloading" && !Number(task.total_bytes)) progress.removeAttribute("value");
+    progress.hidden = task.status === "completed";
     const stats = document.createElement("small");
     const speedDetail = task.status === "downloading" ? ` · ${(Number(task.speed_mbps) || 0).toFixed(2)} Mo/s` : "";
-    stats.textContent = `${formatDownloadBytes(task.downloaded_bytes)} / ${task.total_bytes ? formatDownloadBytes(task.total_bytes) : "taille inconnue"}${speedDetail}${task.error_message ? ` · ${task.error_message}` : ""}`;
+    const remainingTime = downloadRemainingTime(task);
+    stats.textContent = `${formatDownloadBytes(task.downloaded_bytes)} / ${task.total_bytes ? formatDownloadBytes(task.total_bytes) : "taille inconnue"}${speedDetail}${remainingTime ? ` · ${remainingTime}` : ""}${task.error_message ? ` · ${task.error_message}` : ""}`;
     row.append(title, status, progress, stats);
     if (["queued", "downloading"].includes(task.status)) {
       const cancel = document.createElement("button");
@@ -2696,7 +2902,7 @@ async function refreshDownloadManager() {
     for (const task of tasks) {
       const previous = seenDownloadStatuses.get(task.task_id);
       if (previous && previous !== "completed" && task.status === "completed") {
-        addAppNotification("Modèle téléchargé", `${task.local_filename || task.filename} est prêt à être utilisé.`, "download");
+        addAppNotification("Modèle téléchargé", `${task.local_filename || task.filename} est prêt à être utilisé.`, "download", { eventKey: `download:${task.task_id}` });
       }
       seenDownloadStatuses.set(task.task_id, task.status);
     }
@@ -2772,6 +2978,9 @@ function hidePowerTransition() {
 }
 
 async function restartInMode(mode) {
+  const modeLabels = { normal: "normal", local: "local", server: "serveur" };
+  const modeLabel = modeLabels[mode] || mode;
+  if (!window.confirm(`Redémarrer ETU-AI en mode ${modeLabel} ?`)) return false;
   const status = document.getElementById("settings-launch-mode-status");
   status.textContent = `Redémarrage en mode ${mode}…`;
   const response = await fetch("/api/power/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
@@ -2792,9 +3001,13 @@ async function restartInMode(mode) {
     setTimeout(waitForRestart, 1000);
   };
   setTimeout(waitForRestart, 1000);
+  return true;
 }
 
 function initAppUtilities() {
+  persistAppNotifications();
+  window.addEventListener("focus", dismissViewedResponseNotifications);
+  document.addEventListener("visibilitychange", dismissViewedResponseNotifications);
   document.querySelectorAll("[data-svg-icon]").forEach(holder => { holder.innerHTML = window.ETUSVG?.icon(holder.dataset.svgIcon) || ""; });
   const togglePanel = id => {
     const panel = document.getElementById(id);
@@ -2833,6 +3046,7 @@ function initAppUtilities() {
       } else if (action === "restart") {
         await restartInMode(currentLaunchMode);
       } else if (action === "shutdown") {
+        if (!window.confirm("Éteindre ETU-AI ? L’application ne sera plus accessible jusqu’à son prochain démarrage.")) return;
         const response = await fetch("/api/power/shutdown", { method: "POST" });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail);
@@ -2878,11 +3092,12 @@ function appendSafeToastContent(container, message) {
   [...template.content.childNodes].forEach(node => append(container, node));
 }
 
-function showToast(message, type = "info", duration = 4500, title = "") {
+function showToast(message, type = "info", duration = 4500, title = "", conversationId = "") {
   const container = document.getElementById("toast-container");
   if (!container) return;
 
   const toast = document.createElement("div");
+  if (conversationId) toast.dataset.conversationId = conversationId;
   const safeType = notificationKind(type);
   toast.className = `toast-message toast-${safeType}`;
   toast.setAttribute("role", "status");
@@ -2976,7 +3191,6 @@ function initModelSelector() {
         btnHeaderSelector.setAttribute("aria-expanded", "false");
       }
       openModal("modal-models");
-      loadModelCatalog();
     });
   }
 
@@ -3083,7 +3297,7 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   // Remplir le menu déroulant
   if (listEl) {
     listEl.innerHTML = "";
-    if (selectableModels.length === 0) {
+    if (selectableModels.length === 0 && installedNativeModels.length === 0) {
       listEl.innerHTML = '<div class="model-dropdown-empty">Aucun modèle installé. Utilisez « Gérer les modèles » ci-dessous.</div>';
     } else {
       selectableModels.forEach((item) => {
@@ -3107,8 +3321,10 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
         if (item.source === "api") {
           const providerId = providerLogoIds.has(item.provider) ? item.provider : "";
           const providerName = item.provider_label || item.provider || "Fournisseur";
-          const providerImage = providerId ? `<img src="/static/provider-icons/${escapeHtml(providerId)}.svg" alt="" aria-hidden="true">` : "";
-          badgesHtml = `<span class="model-provider-logo" title="${escapeHtml(providerName)}" aria-label="Fournisseur : ${escapeHtml(providerName)}">${providerImage}<span>${escapeHtml(providerName.slice(0, 2).toUpperCase())}</span></span>`;
+          const colorProviderIcons = { mistral: "download-mistral-color", openai: "download-openai", anthropic: "download-claude-color" };
+          const providerIcon = colorProviderIcons[providerId] || providerId;
+          const providerImage = providerId ? `<img src="/static/provider-icons/${escapeHtml(providerIcon)}.svg" alt="" aria-hidden="true">` : "";
+          badgesHtml = `<span class="model-provider-logo" data-provider="${escapeHtml(providerId)}" title="${escapeHtml(providerName)}" aria-label="Fournisseur : ${escapeHtml(providerName)}">${providerImage}<span>${escapeHtml(providerName.slice(0, 2).toUpperCase())}</span></span>`;
         } else {
           const compatibility = item.compatibility || {};
           const supported = [];
@@ -3186,6 +3402,28 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
         }).catch(() => { itemEl._modelPerformance = { loading: false, load: null, ttft: null }; });
       });
     }
+    installedNativeModels.forEach((item) => {
+      const itemEl = document.createElement("button");
+      const displayName = item.repo?.split("/").pop() || item.filename || "Modèle NPU";
+      itemEl.type = "button";
+      itemEl.className = "model-dropdown-item model-dropdown-item-unavailable";
+      itemEl.disabled = true;
+      itemEl.title = "Ce format est installé, mais le moteur Beacon actuel ne permet pas encore de l’exécuter.";
+      itemEl.setAttribute("role", "option");
+      itemEl.setAttribute("aria-selected", "false");
+      itemEl.dataset.modelName = displayName;
+      itemEl.dataset.search = [displayName, item.repo, item.filename, item.format, item.quant, "npu"].filter(Boolean).join(" ").toLocaleLowerCase();
+      itemEl.innerHTML = `
+        <div class="model-dropdown-item-left">
+          <span class="model-item-check" aria-hidden="true">${window.ETUSVG?.icon("npu") || ""}</span>
+          <div class="model-item-details">
+            <span class="model-item-title">${escapeHtml(displayName)}</span>
+            <span class="model-item-meta">${escapeHtml(`${item.quant || "Précision non indiquée"} · ${String(item.format || "modèle natif").toUpperCase()} · moteur Beacon non disponible`)}</span>
+          </div>
+        </div>
+        <span class="model-native-unavailable-label">Non exécutable</span>`;
+      listEl.appendChild(itemEl);
+    });
     filterModelDropdownList();
   }
 }
@@ -3530,8 +3768,10 @@ async function selectConversation(convId) {
     container.innerHTML = "";
 
     data.messages.forEach((msg) => {
-      renderMessage(msg.role, msg.content, msg.attachments || []);
+      renderMessage(msg.role, msg.content, msg.attachments || [], msg.id, msg.tool_calls || []);
     });
+    window.ETUWiki?.restoreEvents(convId, container);
+    dismissViewedResponseNotifications();
   } catch (err) {
     console.error("Erreur affichage messages :", err);
   }
@@ -3571,6 +3811,52 @@ async function deleteConversation(convId) {
 /* Chat & Streaming SSE avec Generative UI                                    */
 /* -------------------------------------------------------------------------- */
 let pendingChatFiles = [];
+let pendingEditedMessage = null;
+let webSearchEnabled = localStorage.getItem("etu-web-search-enabled") === "true";
+let webSearchAvailable = false;
+
+function updateWebSearchUI() {
+  const searchButton = document.getElementById("btn-web-search");
+  const chip = document.getElementById("web-search-chip");
+  const consent = document.getElementById("web-search-consent");
+  const status = document.getElementById("web-search-status");
+  const consentStatus = document.getElementById("web-search-consent-status");
+  if (searchButton) {
+    searchButton.disabled = !webSearchAvailable;
+    searchButton.setAttribute("aria-checked", String(webSearchEnabled));
+  }
+  if (chip) {
+    chip.hidden = !webSearchEnabled;
+    chip.querySelector(".web-search-chip-remove")?.setAttribute("aria-label", "Désactiver la recherche Web");
+  }
+  if (consent) {
+    consent.checked = webSearchEnabled;
+    consent.disabled = !webSearchAvailable;
+  }
+  document.getElementById("btn-attach")?.classList.toggle("search-enabled", webSearchEnabled);
+  if (status) status.textContent = !webSearchAvailable ? "DDGS indisponible" : webSearchEnabled ? "Activée" : "Désactivée dans Mes données";
+  if (consentStatus) consentStatus.textContent = !webSearchAvailable
+    ? "Installez requirements-app.txt et redémarrez ETU-AI pour rendre DDGS disponible."
+    : webSearchEnabled ? "Le modèle peut appeler la recherche web quand il le juge utile." : "La recherche web est désactivée.";
+}
+
+function setWebSearchEnabled(enabled) {
+  webSearchEnabled = Boolean(enabled && webSearchAvailable);
+  localStorage.setItem("etu-web-search-enabled", String(webSearchEnabled));
+  updateWebSearchUI();
+}
+
+function setChatAttachMenu(open, trigger = document.getElementById("btn-attach")) {
+  const menu = document.getElementById("attach-dropdown-menu");
+  const home = document.getElementById("attach-menu-home");
+  const bottomTrigger = document.getElementById("btn-attach");
+  if (!menu || !home) return;
+  if (open && trigger?.classList.contains("message-edit-attach")) trigger.closest(".attach-menu-wrapper")?.append(menu);
+  else home.append(menu);
+  menu.hidden = !open;
+  bottomTrigger?.setAttribute("aria-expanded", String(open && trigger === bottomTrigger));
+  document.querySelectorAll(".message-edit-attach").forEach((button) => button.setAttribute("aria-expanded", String(open && trigger === button)));
+}
 
 function renderAttachments(container, attachments, removable = false) {
   container.replaceChildren();
@@ -3640,7 +3926,36 @@ function initChatForm() {
   resizeChatInput();
   document.getElementById("btn-stop").addEventListener("click", cancelChatStream);
   const picker = document.getElementById("chat-file-input");
-  document.getElementById("btn-attach").addEventListener("click", () => picker.click());
+  const attachButton = document.getElementById("btn-attach");
+  const attachMenu = document.getElementById("attach-dropdown-menu");
+  const searchButton = document.getElementById("btn-web-search");
+  attachButton.addEventListener("click", () => setChatAttachMenu(attachMenu.hidden, attachButton));
+  document.getElementById("btn-attach-file").addEventListener("click", () => {
+    setChatAttachMenu(false);
+    picker.click();
+  });
+  searchButton.addEventListener("click", () => {
+    if (!webSearchAvailable) return;
+    setWebSearchEnabled(!webSearchEnabled);
+    setChatAttachMenu(false);
+  });
+  document.querySelector(".web-search-chip-remove")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setWebSearchEnabled(false);
+  });
+  document.getElementById("web-search-consent")?.addEventListener("change", (event) => setWebSearchEnabled(event.currentTarget.checked));
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".attach-menu-wrapper")) {
+      setChatAttachMenu(false);
+    }
+  });
+  fetch("/api/search/status").then((response) => response.ok ? response.json() : null).then((status) => {
+    webSearchAvailable = Boolean(status?.configured);
+    if (!webSearchAvailable) setWebSearchEnabled(false);
+    searchButton.title = webSearchAvailable ? "Autoriser ou désactiver la recherche web" : "DDGS doit être installé pour utiliser la recherche web";
+    updateWebSearchUI();
+  }).catch(() => { webSearchAvailable = false; updateWebSearchUI(); });
+  updateWebSearchUI();
   picker.addEventListener("change", () => {
     addChatFiles(picker.files);
     picker.value = "";
@@ -3674,16 +3989,18 @@ function initChatForm() {
     if (!rawMessage && !pendingChatFiles.length) return;
     if (form.dataset.busy === "true") return;
     form.dataset.busy = "true";
+    const editContext = pendingEditedMessage;
+    pendingEditedMessage = null;
     document.getElementById("btn-send").disabled = true;
     document.getElementById("btn-attach").disabled = true;
-    const submittedFiles = [...pendingChatFiles];
+    const submittedFiles = editContext ? [...(editContext.attachments || [])] : [...pendingChatFiles];
     let accepted = false;
     document.getElementById("attachment-error").textContent = "";
     input.value = "";
     resizeChatInput();
 
     // Commande slash pour changer de modèle : /model ou /models
-    if (!submittedFiles.length && (rawMessage.startsWith("/model") || rawMessage.startsWith("/switch"))) {
+    if (!editContext && !submittedFiles.length && (rawMessage.startsWith("/model") || rawMessage.startsWith("/switch"))) {
       handleModelSlashCommand(rawMessage);
       form.dataset.busy = "false";
       document.getElementById("btn-send").disabled = false;
@@ -3693,7 +4010,7 @@ function initChatForm() {
 
     // 1. Afficher le message utilisateur
     document.querySelector("#chat-messages .chat-welcome")?.remove();
-    const userBubble = renderMessage("user", rawMessage, submittedFiles);
+    const userBubble = editContext?.userBubble || renderMessage("user", rawMessage, submittedFiles);
 
     // 2. Créer la bulle assistant pour le streaming
     const assistantBubble = renderMessage("assistant", "");
@@ -3701,6 +4018,7 @@ function initChatForm() {
     const bubbleContent = assistantBubble.querySelector(".message-bubble");
     const controller = new AbortController();
     const requestId = crypto.randomUUID();
+    bubbleContent.dataset.requestId = requestId;
     const requestConversationId = currentConversationId;
     const requestViewVersion = chatViewVersion;
     activeChatStream = { controller, bubble: bubbleContent, requestId, accepted: false, rawMessage, userBubble };
@@ -3734,7 +4052,9 @@ function initChatForm() {
           model: profileModel,
           profile_id: activeProfileId,
           attachments: encodedAttachments,
+          web_search: webSearchEnabled,
           request_id: requestId,
+          edit_message_id: editContext?.messageId || null,
         }),
       });
 
@@ -3745,18 +4065,32 @@ function initChatForm() {
         throw new Error(typeof failure.detail === "string" ? failure.detail : "Fichiers ou message invalides");
       }
       accepted = true;
+      updateWebSearchUI();
       if (activeChatStream?.controller === controller) activeChatStream.accepted = true;
+      if (editContext && submittedFiles.length) {
+        let messageFiles = userBubble.querySelector(".message-attachments");
+        if (!messageFiles) {
+          messageFiles = document.createElement("div");
+          messageFiles.className = "attachment-list message-attachments";
+          userBubble.querySelector(".message-bubble")?.append(messageFiles);
+        }
+        const additions = document.createElement("div");
+        renderAttachments(additions, submittedFiles);
+        messageFiles.append(...additions.children);
+      }
       pendingChatFiles = [];
       renderAttachments(document.getElementById("chat-attachments"), pendingChatFiles, true);
       const warnings = JSON.parse(resp.headers.get("X-Attachment-Warnings") || "[]");
       if (warnings.length) document.getElementById("attachment-error").textContent = warnings.join(" ");
 
       const convHeader = resp.headers.get("X-Conversation-Id");
+      bubbleContent.dataset.conversationId = convHeader || requestConversationId || currentConversationId || "";
       if (convHeader && !currentConversationId) {
         currentConversationId = convHeader;
         setAppRoute(`#/chat/${encodeURIComponent(convHeader)}`);
         loadConversations();
       }
+      window.ETUWiki?.watchConversation(bubbleContent.dataset.conversationId);
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
@@ -3803,7 +4137,7 @@ function initChatForm() {
       if (!accepted) {
         input.value = rawMessage;
         resizeChatInput();
-        userBubble.remove();
+        if (!editContext) userBubble.remove();
         document.getElementById("attachment-error").textContent = err.message;
       }
       finishStreamRender(bubbleContent);
@@ -3823,6 +4157,7 @@ function initChatForm() {
         document.getElementById("btn-send").disabled = false;
         document.getElementById("btn-attach").disabled = false;
         document.getElementById("btn-stop").hidden = true;
+        document.querySelectorAll(".message-edit-button").forEach(button => { button.disabled = false; });
       }
     }
   });
@@ -3901,7 +4236,15 @@ function handleModelSlashCommand(commandStr) {
 
 function handleStreamEvent(data, bubbleEl) {
   if (bubbleEl.dataset.renderFinalized === "true") return;
-  if (data.event === "token" && data.html) {
+  if (data.event === "user_message" && data.message_id) {
+    const userMessage = bubbleEl.closest(".message")?.previousElementSibling;
+    if (userMessage?.classList.contains("user")) {
+      userMessage.dataset.messageId = data.message_id;
+      addUserMessageActions(userMessage);
+    }
+  } else if (data.event === "wiki") {
+    window.ETUWiki?.chatEvent(data, bubbleEl.closest(".message"));
+  } else if (data.event === "token" && data.html) {
     if (!bubbleEl.dataset.firstTokenMs) bubbleEl.dataset.firstTokenMs = String(Math.round(performance.now() - Number(bubbleEl.dataset.generationStarted)));
     if (!String(currentActiveModel || "").startsWith("api:")) localModelHasResponded = true;
     const html = (streamMarkup.get(bubbleEl) || "") + data.html;
@@ -3914,6 +4257,7 @@ function handleStreamEvent(data, bubbleEl) {
       }, 55));
     }
   } else if (data.event === "tool_start" && data.html) {
+    if (data.tool) addMessageToolBadges(bubbleEl.closest(".message"), [data.tool]);
     setAssistantActivity(bubbleEl.closest(".message"), "tool", "Consultation en cours");
   } else if (data.event === "tool_result") {
     setAssistantActivity(bubbleEl.closest(".message"), "thinking", "Analyse du résultat");
@@ -3924,7 +4268,12 @@ function handleStreamEvent(data, bubbleEl) {
     if (data.generation_tps !== null && data.generation_tps !== undefined && Number.isFinite(Number(data.generation_tps))) bubbleEl.dataset.generationTps = String(data.generation_tps);
     updateAssistantTelemetry(bubbleEl, true);
   } else if (data.event === "done") {
-    if (bubbleEl.dataset.generationCompleted !== "true") addAppNotification("Réponse terminée", "Le modèle a fini sa réponse.", "response");
+    if (bubbleEl.dataset.generationCompleted !== "true" && bubbleEl.dataset.conversationId) {
+      addAppNotification("Réponse terminée", "Le modèle a fini sa réponse.", "response", {
+        conversationId: bubbleEl.dataset.conversationId,
+        eventKey: `response:${bubbleEl.dataset.requestId}`,
+      });
+    }
     bubbleEl.dataset.generationCompleted = "true";
     finishStreamRender(bubbleEl);
     bubbleEl.closest(".message")?.classList.remove("streaming");
@@ -4299,6 +4648,17 @@ function recordModelPerformance(bubble) {
 function addAssistantActions(message, bubble) {
   const actions = document.createElement("div");
   actions.className = "assistant-message-actions";
+  const attach = document.createElement("button");
+  attach.type = "button";
+  attach.className = "assistant-action-button assistant-attach-button";
+  attach.setAttribute("aria-label", "Ajouter un fichier ou un outil au prochain message");
+  attach.title = "Ajouter un fichier ou activer la recherche web";
+  attach.innerHTML = `${window.ETUSVG?.icon("plus", "assistant-action-icon") || ""}<span>Ajouter</span>`;
+  attach.addEventListener("click", () => {
+    document.getElementById("chat-input")?.focus();
+    const trigger = document.getElementById("btn-attach");
+    if (trigger && document.getElementById("attach-dropdown-menu")?.hidden) trigger.click();
+  });
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "assistant-action-button assistant-copy-button";
@@ -4333,7 +4693,7 @@ function addAssistantActions(message, bubble) {
   progress.hidden = true;
   panel.append(list, progress);
   details.append(summary, panel);
-  actions.append(copy, details);
+  actions.append(attach, copy, details);
   message.appendChild(actions);
   updateAssistantTelemetry(bubble, true);
 }
@@ -4361,10 +4721,11 @@ function attachInteractiveButtons(container) {
   });
 }
 
-function renderMessage(role, contentHtml, attachments = []) {
+function renderMessage(role, contentHtml, attachments = [], messageId = "", toolCalls = []) {
   const container = document.getElementById("chat-messages");
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${role}`;
+  if (messageId) msgDiv.dataset.messageId = messageId;
 
   const isUser = role === "user";
   const profile = getActiveProfile();
@@ -4374,7 +4735,12 @@ function renderMessage(role, contentHtml, attachments = []) {
   `;
   const bubble = msgDiv.querySelector(".message-bubble");
   container.appendChild(msgDiv);
-  if (isUser) bubble.textContent = contentHtml;
+  if (isUser) {
+    const content = document.createElement("div");
+    content.className = "message-user-content";
+    content.textContent = contentHtml;
+    bubble.appendChild(content);
+  }
   else {
     if (!renderAuthoredPreview(bubble, contentHtml, true)) {
       if (contentHtml.trim()) ETUChatUI.showConversation();
@@ -4388,12 +4754,203 @@ function renderMessage(role, contentHtml, attachments = []) {
     bubble.appendChild(files);
   }
   if (!isUser) {
+    addMessageToolBadges(msgDiv, toolCalls.map((call) => call?.function?.name || call?.name).filter(Boolean));
     addAssistantActions(msgDiv, bubble);
     applyPartialUpdates(bubble);
+  } else if (messageId) {
+    addUserMessageActions(msgDiv);
   }
   attachInteractiveButtons(msgDiv);
   scrollToBottom();
   return msgDiv;
+}
+
+function addMessageToolBadge(message, key, label, icon = "hub") {
+  if (!message || !key || !label) return;
+  let strip = message.querySelector(":scope > .message-tools");
+  if (!strip) {
+    strip = document.createElement("div");
+    strip.className = "message-tools";
+    strip.setAttribute("aria-label", "Outils utilisés pour cette réponse");
+    message.insertBefore(strip, message.querySelector(":scope > .message-bubble"));
+  }
+  let badge = [...strip.children].find((item) => item.dataset.toolKey === key);
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "message-tool-badge";
+    badge.dataset.toolKey = key;
+    badge.tabIndex = 0;
+    strip.append(badge);
+  }
+  badge.dataset.tooltip = label;
+  badge.setAttribute("aria-label", label);
+  badge.innerHTML = window.ETUSVG?.icon(icon, "message-tool-icon") || "";
+}
+
+function removeMessageToolBadge(message, key) {
+  const strip = message?.querySelector(":scope > .message-tools");
+  strip?.querySelector(`[data-tool-key="${CSS.escape(key)}"]`)?.remove();
+  if (strip && !strip.children.length) strip.remove();
+}
+
+function addMessageToolBadges(message, toolNames = []) {
+  const labels = {
+    search_web: ["Recherche Web", "globe"],
+    wiki_read: ["Lecture du Wiki", "book"],
+    wiki_search: ["Recherche dans le Wiki", "book"],
+    wiki_save: ["Écriture dans le Wiki", "book"],
+    wiki_update: ["Mise à jour du Wiki", "book"],
+  };
+  for (const name of toolNames) {
+    const [label, icon] = labels[name] || [name.replace(/^wiki_/, "Wiki · ").replaceAll("_", " "), "hub"];
+    addMessageToolBadge(message, name, label, icon);
+  }
+}
+
+window.ETUAIAddToolBadge = addMessageToolBadge;
+window.ETUAIRemoveToolBadge = removeMessageToolBadge;
+
+function addUserMessageActions(messageEl) {
+  if (!messageEl?.dataset.messageId || messageEl.querySelector(".message-action-row")) return;
+  const bubble = messageEl.querySelector(".message-bubble");
+  if (!bubble) return;
+  const actions = document.createElement("div");
+  actions.className = "message-action-row";
+  const edit = document.createElement("button");
+  edit.type = "button";
+  edit.className = "message-edit-button";
+  edit.disabled = document.getElementById("chat-form")?.dataset.busy === "true";
+  edit.setAttribute("aria-label", "Modifier ce message");
+  edit.title = "Modifier ce message";
+  edit.innerHTML = `${window.ETUSVG?.icon("edit", "message-edit-icon") || ""}<span>Modifier</span>`;
+  edit.addEventListener("click", () => beginUserMessageEdit(messageEl));
+  actions.append(edit);
+  messageEl.append(actions);
+}
+
+function beginUserMessageEdit(messageEl) {
+  if (!currentConversationId || document.getElementById("chat-form")?.dataset.busy === "true") return;
+  const bubble = messageEl.querySelector(".message-bubble");
+  const content = bubble?.querySelector(".message-user-content");
+  const actions = messageEl.querySelector(".message-action-row");
+  if (!bubble || !content || !actions || messageEl.dataset.editing === "true") return;
+  messageEl.dataset.editing = "true";
+  const bubbleRect = bubble.getBoundingClientRect();
+  const bubbleHeight = Math.ceil(bubbleRect.height);
+  const bubbleWidth = Math.ceil(bubbleRect.width);
+  bubble.style.height = `${bubbleHeight}px`;
+  bubble.style.width = `${bubbleWidth}px`;
+  bubble.classList.add("message-bubble-editing");
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "message-edit-input";
+  textarea.value = content.textContent;
+  textarea.setAttribute("aria-label", "Modifier le message envoyé");
+  textarea.rows = 1;
+  const controls = document.createElement("div");
+  controls.className = "message-edit-controls";
+  const error = document.createElement("span");
+  error.className = "message-edit-error";
+  error.setAttribute("role", "status");
+  const editAttach = document.createElement("button");
+  editAttach.type = "button";
+  editAttach.className = "message-edit-attach";
+  editAttach.setAttribute("aria-haspopup", "menu");
+  editAttach.setAttribute("aria-expanded", "false");
+  editAttach.setAttribute("aria-label", "Ajouter un fichier ou activer la recherche Web");
+  editAttach.title = "Ajouter un fichier ou activer la recherche Web";
+  editAttach.innerHTML = window.ETUSVG?.icon("plus", "message-edit-icon") || "+";
+  editAttach.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const menu = document.getElementById("attach-dropdown-menu");
+    setChatAttachMenu(menu.hidden || menu.parentElement !== editAttach.closest(".attach-menu-wrapper"), editAttach);
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "message-edit-cancel";
+  cancel.innerHTML = `${window.ETUSVG?.icon("close", "message-edit-icon") || ""}<span>Annuler</span>`;
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "message-edit-save";
+  save.innerHTML = `${window.ETUSVG?.icon("check", "message-edit-icon") || ""}<span>Enregistrer et renvoyer</span>`;
+  const restore = () => {
+    setChatAttachMenu(false);
+    textarea.replaceWith(content);
+    controls.replaceWith(actions);
+    bubble.style.removeProperty("height");
+    bubble.style.removeProperty("width");
+    bubble.classList.remove("message-bubble-editing");
+    delete messageEl.dataset.editing;
+  };
+  cancel.addEventListener("click", restore);
+  save.addEventListener("click", async () => {
+    const editedContent = textarea.value.trim();
+    if (!editedContent) {
+      error.textContent = "Le message ne peut pas être vide.";
+      textarea.focus();
+      return;
+    }
+    save.disabled = cancel.disabled = true;
+    error.textContent = "Enregistrement…";
+    try {
+      const response = await fetch(`/api/conversations/${encodeURIComponent(currentConversationId)}/messages/${encodeURIComponent(messageEl.dataset.messageId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: editedContent }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Modification impossible.");
+
+      content.textContent = editedContent;
+      restore();
+      let next = messageEl.nextElementSibling;
+      while (next) {
+        const following = next.nextElementSibling;
+        next.remove();
+        next = following;
+      }
+      pendingEditedMessage = { messageId: messageEl.dataset.messageId, userBubble: messageEl, attachments: [...pendingChatFiles] };
+      const input = document.getElementById("chat-input");
+      input.value = editedContent;
+      resizeChatInput();
+      document.getElementById("chat-form").requestSubmit();
+    } catch (problem) {
+      error.textContent = problem.message;
+      save.disabled = cancel.disabled = false;
+    }
+  });
+  textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      restore();
+    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      save.click();
+    }
+  });
+  controls.classList.add("message-edit-controls");
+  controls.setAttribute("aria-label", "Options de modification du message");
+  controls.style.setProperty("--message-edit-width", `${bubbleWidth}px`);
+  controls.append(editAttach, error, cancel, save);
+  const editMenuWrapper = document.createElement("div");
+  editMenuWrapper.className = "attach-menu-wrapper edit-attach-menu-wrapper";
+  editAttach.parentElement?.removeChild(editAttach);
+  editMenuWrapper.append(editAttach);
+  controls.prepend(editMenuWrapper);
+  const resizeEditBubble = () => {
+    const maxHeight = Math.max(160, Math.floor(window.innerHeight * 0.45));
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(Math.max(textarea.scrollHeight + 20, bubbleHeight), maxHeight);
+    bubble.style.height = `${nextHeight}px`;
+    textarea.style.height = "100%";
+    textarea.style.overflowY = textarea.scrollHeight + 20 > maxHeight ? "auto" : "hidden";
+  };
+  textarea.addEventListener("input", resizeEditBubble);
+  content.replaceWith(textarea);
+  actions.replaceWith(controls);
+  textarea.focus();
+  resizeEditBubble();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 }
 
 function formatAssistantMarkup(raw) {
@@ -4725,10 +5282,31 @@ function initProfiles() {
   loadProfiles().catch((error) => console.warn(error));
   const picker = document.getElementById("profile-picker");
   const trigger = document.getElementById("profile-select");
-  const menu = document.getElementById("profile-options");
+  const menu = document.getElementById("profile-menu");
+  const positionPickerMenu = () => {
+    if (menu.hidden) return;
+    const rect = trigger.getBoundingClientRect();
+    const inset = 8;
+    const width = Math.max(1, Math.min(window.innerWidth - inset * 2, Math.max(rect.width, 220)));
+    const left = Math.max(inset, Math.min(rect.left, window.innerWidth - width - inset));
+    const preferredHeight = Math.min(280, window.innerHeight * .45);
+    const below = Math.max(0, window.innerHeight - rect.bottom - inset - 6);
+    const above = Math.max(0, rect.top - inset - 6);
+    const placeAbove = below < preferredHeight && above > below;
+    const available = placeAbove ? above : below;
+    menu.style.left = `${left}px`;
+    menu.style.width = `${width}px`;
+    menu.style.maxHeight = `${Math.max(1, Math.min(preferredHeight, available))}px`;
+    menu.style.top = placeAbove ? "auto" : `${rect.bottom + 6}px`;
+    menu.style.bottom = placeAbove ? `${window.innerHeight - rect.top + 6}px` : "auto";
+    menu.dataset.placement = placeAbove ? "top" : "bottom";
+  };
   const setPickerOpen = (open, focusFirst = false) => {
+    if (open) document.body.append(menu);
     menu.hidden = !open;
     trigger.setAttribute("aria-expanded", String(open));
+    if (open) positionPickerMenu();
+    else picker.append(menu);
     if (focusFirst && open) menu.querySelector("[role='option']")?.focus();
   };
   menu.addEventListener("click", (event) => {
@@ -4766,8 +5344,14 @@ function initProfiles() {
     options[nextIndex]?.focus();
   });
   document.addEventListener("click", (event) => {
-    if (!picker.contains(event.target)) setPickerOpen(false);
+    if (!picker.contains(event.target) && !menu.contains(event.target)) setPickerOpen(false);
   });
+  document.getElementById("profile-manage").addEventListener("click", () => {
+    setPickerOpen(false);
+    showSettingsView("profiles");
+  });
+  window.addEventListener("resize", positionPickerMenu);
+  document.addEventListener("scroll", positionPickerMenu, true);
   document.getElementById("btn-create-profile").addEventListener("click", () => openProfileDialog());
   document.getElementById("profile-search-local").addEventListener("input", () => { profileManagerPage = 1; renderProfileManager(); });
   document.querySelectorAll("[data-profile-tab]").forEach((tab) => {
@@ -4961,6 +5545,7 @@ async function loadModelCatalog({ throwOnError = false } = {}) {
     const localList = document.getElementById("catalog-local-list");
     if (!localList) return;
     modelRuntimeHardware = data.hardware || {};
+    installedNativeModels = Array.isArray(data.native_models) ? data.native_models : [];
     localList.replaceChildren();
 
     const installed = data.catalog.filter((m) => m.is_installed);
@@ -5066,8 +5651,38 @@ async function loadModelCatalog({ throwOnError = false } = {}) {
         }
       }
     });
+    for (const item of data.native_models || []) {
+      const card = document.createElement("div");
+      card.className = "catalog-item is-installed local-model-row";
+      card.dataset.name = item.repo;
+      card.dataset.disk = item.size_gib;
+      card.dataset.ram = "0";
+      card.dataset.params = "0";
+      card.dataset.catalogSearch = `${item.repo} ${item.format} ${item.quant}`.toLowerCase();
+      card.innerHTML = `<div class="local-model-identity"><div class="local-model-copy">
+        <strong>${escapeHtml(item.repo.split("/").pop())}</strong>
+        <span class="local-model-filename">${escapeHtml(item.filename)}</span>
+        <p>${escapeHtml(item.format.toUpperCase())} · fichiers installés · moteur d’exécution à intégrer</p>
+        </div></div><div class="local-model-stat">${Number(item.size_gib).toLocaleString("fr-FR")} Go</div>
+        <div class="local-model-stat">—</div><div class="local-model-quant">${escapeHtml(item.quant)}</div>
+        <button type="button" class="etu-btn etu-btn-secondary">Désinstaller</button>`;
+      card.querySelector("button").addEventListener("click", async event => {
+        if (!window.confirm(`Désinstaller ${item.repo} (${item.quant}) ?`)) return;
+        event.currentTarget.disabled = true;
+        try {
+          const response = await fetch(`/api/models/native/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.detail || "Désinstallation impossible");
+          await loadModelCatalog();
+        } catch (error) {
+          card.querySelector("button").disabled = false;
+          showToast(error.message, "warning");
+        }
+      });
+      localList.appendChild(card);
+    }
     const localEmpty = document.getElementById("catalog-local-empty");
-    if (localEmpty) localEmpty.hidden = installed.length > 0;
+    if (localEmpty) localEmpty.hidden = installed.length > 0 || (data.native_models || []).length > 0;
     sortLocalModelCards();
     applyModelCatalogSearch();
     return data;
@@ -5149,28 +5764,72 @@ async function openProjectorManager(item) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "etu-btn etu-btn-secondary";
-        button.textContent = candidate.is_installed ? "Associer" : "Télécharger et associer";
+        button.textContent = candidate.is_installed ? "Désinstaller" : "Télécharger et associer";
         button.addEventListener("click", async () => {
           button.disabled = true;
+          if (candidate.is_installed) {
+            button.textContent = "Désinstallation…";
+            setStatus(`Désinstallation de ${candidate.filename}…`);
+            try {
+              const response = await fetch(`/api/models/mmproj/${encodeURIComponent(candidate.local_filename)}`, { method: "DELETE" });
+              const result = await response.json();
+              if (!response.ok) throw new Error(result.detail || "Désinstallation impossible");
+              candidate.is_installed = false;
+              button.disabled = false;
+              button.textContent = "Télécharger et associer";
+              if (panel.dataset.model === model && panel.dataset.association === candidate.local_filename) {
+                showAssociation({ association: null });
+              }
+              setStatus("Projecteur désinstallé.", "success");
+              loadModelCatalog();
+            } catch (error) {
+              button.disabled = false;
+              button.textContent = "Réessayer la désinstallation";
+              setStatus(error.message, "error");
+            }
+            return;
+          }
+          button.textContent = candidate.is_installed ? "Association en cours…" : "Démarrage du téléchargement…";
+          setStatus(candidate.is_installed ? "Association du projecteur…" : "Démarrage du téléchargement du projecteur…");
+          let downloading = false;
           try {
             const result = await fetch("/api/models/mmproj/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model, repo: candidate.repo, filename: candidate.filename }) });
             const saved = await result.json();
             if (!result.ok) throw new Error(saved.detail || "Association impossible");
-            if (saved.task_id) pollDownloadProgress(saved.task_id, candidate.filename, () => {
-              if (panel.dataset.model === model && panel.dataset.association === saved.association.local_filename) {
-                showAssociation({ ...saved, installed: true });
-                setStatus("Projecteur téléchargé et associé. Rechargez le modèle pour l'utiliser.", "success");
-              }
-            });
+            if (saved.task_id) {
+              downloading = true;
+              button.textContent = "Téléchargement en cours…";
+              pollDownloadProgress(saved.task_id, candidate.filename, () => {
+                if (panel.dataset.model === model && panel.dataset.association === saved.association.local_filename) {
+                  showAssociation({ ...saved, installed: true });
+                  setStatus("Projecteur téléchargé et associé. Rechargez le modèle pour l'utiliser.", "success");
+                }
+              }, task => {
+                if (!button.isConnected) return;
+                if (task.status === "completed") {
+                  candidate.is_installed = true;
+                  button.textContent = "Projecteur installé";
+                } else if (["error", "cancelled"].includes(task.status)) {
+                  button.disabled = false;
+                  button.textContent = "Réessayer le téléchargement";
+                  if (panel.dataset.model === model) setStatus(task.error_message || "Téléchargement annulé.", task.status === "error" ? "error" : "info");
+                } else {
+                  button.textContent = task.total_bytes ? `Téléchargement en cours · ${Math.round(task.percentage || 0)} %` : task.downloaded_bytes ? "Téléchargement en cours…" : "Connexion à Hugging Face…";
+                }
+              });
+            } else {
+              button.textContent = "Projecteur associé";
+            }
             if (panel.dataset.model === model) {
               showAssociation(saved);
               setStatus(saved.installed ? "Projecteur associé. Rechargez le modèle pour l'utiliser." : "Téléchargement lancé. Attendez sa fin, puis rechargez le modèle.", saved.installed ? "success" : "info");
             }
             loadModelCatalog();
           } catch (error) {
+            button.textContent = "Réessayer le téléchargement";
             setStatus(error.message, "error");
           } finally {
-            button.disabled = false;
+            if (!downloading) button.disabled = false;
           }
         });
         row.append(label, button);
@@ -5224,24 +5883,51 @@ async function openProjectorManager(item) {
   search();
 }
 
-async function triggerDownload(repo, filename) {
+async function triggerDownload(repo, filename, button = null, reusable = false, modelFormat = "", onTerminal = null) {
+  const initialLabel = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Démarrage du téléchargement…";
+  }
   try {
-    const resp = await fetch("/api/models/download", {
+    const resp = await fetch(modelFormat ? "/api/models/native/download" : "/api/models/download", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo, filename }),
+      body: JSON.stringify({ repo, filename, ...(modelFormat ? { model_format: modelFormat } : {}) }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || "Téléchargement refusé");
     if (data.task_id) {
-      pollDownloadProgress(data.task_id, filename);
+      if (button) button.textContent = "Téléchargement en cours…";
+      pollDownloadProgress(data.task_id, filename, null, task => {
+        if (["completed", "error", "cancelled"].includes(task.status)) onTerminal?.(task);
+        if (!button?.isConnected) return;
+        if (["error", "cancelled"].includes(task.status)) {
+          button.disabled = false;
+          button.textContent = "Réessayer le téléchargement";
+        } else {
+          button.textContent = task.status === "completed" ? "Installé" : `Téléchargement en cours · ${Math.round(task.percentage || 0)} %`;
+          if (task.status === "completed" && reusable) {
+            button.disabled = false;
+            button.textContent = initialLabel;
+          }
+        }
+      });
+      showToast(`Téléchargement de ${escapeHtml(filename)} lancé. Retrouvez sa progression dans Téléchargements.`, "info");
+    } else {
+      throw new Error("Le serveur n'a pas confirmé le démarrage du téléchargement.");
     }
   } catch (err) {
+    onTerminal?.({ status: "error" });
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Réessayer le téléchargement";
+    }
     showToast("Erreur lors du démarrage du téléchargement : " + err, "warning");
   }
 }
 
-function pollDownloadProgress(taskId, filename, onComplete = null) {
+function pollDownloadProgress(taskId, filename, onComplete = null, onUpdate = null) {
   if (!seenDownloadStatuses.has(taskId)) seenDownloadStatuses.set(taskId, "queued");
   refreshDownloadManager();
   const container = document.getElementById("active-tasks-container");
@@ -5270,10 +5956,21 @@ function pollDownloadProgress(taskId, filename, onComplete = null) {
     if (response.ok) cancelButton.disabled = true;
   });
 
+  let polling = false;
   const poller = setInterval(async () => {
+    if (polling) return;
+    polling = true;
     try {
       const resp = await fetch(`/api/models/tasks/${taskId}`);
+      if (!resp.ok) {
+        if (resp.status === 404) {
+          clearInterval(poller);
+          onUpdate?.({ status: "error", error_message: "Le suivi du téléchargement a été interrompu. Relancez-le pour reprendre." });
+        }
+        throw new Error("Suivi temporairement indisponible");
+      }
       const t = await resp.json();
+      onUpdate?.(t);
 
       const percentEl = taskBox.querySelector(".task-percent");
       const fillEl = taskBox.querySelector(".progress-bar-fill");
@@ -5289,7 +5986,7 @@ function pollDownloadProgress(taskId, filename, onComplete = null) {
         clearInterval(poller);
         if (seenDownloadStatuses.get(taskId) !== "completed") {
           seenDownloadStatuses.set(taskId, "completed");
-          addAppNotification("Modèle téléchargé", `${filename} est prêt à être utilisé.`, "download");
+          addAppNotification("Modèle téléchargé", `${filename} est prêt à être utilisé.`, "download", { eventKey: `download:${taskId}` });
         }
         if (onComplete) onComplete();
         cancelButton.remove();
@@ -5299,7 +5996,6 @@ function pollDownloadProgress(taskId, filename, onComplete = null) {
         }
         loadModelCatalog();
         loadServerStatus();
-        showToast(`✅ Modèle <strong>${escapeHtml(filename)}</strong> prêt à l'emploi !`, "success");
       } else if (t.status === "error") {
         clearInterval(poller);
         cancelButton.remove();
@@ -5314,7 +6010,10 @@ function pollDownloadProgress(taskId, filename, onComplete = null) {
         if (statusEl) statusEl.textContent = "Annulé — relancez pour reprendre";
       }
     } catch (e) {
-      clearInterval(poller);
+      const statusEl = taskBox.querySelector(".task-status");
+      if (statusEl) statusEl.textContent = "Reconnexion au suivi du téléchargement…";
+    } finally {
+      polling = false;
     }
   }, 1000);
 }

@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=hf-search-recovery-4">
-  <link rel="stylesheet" href="/static/styles/settings.css?v=model-runtime-icons-3">
+  <link rel="stylesheet" href="/static/style.css?v=chat-search-menu-3">
+  <link rel="stylesheet" href="/static/styles/settings.css?v=download-progress-eta-1">
   <link rel="stylesheet" href="/static/styles/components.css?v=server-icons-3">
   <link rel="stylesheet" href="/static/styles/workshop.css?v=workshop-3">
   <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
@@ -52,6 +52,11 @@
     }
     #btn-attach { order: 0; }
     #chat-input { order: 1; }
+    #chat-input:placeholder-shown { overflow-y: hidden; }
+    #notification-center { display: flex; flex-direction: column; overflow: hidden; }
+    #notification-center[hidden] { display: none; }
+    #notification-center .utility-panel-header { flex: none; }
+    #notification-list { min-height: 0; overflow-y: auto; padding-top: 12px; }
     #chat-form .model-selector-toolbar { order: 2; flex: none; align-self: center; }
     #btn-send, #btn-stop { order: 3; }
     #chat-form .model-selector-btn {
@@ -375,12 +380,18 @@
       <div class="profile-switcher">
         <span class="profile-eyebrow">Votre assistant</span>
         <div class="profile-picker" id="profile-picker">
-          <button id="profile-select" class="profile-picker-trigger" type="button" aria-label="Choisir un profil d'assistant" aria-haspopup="listbox" aria-expanded="false" aria-controls="profile-options">
+          <button id="profile-select" class="profile-picker-trigger" type="button" aria-label="Choisir un profil d'assistant" aria-haspopup="listbox" aria-expanded="false" aria-controls="profile-menu">
             <span id="profile-select-avatar" class="profile-picker-avatar" aria-hidden="true">✦</span>
             <span id="profile-select-name" class="profile-picker-name">ETU-AI</span>
             <svg class="profile-picker-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"></path></svg>
           </button>
-          <div id="profile-options" class="profile-picker-menu" role="listbox" aria-label="Profils disponibles" hidden></div>
+          <div id="profile-menu" class="profile-picker-menu" role="group" aria-label="Profils et réglages" hidden>
+            <div id="profile-options" class="profile-picker-options" role="listbox" aria-label="Profils disponibles"></div>
+            <button id="profile-manage" class="profile-picker-manage" type="button">
+              <span class="profile-picker-manage-icon" data-svg-icon="settings" aria-hidden="true"></span>
+              Gérer les profils
+            </button>
+          </div>
         </div>
       </div>
 
@@ -429,6 +440,7 @@
             <button type="button" class="settings-nav-item" data-settings-section="profiles">Profils d’IA</button>
             <button type="button" id="settings-nav-providers" class="settings-nav-item" data-settings-section="providers">Fournisseurs IA et clés API</button>
             <button type="button" class="settings-nav-item" data-settings-section="data">Mes données</button>
+            <button type="button" class="settings-nav-item" data-settings-section="wiki">Wiki et mémoire</button>
             <button type="button" id="settings-nav-etu" class="settings-nav-item" data-settings-section="etu">ETU</button>
             <button type="button" class="settings-nav-item" data-settings-section="installation">Installation</button>
           </nav>
@@ -451,12 +463,13 @@
             <div class="settings-card settings-card-copy">
               <h3>Matériel d’inférence</h3>
               <p>Choisissez le processeur utilisé pour les modèles locaux. Le redémarrage de MAIA-Beacon applique le changement ; l’accélération dépend aussi du backend installé.</p>
-              <label for="settings-hardware-preference">Préférence matérielle</label>
-              <select id="settings-hardware-preference">
-                <option value="auto">Préférence de l’ordinateur</option>
-                <option value="gpu">GPU</option>
-                <option value="npu">NPU</option>
-              </select>
+              <span class="hardware-preference-label">Préférence matérielle</span>
+              <div id="settings-hardware-preference" class="hardware-preference-options" role="group" aria-label="Préférence matérielle">
+                <button type="button" aria-pressed="false" data-hardware-preference="cpu">CPU</button>
+                <button type="button" aria-pressed="false" data-hardware-preference="gpu" disabled>GPU</button>
+                <button type="button" aria-pressed="false" data-hardware-preference="npu" disabled>NPU</button>
+                <button type="button" aria-pressed="true" data-hardware-preference="auto">AUTO</button>
+              </div>
               <p id="settings-hardware-status" class="settings-mode-status" role="status" aria-live="polite"></p>
             </div>
             <div class="settings-card">
@@ -504,6 +517,12 @@
           </section>
           <section class="settings-panel" data-settings-panel="data" hidden>
             <div class="settings-panel-intro"><h3>Mes données</h3><p>Choisissez si les informations ETU peuvent être transmises au fournisseur IA sélectionné.</p></div>
+            <section class="settings-consent-card" aria-labelledby="settings-web-search-title">
+              <div class="settings-panel-intro"><h3 id="settings-web-search-title">Recherche Web</h3><p>Autorisez le modèle à choisir lui-même quand consulter le Web pour répondre à vos demandes.</p></div>
+              <label class="etu-connection-checkbox"><input id="web-search-consent" type="checkbox"><span>Autoriser la recherche Web avec DDGS</span></label>
+              <p class="settings-data-note">Le modèle n’effectue une recherche que lorsqu’il le juge utile. La requête de recherche est envoyée aux moteurs DDGS ; les résultats sont transmis au modèle actif.</p>
+              <div class="etu-connection-details-body"><p id="web-search-consent-status" role="status" aria-live="polite"></p></div>
+            </section>
             <section class="settings-consent-card" aria-labelledby="settings-etu-consent-title">
               <div class="settings-panel-intro"><h3 id="settings-etu-consent-title">Fournisseurs IA</h3><p>Autorisez les fournisseurs tiers à recevoir les informations ETU nécessaires aux fonctions qu’ils prennent en charge.</p></div>
               <label class="etu-connection-checkbox"><input id="etu-remote-tools-consent" type="checkbox"><span>Accepter le partage de mes informations ETU avec les fournisseurs tiers</span></label>
@@ -518,6 +537,9 @@
           <section class="settings-panel" data-settings-panel="etu" hidden>
             <div class="settings-panel-intro"><h3>ETU</h3><p>Gérez la connexion entre ETU-AI et ETU 2. Vous pouvez y mettre fin à tout moment.</p></div>
             <div id="settings-etu-mount"></div>
+          </section>
+          <section class="settings-panel" data-settings-panel="wiki" hidden>
+            <div id="wiki-mount"></div>
           </section>
           <section class="settings-panel" data-settings-panel="installation" hidden>
             <section class="settings-update-card" aria-label="Mises à jour">
@@ -623,7 +645,14 @@
         <p id="attachment-error" class="attachment-error" role="alert"></p>
         <form id="chat-form" class="input-box">
           <input type="file" id="chat-file-input" multiple hidden accept=".pdf,.docx,.xlsx,.txt,.md,.csv,.tsv,.json,.xml,.yaml,.yml,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sql,.java,.c,.h,.cpp,.cs,.sh,.ps1,.toml,.ini,.rst,.tex,.png,.jpg,.jpeg,.webp,.gif">
-          <button type="button" id="btn-attach" class="attach-btn" title="Joindre des fichiers (6 maximum, 10 Mo par fichier)" aria-label="Joindre des fichiers">＋</button>
+          <div class="attach-menu-wrapper" id="attach-menu-home">
+            <button type="button" id="btn-attach" class="attach-btn" title="Ajouter" aria-label="Ajouter" aria-haspopup="menu" aria-expanded="false" aria-controls="attach-dropdown-menu"><span data-svg-icon="plus" aria-hidden="true"></span></button>
+            <div id="attach-dropdown-menu" class="attach-dropdown-menu" role="menu" aria-label="Ajouter au message" hidden>
+              <button type="button" role="menuitem" id="btn-attach-file"><span data-svg-icon="upload" aria-hidden="true"></span><span>Importer un fichier</span></button>
+              <button type="button" role="menuitemcheckbox" id="btn-web-search" aria-checked="false" disabled title="Activez la recherche Web dans Paramètres · Mes données"><span data-svg-icon="globe" aria-hidden="true"></span><span class="attach-menu-copy"><span>Recherche web</span><small id="web-search-status">Désactivée dans Mes données</small></span><span class="attach-menu-check" aria-hidden="true"></span></button>
+            </div>
+          </div>
+          <div id="web-search-chip" class="web-search-chip" hidden aria-live="polite"><span data-svg-icon="globe" aria-hidden="true"></span><span>Recherche</span><button type="button" class="web-search-chip-remove" aria-label="Désactiver la recherche Web" title="Désactiver la recherche Web"><span data-svg-icon="close" aria-hidden="true"></span></button></div>
           <div class="model-selector-wrapper model-selector-toolbar" id="model-selector-wrapper">
             <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d’IA" type="button" aria-label="Changer de modèle d’IA" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-dropdown-menu">
               <span class="model-badge-icon" id="model-badge-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M12 9.5c-1.1-2.4-3.8-3.3-5.7-1.8-2 .2-3.2 2.4-2.3 4.4-1.3 1.7-.4 4.2 1.7 4.7.5 2.1 3.2 2.8 4.6 1.1.5.9 1.2 1.2 1.7 1.2"/><path d="M12 9.5c1.1-2.4 3.8-3.3 5.7-1.8 2 .2 3.2 2.4 2.3 4.4 1.3 1.7.4 4.2-1.7 4.7-.5 2.1-3.2 2.8-4.6 1.1-.5.9-1.2 1.2-1.7 1.2"/><path d="M7.2 10.2c1.4-.1 2.4.7 2.7 1.8m7-1.8c-1.4-.1-2.4.7-2.7 1.8"/></svg></span>
@@ -881,6 +910,24 @@
               <button type="button" id="btn-modal-hf-search" class="etu-btn etu-btn-primary" style="margin: 0;">Rechercher</button>
             </div>
             <div class="hf-explorer-filters">
+              <label>Format
+                <select id="modal-hf-filter-format">
+                  <option value="auto">Automatique selon le matériel</option>
+                  <option value="gguf">GGUF · moteur actuel</option>
+                  <option value="openvino">OpenVINO IR · Intel NPU</option>
+                  <option value="onnx">ONNX · moteur NPU adapté</option>
+                </select>
+              </label>
+              <label>Quantification OpenVINO / ONNX
+                <select id="modal-hf-filter-precision" disabled>
+                  <option value="">Toutes les précisions</option>
+                  <option value="int4">INT4</option>
+                  <option value="int8">INT8</option>
+                  <option value="fp16">FP16</option>
+                  <option value="bf16">BF16</option>
+                  <option value="fp32">FP32</option>
+                </select>
+              </label>
               <label>Nombre de paramètres
                 <select id="modal-hf-filter-size">
                   <option value="">Toutes les tailles</option>
@@ -892,12 +939,12 @@
                   <option value="35plus">35B+</option>
                 </select>
               </label>
-              <label class="hf-trusted-toggle" title="Dépôts officiels de Mistral AI, Qwen, Alibaba, DeepSeek et Meta Llama"><input type="checkbox" id="modal-hf-filter-trusted"><span>Dépôts de confiance uniquement</span></label>
+              <label class="hf-trusted-toggle" title="Éditeurs officiels ; pour OpenVINO et ONNX, inclut aussi OpenVINO, ONNX Community, Qualcomm, AMD, Intel et Microsoft"><input type="checkbox" id="modal-hf-filter-trusted"><span>Dépôts de confiance uniquement</span></label>
               <div class="hf-hardware-filter" role="group" aria-label="Matériel compatible">
                 <button type="button" class="active" data-hf-hardware="" aria-pressed="true">Tous</button>
                 <button type="button" data-hf-hardware="cpu" aria-pressed="false"><span class="hf-filter-icon"></span>CPU</button>
                 <button type="button" data-hf-hardware="gpu" aria-pressed="false"><span class="hf-filter-icon"></span>GPU</button>
-                <button type="button" data-hf-hardware="npu" aria-pressed="false" title="Candidats NPU selon leur taille et votre matériel ; accélération à confirmer"><span class="hf-filter-icon"></span>NPU</button>
+                <button type="button" data-hf-hardware="npu" aria-pressed="false" title="Recherche des exports OpenVINO et ONNX en format automatique ; compatibilité à vérifier"><span class="hf-filter-icon"></span>NPU</button>
               </div>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -909,6 +956,7 @@
             </div>
           </div>
 
+          <p id="hf-native-format-notice" class="etu-text" role="status" hidden>Choisissez une quantification publiée, puis installez ses fichiers. La compatibilité NPU dépend de la puce et du moteur. L’exécution des modèles OpenVINO / ONNX dans Beacon reste à intégrer.</p>
           <div id="hf-search-results" style="display: flex; flex-direction: column; gap: 10px; min-height: 120px;">
             <!-- Injecté dynamiquement par app.js -->
           </div>
@@ -987,9 +1035,10 @@
   <script src="/static/vendor/marked-18.0.14.umd.js"></script>
   <script src="/static/vendor/highlight-11.12.0.min.js"></script>
   <script src="/static/vendor/echarts-6.1.0.min.js?v=6.1.0"></script>
-  <script src="/static/svg-manager.js?v=downloads-polish-1"></script>
+  <script src="/static/svg-manager.js?v=chat-search-menu-3"></script>
   <script src="/static/components.js?v=settings-library-1"></script>
-  <script src="/static/app.js?v=chat-composer-1"></script>
+  <script src="/static/app.js?v=ddgs-search-ui-7"></script>
+  <script src="/static/wiki.js?v=6"></script>
   <script src="/static/etu-bridge.js?v=connection-ui-6"></script>
   <script src="/static/etu-remote.js?v=connection-ui-5"></script>
   <script src="/static/workshop.js?v=workshop-3"></script>

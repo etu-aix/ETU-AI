@@ -12,7 +12,7 @@
   "default_model_repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
   "default_model_file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
   "llama_tag": "b11491",
-  "backend": "npu",
+  "backend": "auto",
   "device": "auto",
   "llama_release_tag": "v1.0.2",
   "binary_sha256": {

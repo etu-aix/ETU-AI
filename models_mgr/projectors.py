@@ -18,9 +18,10 @@ def is_projector(filename):
 
 def model_identity(filename):
     stem = Path(filename).stem.lower()
+    stem = re.sub(r"[-_.]\d{5}-of-\d{5}$", "", stem)
     stem = re.sub(r"^(?:mmproj|projector)[-_.](?:model[-_.])?", "", stem)
     stem = re.sub(r"(?:^|[-_.])(?:mmproj|projector)(?=$|[-_.])", "-", stem)
-    stem = re.sub(r"(?:^|[-_.])(?:bf16|f16|f32|fp16|fp32|q\d(?:_[a-z0-9]+)*|iq\d(?:_[a-z0-9]+)*)(?=$|[-.])", "", stem)
+    stem = re.sub(r"(?:^|[-_.])(?:ud[-_.])?(?:bf16|f16|f32|fp16|fp32|q\d(?:_[a-z0-9]+)*|iq\d(?:_[a-z0-9]+)*)(?=$|[-.])", "", stem)
     return re.sub(r"[^a-z0-9]", "", stem)
 
 
@@ -41,7 +42,12 @@ def matching_projectors(model, files):
     if known_text_only(model):
         return []
     identity = model_identity(model)
-    identities = {model_identity(item["filename"]) for item in files if not is_projector(item["filename"])}
+    # MTP drafters are auxiliary weights, not a second vision-model variant.
+    identities = {
+        model_identity(item["filename"]) for item in files
+        if not is_projector(item["filename"])
+        and not re.search(r"(?:^|[-_.])mtp(?:$|[-_.])", Path(item["filename"]).stem, re.IGNORECASE)
+    }
     matches = []
     for item in files:
         if not is_projector(item["filename"]):

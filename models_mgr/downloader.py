@@ -4,9 +4,11 @@ Fournit un suivi de progression en temps réel pour l'interface utilisateur.
 """
 
 import hashlib
+import http.client
 import os
 from pathlib import Path
 import re
+import socket
 import threading
 import time
 from typing import Any, Optional
@@ -17,6 +19,46 @@ from storage.db import StorageManager
 from models_mgr.projectors import is_projector
 
 DEFAULT_MODELS_DIR = Path(__file__).resolve().parent.parent / "ai-server" / "models"
+
+
+def _connect_download(address, timeout=30, source_address=None):
+    """Try IPv4 first: unreachable IPv6 routes must not stall each CDN request."""
+    addresses = socket.getaddrinfo(*address, 0, socket.SOCK_STREAM)
+    addresses.sort(key=lambda item: item[0] != socket.AF_INET)
+    deadline = time.monotonic() + timeout
+    error = OSError("Aucune adresse réseau disponible pour le téléchargement")
+    for family, kind, protocol, _, endpoint in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        connection = socket.socket(family, kind, protocol)
+        try:
+            connection.settimeout(min(remaining, 3))
+            if source_address:
+                connection.bind(source_address)
+            connection.connect(endpoint)
+            connection.settimeout(timeout)
+            return connection
+        except OSError as exc:
+            error = exc
+            connection.close()
+    raise error
+
+
+class _DownloadHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _connect_download
+
+
+class _DownloadHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, request):
+        return self.do_open(_DownloadHTTPSConnection, request, context=self._context)
+
+
+def open_download(request, timeout=30):
+    # Keep urllib's proxy, redirect and certificate handling local to this transfer.
+    return urllib.request.build_opener(_DownloadHTTPSHandler()).open(request, timeout=timeout)
 
 
 class DownloadTask:
@@ -138,9 +180,13 @@ class ModelDownloader:
             if offset:
                 headers["Range"] = f"bytes={offset}-"
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with open_download(req, timeout=30) as resp:
                 response_code = getattr(resp, "status", 200)
                 content_range = resp.headers.get("Content-Range", "")
+                if response_code == 206:
+                    bounds = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+                    if not bounds or int(bounds[1]) != offset or int(bounds[2]) != int(bounds[3]) - 1:
+                        raise IOError("Réponse partielle inattendue de Hugging Face ; réessayez le téléchargement")
                 resume = offset > 0 and response_code == 206 and content_range.startswith(f"bytes {offset}-")
                 if not resume:
                     offset = 0

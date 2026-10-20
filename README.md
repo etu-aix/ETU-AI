@@ -31,6 +31,17 @@ Le lanceur propose trois modes. **Normal** garde les services en boucle locale e
 
 Le bridge ETU 2 utilise une identité Ed25519 protégée par DPAPI, un consentement explicite, des challenges signés, des sessions temporaires liées à l'origine et une révocation. Le relais expose les outils de lecture du groupe et de l'emploi du temps via l'onglet ETU 2 connecté ; il ne permet aucune modification et n'expose aucun outil Workspace. Le modèle local peut les utiliser directement. Pour un fournisseur distant compatible OpenAI comme Mistral, l'envoi des résultats est désactivé par défaut et nécessite l'autorisation explicite dans **Configuration → Connexion ETU 2**. Le chat contextualisé du bridge ne conserve pas les données ETU dans l'historique. Le protocole est décrit dans [integration/README.md](integration/README.md). L'ancien `/api/handshake` reste désactivé.
 
+## Recherche web
+
+[DDGS](https://github.com/deedy5/ddgs) est référencé comme dépendance Python dans [`external-dependencies.json`](external-dependencies.json) et épinglé à la version 9.16.0 dans `requirements-app.txt`. Il n'a pas besoin d'un service séparé : installe les dépendances de l'application puis redémarre ETU-AI. L'assistant peut effectuer des recherches web générales et d'actualités ; le menu `＋` permet aussi de forcer la recherche pour un message. Les requêtes sont envoyées aux moteurs de recherche utilisés par DDGS.
+
+Le Wiki local est accessible dans **Paramètres → Wiki et mémoire** : documents
+Markdown, recherche RAG, historique, graphe et file de traitements persistante.
+Le dossier peut aussi être ouvert comme coffre dans Obsidian : les liens `[[...]]`
+et les propriétés YAML restent dans les fichiers Markdown standards.
+La mémorisation automatique et le partage avec les API distantes sont désactivés
+par défaut. L'architecture, les réglages et l'API sont décrits dans [WIKI.md](WIKI.md).
+
 ## Vérifier
 
 ```powershell

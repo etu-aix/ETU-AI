@@ -17,6 +17,9 @@ storage/etu_identity.*-*.dpapi
 # Fichiers de secrets locaux potentiels pour les autres coffres système.
 storage/api_secrets.json
 storage/model-performance.jsonl
+storage/wiki/
+storage/wiki.sqlite3*
+.test-deps/
 deps/
 log/
 logs/

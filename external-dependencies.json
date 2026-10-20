@@ -1,0 +1,17 @@
+{
+  "dependencies": [
+    {
+      "id": "ddgs",
+      "name": "DDGS",
+      "repository": "https://github.com/deedy5/ddgs",
+      "package": "ddgs==9.16.0",
+      "kind": "python-package",
+      "optional": false,
+      "auto_install": false,
+      "status": "integrated",
+      "purpose": "Provide web text and news search results to the AI.",
+      "integration": "Declared in requirements-app.txt; ETU-AI does not run pip automatically and no separate service is needed.",
+      "license": "MIT"
+    }
+  ]
+}

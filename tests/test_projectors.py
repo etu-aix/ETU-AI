@@ -42,6 +42,24 @@ class TestProjectorMatching(unittest.TestCase):
         model = "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
         self.assertEqual(matching_projectors(model, [entry(model), entry("mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf")]), [])
 
+    def test_unsloth_dynamic_quants_and_mtp_share_one_vision_variant(self):
+        model = "gemma-4-E4B-it-Q4_K_M.gguf"
+        projector = entry("mmproj-F16.gguf")
+        files = [entry(model), entry("gemma-4-E4B-it-UD-Q4_K_XL.gguf"),
+                 entry("gemma-4-E4B-it-UD-IQ3_XXS.gguf"), entry("mtp-gemma-4-E4B-it.gguf"), projector]
+        self.assertEqual(matching_projectors(model, files), [projector])
+        self.assertEqual(matching_projectors(model, files + [entry("gemma-4-12B-it-Q4_K_M.gguf")]), [])
+
+    def test_split_quant_files_do_not_create_another_variant(self):
+        model = "Vision-3B-Q4_K_M.gguf"
+        projector = entry("mmproj-F16.gguf")
+        files = [entry(model), entry("Vision-3B-UD-Q8_K_XL-00001-of-00002.gguf"),
+                 entry("Vision-3B-UD-Q8_K_XL-00002-of-00002.gguf"), projector]
+        self.assertEqual(matching_projectors(model, files), [projector])
+
+    def test_mtp_is_not_enough_to_establish_a_vision_variant(self):
+        self.assertEqual(matching_projectors("Vision-3B-Q4_K_M.gguf", [entry("mtp-Vision-3B.gguf"), entry("mmproj-F16.gguf")]), [])
+
     def test_text_model_cannot_gain_vision_from_projector(self):
         model = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
         self.assertEqual(matching_projectors(model, [entry(model), entry("mmproj-F16.gguf")]), [])
@@ -74,7 +92,7 @@ class TestProjectorMatching(unittest.TestCase):
             response = BytesIO(data)
             response.headers = {"Content-Length": str(len(data))}
             response.status = 200
-            with patch("urllib.request.urlopen", return_value=response) as request:
+            with patch("models_mgr.downloader.open_download", return_value=response) as request:
                 downloader._run_download(task)
             self.assertEqual(task.status, "completed")
             self.assertTrue(request.call_args.args[0].full_url.endswith("/" + PROJECTOR))
@@ -120,6 +138,14 @@ class TestProjectorAPI(unittest.TestCase):
                 response = self.client.post("/api/models/mmproj/download", json={"model": model, "repo": REPO, "filename": projector})
                 self.assertEqual(response.status_code, 422)
             download.assert_not_called()
+
+    def test_discover_gemma_with_dynamic_quants_and_mtp(self):
+        model = "gemma-4-E4B-it-Q4_K_M.gguf"
+        self.hf.get_model_files.return_value = [entry(model), entry("gemma-4-E4B-it-UD-Q4_K_XL.gguf"),
+                                               entry("mtp-gemma-4-E4B-it.gguf"), entry("mmproj-F16.gguf")]
+        response = self.client.get("/api/models/mmproj", params={"model": model, "repo": "unsloth/gemma-4-E4B-it-GGUF"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["filename"] for item in response.json()["candidates"]], ["mmproj-F16.gguf"])
 
     def test_missing_associated_projector_prevents_activation(self):
         manager = ProjectorManager(self.storage, self.downloader, self.hf)

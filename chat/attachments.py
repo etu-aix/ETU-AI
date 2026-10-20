@@ -146,7 +146,10 @@ def save_attachments(storage, message_id, attachments):
     if attachments:
         with storage._connection() as conn:
             _ensure_table(conn)
-            conn.execute("INSERT INTO message_attachments VALUES (?, ?)", (message_id, json.dumps(attachments)))
+            conn.execute(
+                "INSERT INTO message_attachments VALUES (?, ?) ON CONFLICT(message_id) DO UPDATE SET payload = excluded.payload",
+                (message_id, json.dumps(attachments)),
+            )
 
 
 def load_attachments(storage, messages):

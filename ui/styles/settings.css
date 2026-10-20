@@ -87,10 +87,21 @@
 .download-manager-empty svg { width: 20px; height: 20px; }
 .download-clear-history { padding: 4px 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: .75rem; cursor: pointer; }
 .download-clear-history:hover { color: var(--text-main); }
-.download-manager-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 18px; padding: 20px 4px; border: 0; border-bottom: 1px solid var(--border-color); border-radius: 0; background: transparent; }
+.download-manager-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 18px; padding: 16px 4px; border: 0; border-radius: 0; background: transparent; }
+.download-manager-item[data-status="completed"] { grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 22px; }
+.download-manager-item[data-status="completed"] > span { grid-column: 3; grid-row: 1; }
+.download-manager-item[data-status="completed"] small { grid-column: 2; grid-row: 1; }
+.download-manager-item[data-status="completed"] .download-manager-title { grid-column: 1; grid-row: 1; }
+.download-manager-item[data-status="completed"] .download-manager-brand { flex-basis: 64px; width: 64px; height: 64px; }
+.download-manager-item[data-status="completed"] .download-manager-brand img { width: 50px; height: 50px; }
+.download-manager-item[data-status="completed"] progress[hidden] { display: none; }
 .download-manager-item strong { min-width: 0; overflow-wrap: anywhere; font-size: .93rem; }
 .download-manager-item > span { color: var(--text-muted); font-size: .8rem; white-space: nowrap; }
-.download-manager-item progress { grid-column: 1 / -1; width: 100%; height: 3px; accent-color: var(--download-brand-color, var(--accent-color)); opacity: .7; }
+.download-manager-item progress { grid-column: 1 / -1; display: block; width: 100%; height: 8px; margin: 4px 0; overflow: hidden; appearance: none; -webkit-appearance: none; border: 0; border-radius: 999px; background: var(--bg-tertiary); accent-color: var(--download-brand-color, var(--accent-color)); opacity: 1; }
+.download-manager-item progress::-webkit-progress-bar { background: var(--bg-tertiary); border-radius: 999px; box-shadow: inset 0 0 0 1px var(--border-color); }
+.download-manager-item progress::-webkit-progress-value { background: var(--download-brand-color, var(--accent-color)); border-radius: 999px; }
+.download-manager-item progress::-moz-progress-bar { background: var(--download-brand-color, var(--accent-color)); border-radius: 999px; }
+.download-manager-item progress:indeterminate { background: repeating-linear-gradient(100deg, var(--bg-tertiary) 0 12px, var(--accent-color) 12px 24px); }
 .download-manager-item small { grid-column: 1; color: var(--text-muted); font-size: .75rem; }
 .download-manager-item button { grid-column: 2; grid-row: 3; justify-self: end; }
 .download-empty { padding: 30px; border: 1px dashed var(--border-color); border-radius: 12px; color: var(--text-muted); text-align: center; }
@@ -175,6 +186,13 @@
 .settings-panel-intro p, .settings-card p { max-width: 660px; margin: 7px 0 0; color: var(--text-muted); font-size: .83rem; line-height: 1.55; }
 .settings-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 20px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-secondary); }
 .settings-card-copy { display: block; }
+.hardware-preference-label { display: block; margin-top: 14px; color: var(--text-muted); font-size: .78rem; font-weight: 600; }
+.hardware-preference-options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; width: min(100%, 560px); margin-top: 8px; }
+.hardware-preference-options button { min-height: 42px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 9px; background: var(--bg-tertiary); color: var(--text-muted); font: inherit; font-size: .78rem; font-weight: 700; letter-spacing: .045em; cursor: pointer; transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease; }
+.hardware-preference-options button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent-color) 58%, var(--border-color)); color: var(--text-main); transform: translateY(-1px); }
+.hardware-preference-options button.is-selected { border-color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 15%, var(--bg-tertiary)); color: var(--text-main); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-color) 25%, transparent); }
+.hardware-preference-options button:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+.hardware-preference-options button:disabled { opacity: .42; cursor: not-allowed; }
 .settings-maintenance-card { display: grid; gap: 14px; padding: 18px 20px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-secondary); }
 .settings-maintenance-card h3 { margin: 0; font-size: .98rem; font-weight: 620; }
 .settings-maintenance-card > div:first-child p, .settings-uninstall-hint { margin: 6px 0 0; color: var(--text-muted); font-size: .83rem; line-height: 1.5; }
@@ -381,6 +399,12 @@
   .download-live-status { font-size: .68rem; text-align: right; }
   .download-manager-item { padding: 14px; }
   .download-manager-item > span { grid-column: 1 / -1; grid-row: 2; }
+  .download-manager-item[data-status="completed"] { grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; }
+  .download-manager-item[data-status="completed"] .download-manager-title { grid-column: 1 / -1; grid-row: 1; }
+  .download-manager-item[data-status="completed"] .download-manager-brand { flex-basis: 54px; width: 54px; height: 54px; }
+  .download-manager-item[data-status="completed"] .download-manager-brand img { width: 44px; height: 44px; }
+  .download-manager-item[data-status="completed"] > span { grid-column: 2; grid-row: 2; text-align: right; }
+  .download-manager-item[data-status="completed"] small { grid-column: 1; grid-row: 2; }
   .download-manager-item progress { grid-row: 3; }
   .download-manager-item small { grid-row: 4; }
   .download-manager-item button { grid-row: 4; }

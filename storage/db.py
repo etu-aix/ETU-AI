@@ -215,7 +215,7 @@ class StorageManager:
         """Récupère tous les messages chronologiques d'une conversation."""
         with self._connection() as conn:
             cursor = conn.execute(
-                "SELECT id, role, content, tool_calls, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+                "SELECT id, role, content, tool_calls, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
                 (conversation_id,),
             )
             results = []
@@ -228,6 +228,41 @@ class StorageManager:
                         pass
                 results.append(item)
             return results
+
+    def get_message(self, conversation_id: str, message_id: str) -> Optional[dict[str, Any]]:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT id, role, content, tool_calls, created_at FROM messages WHERE conversation_id = ? AND id = ?",
+                (conversation_id, message_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def edit_user_message(self, conversation_id: str, message_id: str, content: str) -> int:
+        """Edit a user turn and discard every later message in that conversation."""
+        if not content.strip():
+            raise ValueError("Le message ne peut pas être vide.")
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT id, role FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
+                (conversation_id,),
+            ).fetchall()
+            index = next((i for i, row in enumerate(rows) if row["id"] == message_id), None)
+            if index is None:
+                raise LookupError("Message introuvable dans cette discussion.")
+            if rows[index]["role"] != "user":
+                raise ValueError("Seuls les messages utilisateur peuvent être modifiés.")
+            later_ids = [row["id"] for row in rows[index + 1:]]
+            conn.execute("UPDATE messages SET content = ? WHERE id = ?", (content, message_id))
+            if later_ids:
+                conn.execute("CREATE TABLE IF NOT EXISTS message_attachments (message_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+                placeholders = ",".join("?" for _ in later_ids)
+                conn.execute(f"DELETE FROM message_attachments WHERE message_id IN ({placeholders})", later_ids)
+                conn.execute(f"DELETE FROM messages WHERE id IN ({placeholders})", later_ids)
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), conversation_id),
+            )
+        return len(later_ids)
 
     # -------------------------------------------------------------------------
     # Paramètres (Settings)

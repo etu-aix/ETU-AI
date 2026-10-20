@@ -351,6 +351,15 @@ header {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+.model-dropdown-item-unavailable,
+.model-dropdown-item-unavailable:hover {
+  cursor: not-allowed;
+  opacity: .62;
+  background: transparent;
+  border-color: transparent;
+}
+.model-native-unavailable-label { flex: none; color: var(--text-muted); font-size: .68rem; }
+
 .model-dropdown-item.active {
   background: rgba(88, 166, 255, 0.12);
   border-color: rgba(88, 166, 255, 0.3);
@@ -426,6 +435,12 @@ header {
 }
 .model-provider-logo { position: relative; display: grid; place-items: center; width: 25px; height: 25px; flex: none; overflow: hidden; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-tertiary); color: var(--text-main); font-size: .58rem; font-weight: 700; }
 .model-provider-logo img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; padding: 4px; object-fit: contain; background: var(--bg-tertiary); }
+.model-provider-logo[data-provider="mistral"] { border-color: color-mix(in srgb, #ff8205 35%, var(--border-color)); background: color-mix(in srgb, #ff8205 13%, var(--bg-tertiary)); }
+.model-provider-logo[data-provider="mistral"] img { background: transparent; }
+.model-provider-logo[data-provider="openai"] { border-color: color-mix(in srgb, #40b995 35%, var(--border-color)); background: color-mix(in srgb, #40b995 12%, var(--bg-tertiary)); }
+.model-provider-logo[data-provider="openai"] img,
+.model-provider-logo[data-provider="anthropic"] img { background: transparent; }
+.model-provider-logo[data-provider="anthropic"] { border-color: color-mix(in srgb, #d97757 35%, var(--border-color)); background: color-mix(in srgb, #d97757 12%, var(--bg-tertiary)); }
 .model-hardware-badge { display: grid; place-items: center; width: 25px; height: 25px; flex: none; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-tertiary); color: var(--text-muted); }
 .model-hardware-badge svg { width: 17px; height: 17px; }
 .model-hardware-badge.gpu { color: #aa9dff; }
@@ -433,21 +448,20 @@ header {
 .model-hardware-badge.cpu { color: #78b8ff; }
 
 .model-dropdown-footer {
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 8px;
 }
 
 .dropdown-manage-btn {
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
-  padding: 8px 12px;
-  background: transparent;
-  color: var(--accent-color);
-  border: 1px dashed rgba(88, 166, 255, 0.3);
-  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
   font-size: 0.82rem;
   font-weight: 600;
   cursor: pointer;
@@ -455,7 +469,8 @@ header {
 }
 
 .dropdown-manage-btn:hover {
-  background: rgba(88, 166, 255, 0.15);
+  background: color-mix(in srgb, var(--accent-color) 10%, var(--bg-tertiary));
+  color: var(--text-main);
   border-color: var(--accent-color);
 }
 

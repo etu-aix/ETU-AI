@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, wait
+from models_mgr.native import native_variants
 
 DEFAULT_USER_AGENT = "ETU-AI-HuggingFace-Client/1.0"
 HF_API_BASE = "https://huggingface.co/api"
@@ -521,6 +522,99 @@ class HuggingFaceClient:
             })
 
         return results
+
+    def search_npu_models(
+        self, query: str = "", model_format: str = "npu", limit: int = 25,
+        parameter_range: str = "", trusted_only: bool = False,
+        publisher: str = "", only_compatible: bool = False,
+        precision: str = "",
+    ) -> list[dict[str, Any]]:
+        """Discover installable native exports; execution needs a native runtime.
+
+        A format identifies a runtime, never proof of NPU support. Inspect actual
+        repository files and keep these results out of the runnable-only view.
+        """
+        if only_compatible:
+            return []
+        formats = ("openvino", "onnx") if model_format == "npu" else (model_format,)
+        trusted = {name.lower() for name in TRUSTED_GGUF_PUBLISHERS}
+        trusted.update({"openvino", "onnx-community", "qualcomm", "amd", "intel", "microsoft"})
+        candidates = {}
+        for fmt in formats:
+            params = {
+                "search": query, "filter": fmt, "pipeline_tag": "text-generation",
+                "sort": "downloads", "direction": "-1", "limit": str(min(limit * (3 if precision else 1), 51)),
+            }
+            if publisher:
+                params["author"] = publisher
+            raw = self._get_json(f"{HF_API_BASE}/models?{urllib.parse.urlencode(params)}")
+            for item in raw if isinstance(raw, list) else []:
+                repo = item.get("id", "")
+                if "/" not in repo:
+                    continue
+                author = repo.split("/", 1)[0]
+                if publisher and author.lower() != publisher.lower():
+                    continue
+                if trusted_only and author.lower() not in trusted:
+                    continue
+                label = self._extract_params_size(repo.split("/", 1)[1])
+                if parameter_range and not self._matches_parameter_range(label, parameter_range):
+                    continue
+                candidates[repo] = item
+
+        def inspect(item):
+            repo = item["id"]
+            encoded_repo = urllib.parse.quote(repo, safe="/")
+            info = self._get_json(f"{HF_API_BASE}/models/{encoded_repo}?blobs=true")
+            if not isinstance(info, dict):
+                return None
+            variants = native_variants(repo, info, formats)
+            if precision:
+                variants = [variant for variant in variants if variant["quant"].lower() == precision
+                            or (precision in {"int4", "int8"} and variant["quant"].lower().startswith("w" + precision[-1]))]
+            if not variants:
+                return None
+            default = variants[0]
+            fmt, filename = default["format"], default["filename"]
+            runtime = "OpenVINO GenAI · Intel NPU" if fmt == "openvino" else "ONNX Runtime · fournisseur NPU adapté (QNN, OpenVINO, Vitis AI)"
+            quants = [{key: value for key, value in variant.items() if key != "files"}
+                      for variant in variants if variant["format"] == fmt]
+            return {
+                "id": repo, "repo": repo, "name": self._beautify_model_name(repo.split("/", 1)[1]),
+                "author": repo.split("/", 1)[0], "params": self._extract_params_size(repo),
+                "downloads": item.get("downloads", 0), "likes": item.get("likes", 0),
+                "format": fmt, "runtime_required": runtime, "can_install": True, "can_run": False,
+                "filename": filename, "size_gib": default["size_gib"], "quant": default["quant"],
+                "quantizations": quants, "is_installed": False, "file_verified": True,
+                "description": "Export OpenVINO IR (.xml + .bin)" if fmt == "openvino" else "Export ONNX (.onnx et fichiers associés)",
+                "compatibility": {
+                    "is_compatible": False, "npu_candidate": False, "npu_compatible": False,
+                    "badge": "Compatibilité NPU à vérifier", "color": "warning",
+                    "recommendation": f"Moteur requis pour l’exécution : {runtime}. Le téléchargement installe les fichiers localement ; Beacon ne peut pas encore les exécuter.",
+                },
+            }
+
+        ordered = sorted(candidates.values(), key=lambda item: item.get("downloads", 0), reverse=True)[:min(limit * (3 if precision else 1), 51)]
+        futures = [_HF_TREE_EXECUTOR.submit(inspect, item) for item in ordered]
+        completed, pending = wait(futures, timeout=18) if futures else (set(), set())
+        for future in pending:
+            future.cancel()
+        results = []
+        for future in futures:
+            if future in completed:
+                try:
+                    result = future.result()
+                except Exception:
+                    continue
+                if result:
+                    results.append(result)
+        return results[:limit]
+
+    def get_native_variants(self, repo: str, model_format: str):
+        info = self._get_json(f"{HF_API_BASE}/models/{urllib.parse.quote(repo, safe='/')}?blobs=true")
+        if not isinstance(info, dict):
+            raise ConnectionError("Impossible de vérifier les fichiers du dépôt Hugging Face")
+        return native_variants(repo, info, (model_format,))
 
     def get_model_files(self, repo_id: str) -> list[dict[str, Any]]:
         """Récupère la liste des fichiers .gguf d'un dépôt Hugging Face avec leurs tailles exactes."""

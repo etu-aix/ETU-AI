@@ -6,6 +6,8 @@ Supporte le mode réel (appels HTTP vers etu-aix.alwaysdata.net) et le mode auto
 from datetime import datetime, timezone
 import json
 import os
+import importlib.util
+import re
 from pathlib import Path
 from typing import Any, Optional
 import urllib.error
@@ -35,6 +37,30 @@ class ToolExecutor:
         """Renvoie la liste des outils au format OpenAI Function Calling."""
         return self.schema.get("tools", [])
 
+    @staticmethod
+    def search_available() -> bool:
+        return importlib.util.find_spec("ddgs") is not None
+
+    def web_search_tools(self) -> list[dict[str, Any]]:
+        if not self.search_available():
+            return []
+        return [{
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Recherche sur le Web avec DDGS. À appeler pour chaque demande explicite de recherche et pour les actualités ou faits récents. Garde les lieux et sujets importants dans la requête (ex. actualités Limoges Haute-Vienne). Pour l’actualité, choisis category=news. Vérifie que les résultats correspondent réellement au sujet, puis cite uniquement les URL retournées.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Requête de recherche concise"},
+                        "category": {"type": "string", "enum": ["text", "news"], "description": "Recherche générale ou actualités"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            },
+        }]
+
     def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Exécute l'outil demandé et renvoie un dictionnaire de résultat."""
         handler = getattr(self, f"_tool_{tool_name}", None)
@@ -53,6 +79,47 @@ class ToolExecutor:
     # -------------------------------------------------------------------------
     # Implémentation des outils
     # -------------------------------------------------------------------------
+
+    def _tool_search_web(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self.search_available():
+            raise RuntimeError("La dépendance ddgs n'est pas installée. Installez requirements-app.txt puis redémarrez ETU-AI.")
+        from ddgs import DDGS
+
+        query = str(args.get("query", "")).strip()[:400]
+        if not query:
+            raise ValueError("La requête de recherche est vide.")
+        category = args.get("category", "text")
+        if category not in {"text", "news"}:
+            category = "text"
+        with DDGS(timeout=12) as search:
+            search_results = getattr(search, category)(query, region="fr-fr", safesearch="moderate", max_results=8, backend="auto")
+        results = []
+        for item in search_results[:8]:
+            link = item.get("url") or item.get("href") or ""
+            if not isinstance(link, str) or urllib.parse.urlsplit(link).scheme not in {"http", "https"}:
+                continue
+            results.append({"title": str(item.get("title", ""))[:300], "url": link[:2000], "content": str(item.get("body", ""))[:1200], "source": str(item.get("source", ""))[:120], "date": str(item.get("date", ""))[:80]})
+        # Some news backends return popular national stories even for a local
+        # query. Keep an explicit place/topic constraint from leaking through
+        # as if it were a relevant result; empty results are safer than a false
+        # claim that Limoges (for example) was searched successfully.
+        stop_words = {
+            "actualite", "actualites", "actualité", "actualités", "recent", "recente", "récente", "récentes",
+            "derniere", "dernieres", "dernières", "dernier", "derniers", "aujourd", "hui", "maintenant",
+            "france", "francais", "française", "français", "news", "recherche", "chercher", "cherche",
+            "web", "internet", "information", "informations", "source", "sources", "concernant", "dans",
+            "pour", "avec", "sur", "les", "des", "une", "the", "latest", "current", "today", "search",
+        }
+        constraints = {
+            token.casefold() for token in re.findall(r"[\wÀ-ÿ-]{4,}", query, flags=re.UNICODE)
+            if token.casefold() not in stop_words
+        }
+        if constraints:
+            results = [
+                item for item in results
+                if any(term in f"{item['title']} {item['url']} {item['content']}".casefold() for term in constraints)
+            ]
+        return {"query": query, "category": category, "results": results}
 
     def _tool_get_timetable(self, args: dict[str, Any]) -> dict[str, Any]:
         """Récupère l'emploi du temps de l'étudiant."""

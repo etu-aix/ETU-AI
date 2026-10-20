@@ -47,12 +47,15 @@ from setup_utils import atomic_json, file_lock, read_json
 init_file_logger("api_server.log")
 from models_mgr.catalog import get_catalog_with_status
 from models_mgr.downloader import ModelDownloader
+from models_mgr.native import NativeInstaller
 from models_mgr.projectors import ProjectorManager, is_projector, known_text_only
 from models_mgr.hf_client import hf_client, PARAMETER_RANGES
 from storage.db import StorageManager
 from storage.api_credentials import delete_api_key, get_api_key, set_api_key
 from storage.state_manager import state_manager
 from storage.model_performance import append_model_performance, read_model_performance
+from wiki.service import WikiService
+from wiki.api import router_for as wiki_router
 from tools.executor import ToolExecutor
 from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
 from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
@@ -66,6 +69,7 @@ UI_DIR = BASE_DIR / "ui"
 storage = StorageManager()
 tool_executor = ToolExecutor()
 downloader = ModelDownloader(storage=storage)
+native_installer = NativeInstaller(downloader)
 _server_reinstall_lock = threading.Lock()
 _server_reinstall: dict[str, str] = {"status": "idle", "message": ""}
 _inference_condition = threading.Condition()
@@ -77,11 +81,25 @@ _power_error = ""
 _hardware_info_cache: Optional[dict[str, Any]] = None
 _hardware_info_cache_lock = threading.Lock()
 stream_handler = ChatStreamHandler(storage=storage, tool_executor=tool_executor)
+wiki_service = WikiService(BASE_DIR / "storage" / "wiki", storage, busy=lambda: bool(_active_inference_requests) or _power_state != "awake" or _inference_reinstall_pending or _model_activation_lock.locked())
+stream_handler.wiki = wiki_service
 _active_chat_conversations: set[str] = set()
 _model_activation_lock = threading.Lock()
 
 app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
 app.state.etu_storage = storage
+app.include_router(wiki_router(wiki_service))
+
+
+@app.on_event("startup")
+async def start_wiki():
+    await wiki_service.start()
+
+
+@app.on_event("shutdown")
+async def stop_wiki():
+    await wiki_service.stop()
+
 
 
 def get_hardware_info() -> dict[str, Any]:
@@ -104,6 +122,7 @@ async def track_inference_requests(request: Request, call_next):
         if _inference_reinstall_pending:
             return JSONResponse(status_code=503, content={"detail": "Réinstallation du moteur en cours. Réessayez dans un instant."})
         _active_inference_requests += 1
+    wiki_service.queue.interrupt()
 
     try:
         response = await call_next(request)
@@ -438,6 +457,12 @@ class ChatRequest(BaseModel):
     profile_id: Optional[str] = None
     attachments: list[AttachmentRequest] = Field(default_factory=list, max_length=6)
     request_id: Optional[UUID] = None
+    edit_message_id: Optional[str] = None
+    web_search: bool = False
+
+
+class EditMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=100000)
 
 
 class ProfileRequest(BaseModel):
@@ -464,7 +489,7 @@ class ProviderModelsRequest(BaseModel):
 
 
 class HardwarePreferenceRequest(BaseModel):
-    preference: Literal["auto", "gpu", "npu"]
+    preference: Literal["cpu", "gpu", "npu", "auto"]
 
 
 PROVIDER_PRESETS = {
@@ -514,6 +539,10 @@ def validate_profile(req: ProfileRequest) -> tuple[str, str, str]:
 class DownloadRequest(BaseModel):
     repo: str
     filename: str
+
+
+class NativeDownloadRequest(DownloadRequest):
+    model_format: Literal["openvino", "onnx"]
 
 
 class ModelSelectRequest(BaseModel):
@@ -579,10 +608,25 @@ async def chat_stream_endpoint(req: ChatRequest):
         raise HTTPException(status_code=409, detail="Cette génération est déjà active")
     if conv_id in _active_chat_conversations:
         raise HTTPException(status_code=409, detail="Une réponse est déjà en cours dans cette discussion.")
+    if req.edit_message_id:
+        if not req.conversation_id:
+            raise HTTPException(status_code=422, detail="La modification doit cibler un message existant.")
+        messages = storage.get_messages(conv_id)
+        if not messages or messages[-1]["id"] != req.edit_message_id or messages[-1]["role"] != "user":
+            raise HTTPException(status_code=409, detail="Ce message n’est plus le dernier tour modifiable.")
+        existing_message = load_attachments(storage, [messages[-1]])[0]
+        combined = [*(existing_message.get("attachments") or []), *attachments]
+        if len(combined) > 6 or sum(int(item.get("size") or 0) for item in combined) > 20 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="6 fichiers maximum et 20 Mo au total pour ce message.")
     _active_chat_conversations.add(conv_id)
 
     async def guarded_stream():
-        stream = stream_handler.stream_chat(conv_id, req.message, req.model or profile.get("model"), profile, attachments=attachments, request_id=request_id)
+        stream = stream_handler.stream_chat(
+            conv_id, req.message, req.model or profile.get("model"), profile,
+            attachments=attachments, request_id=request_id,
+            existing_user_message_id=req.edit_message_id,
+            web_search=req.web_search,
+        )
         try:
             async for event in stream:
                 yield event
@@ -639,6 +683,21 @@ def get_messages(conv_id: str):
         for attachment in message["attachments"]:
             attachment.pop("text", None)
     return {"conversation": conv, "messages": messages}
+
+
+@app.put("/api/conversations/{conv_id}/messages/{message_id}")
+def edit_conversation_message(conv_id: str, message_id: str, req: EditMessageRequest):
+    if not storage.get_conversation(conv_id):
+        raise HTTPException(status_code=404, detail="Conversation introuvable")
+    if conv_id in _active_chat_conversations:
+        raise HTTPException(status_code=409, detail="Arrêtez la génération avant de modifier un message.")
+    try:
+        removed = storage.edit_user_message(conv_id, message_id, req.content)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"success": True, "message_id": message_id, "removed_messages": removed}
 
 
 @app.delete("/api/conversations/{conv_id}")
@@ -742,6 +801,7 @@ def get_catalog():
 
     return {
         "catalog": base_catalog,
+        "native_models": native_installer.installed(),
         "installed": list(installed),
         "remote_models": get_configured_api_models(),
         "hardware": {
@@ -768,8 +828,10 @@ def search_huggingface_models(
     trusted_only: bool = False,
     hardware_filter: str = "",
     explorer: bool = False,
+    model_format: str = "auto",
+    precision: str = "",
 ):
-    """Recherche des modèles GGUF sur Hugging Face sans credential, avec évaluation de compatibilité matérielle."""
+    """Recherche GGUF et découverte des exports OpenVINO/ONNX publics."""
     hw = get_hardware_info()
     installed = set(downloader.list_installed_models())
     if publisher not in {"", "mistralai", "Qwen", "Alibaba-NLP", "deepseek-ai", "meta-llama"}:
@@ -778,22 +840,39 @@ def search_huggingface_models(
         raise HTTPException(status_code=422, detail="Filtre de paramètres inconnu")
     if hardware_filter not in {"", "cpu", "gpu", "npu"}:
         raise HTTPException(status_code=422, detail="Filtre matériel inconnu")
-    results = hf_client.get_all_compatible_models(
-        hardware_info=hw,
-        query=q,
-        limit=max(1, min(limit, 51)),
-        only_compatible=only_compatible,
-        publisher=publisher,
-        parameter_range=parameter_range,
-        trusted_only=trusted_only,
-        hardware_filter=hardware_filter,
-        preserve_order=explorer,
-    )
+    if model_format not in {"auto", "gguf", "openvino", "onnx", "npu"}:
+        raise HTTPException(status_code=422, detail="Format de modèle inconnu")
+    if precision not in {"", "int4", "int8", "fp16", "bf16", "fp32"}:
+        raise HTTPException(status_code=422, detail="Quantification inconnue")
+    resolved_format = ("npu" if hardware_filter == "npu" else "gguf") if model_format == "auto" else model_format
+    if resolved_format != "gguf":
+        results = hf_client.search_npu_models(
+            query=q, model_format=resolved_format, limit=max(1, min(limit, 51)),
+            parameter_range=parameter_range, trusted_only=trusted_only,
+            publisher=publisher, only_compatible=only_compatible,
+            precision=precision,
+        )
+    else:
+        results = hf_client.get_all_compatible_models(
+            hardware_info=hw,
+            query=q,
+            limit=max(1, min(limit, 51)),
+            only_compatible=only_compatible,
+            publisher=publisher,
+            parameter_range=parameter_range,
+            trusted_only=trusted_only,
+            hardware_filter=hardware_filter,
+            preserve_order=explorer,
+        )
+    installed_native = {model["id"] for model in native_installer.installed()}
     for m in results:
         m["installed_filenames"] = [quant["filename"] for quant in m.get("quantizations", []) if quant.get("filename") in installed]
+        if m.get("format") in {"openvino", "onnx"}:
+            m["installed_filenames"] = [quant["filename"] for quant in m.get("quantizations", []) if quant.get("id") in installed_native]
         m["is_installed"] = bool(m["installed_filenames"])
     return {
         "query": q,
+        "model_format": resolved_format,
         "total": len(results),
         "models": results,
         "hardware": {
@@ -914,6 +993,33 @@ def download_model(req: DownloadRequest):
     return {"task_id": task_id, "status": "started"}
 
 
+@app.post("/api/models/native/download")
+def download_native_model(req: NativeDownloadRequest):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", req.repo):
+        raise HTTPException(status_code=422, detail="Dépôt Hugging Face invalide")
+    try:
+        variants = hf_client.get_native_variants(req.repo, req.model_format)
+        variant = next((item for item in variants if item["filename"] == req.filename), None)
+        if not variant:
+            raise HTTPException(status_code=404, detail="Variante absente du dépôt")
+        if any(item["id"] == variant["id"] for item in native_installer.installed()):
+            raise HTTPException(status_code=409, detail="Cette variante est déjà installée")
+        return {"task_id": native_installer.start(req.repo, variant), "status": "started"}
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/models/native/{model_id}")
+def uninstall_native_model(model_id: str):
+    try:
+        native_installer.remove(model_id)
+        return {"success": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/models/import")
 async def import_local_model(request: Request, filename: str):
     """Stream a local GGUF into the model library without buffering it in memory."""
@@ -997,6 +1103,46 @@ def remove_model_projector(model: str):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"success": True}
+
+
+@app.delete("/api/models/mmproj/{filename}")
+def uninstall_model_projector(filename: str):
+    """Remove an installed projector and every association that references it."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.gguf", filename, re.IGNORECASE) or not is_projector(filename):
+        raise HTTPException(status_code=422, detail="Projecteur local invalide")
+    model_path = downloader.models_dir / filename
+    if model_path.parent.resolve() != downloader.models_dir.resolve() or model_path.is_symlink():
+        raise HTTPException(status_code=422, detail="Projecteur local invalide")
+    if not model_path.is_file():
+        raise HTTPException(status_code=404, detail="Projecteur introuvable")
+    if _active_chat_conversations:
+        raise HTTPException(status_code=409, detail="Arrêtez la génération avant de désinstaller ce projecteur.")
+
+    try:
+        status_url = "http://127.0.0.1:11343/api/status"
+        with urllib.request.urlopen(status_url, timeout=2) as response:
+            beacon_status = json.loads(response.read().decode("utf-8"))
+        if beacon_status.get("status") == "running" and beacon_status.get("active_mmproj") == filename:
+            stop = urllib.request.Request(
+                status_url.replace("/api/status", "/api/stop"), data=b"{}",
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(stop, timeout=15):
+                pass
+    except (HTTPError, URLError, OSError, ValueError) as exc:
+        if isinstance(exc, HTTPError):
+            raise HTTPException(status_code=503, detail="Impossible d’arrêter le projecteur actif.") from exc
+
+    try:
+        assignments = storage.get_setting("mmproj_assignments", {}) or {}
+        affected_models = [model for model, association in assignments.items() if association.get("local_filename") == filename]
+        manager = ProjectorManager(storage, downloader, hf_client)
+        for model in affected_models:
+            manager.assign(model, None)
+        model_path.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Impossible de supprimer le fichier du projecteur.") from exc
+    return {"success": True, "filename": filename}
 
 
 @app.delete("/api/models/{filename}")
@@ -1223,7 +1369,7 @@ def get_setup_status():
 @app.get("/api/settings/hardware")
 def get_hardware_preference():
     preference = storage.get_setting("hardware_preference", "auto")
-    if preference not in {"auto", "gpu", "npu"}:
+    if preference not in {"cpu", "auto", "gpu", "npu"}:
         preference = "auto"
     hw = get_hardware_info()
     return {"preference": preference, "has_npu": bool(hw.get("npus")), "has_gpu": bool(hw.get("gpus"))}
@@ -1236,8 +1382,11 @@ def update_hardware_preference(req: HardwarePreferenceRequest):
         raise HTTPException(status_code=422, detail="Aucun NPU détecté sur cet ordinateur")
     if req.preference == "gpu" and not hw.get("gpus"):
         raise HTTPException(status_code=422, detail="Aucun GPU détecté sur cet ordinateur")
+    gpu_backend = hw.get("recommended_backend")
+    if req.preference == "gpu" and gpu_backend not in {"cuda", "metal", "vulkan"}:
+        raise HTTPException(status_code=422, detail="Aucun backend GPU compatible n’est disponible")
     config = load_config()
-    config["backend"] = "npu" if req.preference == "npu" else "auto"
+    config["backend"] = "cpu" if req.preference == "cpu" else "npu" if req.preference == "npu" else gpu_backend if req.preference == "gpu" else "auto"
     config_path = AI_SERVER_DIR / "config.json"
     try:
         existing = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
@@ -1251,6 +1400,13 @@ def update_hardware_preference(req: HardwarePreferenceRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Préférence enregistrée, mais redémarrage de Beacon impossible : {exc}") from exc
     return get_hardware_preference()
+
+
+@app.get("/api/search/status")
+def get_web_search_status():
+    from tools.executor import ToolExecutor
+    available = ToolExecutor.search_available()
+    return {"configured": available, "provider": "DDGS" if available else None}
 
 
 @app.get("/api/settings/provider")
