@@ -28,17 +28,25 @@
     const mount = byId("wiki-mount");
     if (!mount || mount.children.length) return;
     mount.innerHTML = `<div class="wiki">
-      <div><h3>Vos connaissances, sur cet ordinateur</h3><p>Documents Markdown, recherche locale et mémoire indépendante du modèle.</p><div class="wiki-toolbar"><button id="wiki-open-folder" class="etu-btn etu-btn-secondary" type="button">Ouvrir le dossier Wiki</button><button id="wiki-open-obsidian" class="etu-btn etu-btn-secondary" type="button">Ouvrir dans Obsidian</button></div><small id="wiki-folder-path"></small></div>
-      <details class="wiki-config"><summary>RAG, mémoire et ressources</summary><form id="wiki-settings"><div id="wiki-fields" class="wiki-fields"></div><button class="etu-btn etu-btn-primary" type="submit">Enregistrer les paramètres</button></form></details>
+      <header class="wiki-header">
+        <div class="wiki-heading"><span class="settings-eyebrow">VOTRE ESPACE PERSONNEL</span><h3>Connaissances</h3><p>Vos documents Markdown, leur recherche et les souvenirs de l’assistant, stockés sur cet ordinateur.</p></div>
+        <div class="wiki-toolbar wiki-header-actions"><button id="wiki-open-folder" class="etu-btn etu-btn-secondary" type="button">Ouvrir le dossier</button><button id="wiki-open-obsidian" class="etu-btn etu-btn-secondary" type="button">Ouvrir dans Obsidian</button></div>
+        <small id="wiki-folder-path" class="wiki-folder-path"></small>
+      </header>
+      <details class="wiki-config wiki-card"><summary><span><strong>Réglages du Wiki</strong><small>Recherche dans les réponses, mémoire et traitements automatiques</small></span></summary><form id="wiki-settings"><div id="wiki-fields" class="wiki-fields"></div><button class="etu-btn etu-btn-primary" type="submit">Enregistrer les paramètres</button></form></details>
       <div id="wiki-feedback" class="wiki-feedback" role="status" aria-live="polite"></div>
-      <div class="wiki-toolbar"><input id="wiki-search" aria-label="Rechercher dans le Wiki" placeholder="Rechercher un document ou un passage…"><button id="wiki-search-button" class="etu-btn etu-btn-secondary" type="button">Rechercher</button><button id="wiki-new" class="etu-btn etu-btn-primary" type="button">Nouveau document</button></div>
-      <div class="wiki-workspace"><nav id="wiki-files" class="wiki-files" aria-label="Dossiers et connaissances"></nav><div class="wiki-editor">
-        <input id="wiki-path" aria-label="Chemin du document" placeholder="Projets/Architecture.md"><textarea id="wiki-content" aria-label="Contenu Markdown" placeholder="# Nouvelle connaissance"></textarea>
-        <div id="wiki-actions" class="wiki-toolbar"></div><small id="wiki-origin"></small><div id="wiki-preview" class="wiki-preview" hidden></div><div id="wiki-links" class="wiki-toolbar"></div><details><summary>Historique et restauration</summary><div id="wiki-history" class="wiki-history"></div></details>
-      </div></div>
-      <h3>Relations entre les connaissances</h3><div class="wiki-toolbar"><input id="wiki-graph-filter" aria-label="Filtrer le graphe" placeholder="Catégorie, titre ou dossier"><select id="wiki-depth" aria-label="Distance des relations"><option value="all">Toutes les relations</option><option value="1">Relations directes du document</option><option value="2">Relations à deux niveaux</option></select><button id="wiki-graph-reset" class="etu-btn etu-btn-secondary" type="button">Recentrer</button></div>
-      <canvas id="wiki-graph" class="wiki-graph" role="img" aria-label="Graphe des connaissances : zoom avec la molette, déplacement par glissement, clic pour ouvrir. Les documents sont aussi accessibles dans la liste."></canvas><small id="wiki-graph-info"></small>
-      <h3>File de traitements</h3><div id="wiki-queue-actions" class="wiki-toolbar"></div><p id="wiki-queue-status" role="status"></p><div id="wiki-jobs" class="wiki-jobs"></div>
+      <section class="wiki-card wiki-documents" aria-labelledby="wiki-documents-title">
+        <div class="wiki-documents-head">
+          <div class="wiki-section-title"><div><h3 id="wiki-documents-title">Documents</h3><p>Parcourez vos notes ou recherchez un passage.</p></div><span id="wiki-document-count" class="wiki-count" aria-live="polite"></span></div>
+          <div class="wiki-documents-controls"><label class="wiki-search"><span class="sr-only">Rechercher dans le Wiki</span><input id="wiki-search" type="search" aria-label="Rechercher dans le Wiki" placeholder="Rechercher un document ou un passage…"><button id="wiki-search-button" class="etu-btn etu-btn-secondary" type="button">Rechercher</button></label><div class="wiki-toolbar"><button id="wiki-new" class="etu-btn etu-btn-primary" type="button">Nouveau document</button><button id="wiki-deleted" class="etu-btn etu-btn-secondary" type="button">Documents supprimés</button></div></div>
+        </div>
+        <div class="wiki-workspace"><nav id="wiki-files" class="wiki-files" aria-label="Dossiers et connaissances"></nav><div class="wiki-editor">
+          <label class="wiki-path-label" for="wiki-path">Titre et emplacement</label><input id="wiki-path" aria-label="Chemin du document" placeholder="Projets/Architecture.md"><textarea id="wiki-content" aria-label="Contenu Markdown" placeholder="# Nouvelle connaissance"></textarea>
+          <div class="wiki-editor-footer"><small id="wiki-origin">Sélectionnez un document ou créez-en un.</small><div id="wiki-actions" class="wiki-toolbar"></div></div><div id="wiki-preview" class="wiki-preview" hidden></div><div id="wiki-links" class="wiki-links"></div><details class="wiki-history-details"><summary>Historique et restauration</summary><div id="wiki-history" class="wiki-history"></div></details>
+        </div></div>
+      </section>
+      <details class="wiki-card wiki-secondary"><summary><span><strong>Relations entre les connaissances</strong><small>Visualisez les liens entre vos documents</small></span></summary><div class="wiki-secondary-body"><div class="wiki-graph-controls"><input id="wiki-graph-filter" aria-label="Filtrer le graphe" placeholder="Filtrer par catégorie ou titre"><select id="wiki-depth" aria-label="Distance des relations"><option value="all">Toutes les relations</option><option value="1">Liens directs</option><option value="2">Liens à deux niveaux</option></select><button id="wiki-graph-reset" class="etu-btn etu-btn-secondary" type="button">Recentrer</button></div><canvas id="wiki-graph" class="wiki-graph" role="img" aria-label="Graphe des connaissances : zoom avec la molette, déplacement par glissement, clic pour ouvrir. Les documents sont aussi accessibles dans la liste."></canvas><small id="wiki-graph-info" class="wiki-section-note"></small></div></details>
+      <details class="wiki-card wiki-secondary wiki-queue"><summary><span><strong>Traitements en arrière-plan</strong><small id="wiki-queue-summary">Indexation et mémorisation automatique</small></span></summary><div class="wiki-secondary-body"><p id="wiki-queue-status" role="status"></p><div id="wiki-queue-actions" class="wiki-toolbar"></div><details class="wiki-job-history"><summary>Activité récente</summary><div id="wiki-jobs" class="wiki-jobs"></div></details></div></details>
     </div>`;
     const help = {
       enabled: "Active le Wiki local, sa recherche, son interface et sa file de traitements. Le désactiver ne supprime pas les documents.",
@@ -124,7 +132,7 @@
     byId("wiki-search").addEventListener("keydown", event => { if (event.key === "Enter") search().catch(error => feedback(error.message)); });
     byId("wiki-new").addEventListener("click", () => { if (!discard()) return; current = null; byId("wiki-path").value = ""; byId("wiki-path").readOnly = false; byId("wiki-content").value = "# "; dirty = true; byId("wiki-history").replaceChildren(); byId("wiki-origin").textContent = "Nouveau document"; byId("wiki-links").replaceChildren(); byId("wiki-preview").hidden = true; byId("wiki-path").focus(); });
     byId("wiki-actions").append(button("Enregistrer", save), button("Aperçu", preview), button("Supprimer", remove));
-    byId("wiki-files").parentElement.previousElementSibling.appendChild(button("Documents supprimés", async () => {
+    byId("wiki-deleted").addEventListener("click", async () => {
       const data = await api("/deleted"); byId("wiki-files").replaceChildren();
       for (const doc of data.documents) byId("wiki-files").appendChild(button(doc.path, async () => {
         if (!discard()) return;
@@ -134,7 +142,8 @@
         byId("wiki-preview").hidden = true; byId("wiki-links").replaceChildren(); await history();
       }));
       if (!data.documents.length) byId("wiki-files").textContent = "Aucun document supprimé.";
-    }));
+      byId("wiki-document-count").textContent = `${data.documents.length} supprimé${data.documents.length === 1 ? "" : "s"}`;
+    });
     byId("wiki-queue-actions").append(button("Lancer les tâches", async () => { await api("/jobs/run", "POST"); feedback("Lancement demandé. Le chat reste prioritaire."); await jobs(); }), button("Suspendre / reprendre", async () => { cfg = await api("/settings", "PUT", { paused: !cfg.paused }); await jobs(); }), button("Réindexer les fichiers", async () => { await api("/jobs/index", "POST"); await jobs(); }), button("Générer les embeddings", async () => { await api("/jobs/embed", "POST"); await jobs(); }));
     byId("wiki-graph-filter").addEventListener("input", requestDraw);
     byId("wiki-depth").addEventListener("change", requestDraw);
@@ -199,8 +208,9 @@
   }
   async function files() {
     const data = await api("/documents"); const list = byId("wiki-files"); const scroll = list.scrollTop; list.replaceChildren();
+    byId("wiki-document-count").textContent = `${data.documents.length} ${data.documents.length === 1 ? "document" : "documents"}`;
     for (const doc of data.documents) { const el = button(doc.path, () => open(doc.path)); el.setAttribute("aria-current", String(current?.path === doc.path)); list.appendChild(el); }
-    if (!data.documents.length) list.textContent = "Aucun document. Créez une connaissance ou réindexez vos fichiers Markdown.";
+    if (!data.documents.length) list.textContent = "Aucun document. Créez une note pour commencer.";
     list.scrollTop = scroll;
   }
   let lastExternalRefresh = 0;
@@ -272,18 +282,23 @@
     }
   }
   async function search() {
-    const q = byId("wiki-search").value.trim(); if (!q) { await files(); return; }
+    const q = byId("wiki-search").value.trim(); if (!q) { await files(); feedback(""); return; }
     const data = await api(`/search?q=${encodeURIComponent(q)}`); const list = byId("wiki-files"); list.replaceChildren();
     for (const source of data.sources) { list.appendChild(button(source.path, () => open(source.path))); const excerpt = document.createElement("small"); excerpt.textContent = source.text.slice(0, 200); list.appendChild(excerpt); }
+    byId("wiki-document-count").textContent = `${data.sources.length} résultat${data.sources.length === 1 ? "" : "s"}`;
     feedback(`${data.sources.length} documents pertinents trouvés`);
   }
   const states = { pending: "En attente", running: "En cours", completed: "Terminé", failed: "Échec", review: "Validation / conflit", cancelled: "Annulé" };
   const kinds = { index: "Indexation", embed: "Embeddings", extract: "Analyse de conversation", write: "Enregistrement", notion: "Création de notion" };
   async function jobs() {
     const data = await api("/jobs");
-    byId("wiki-queue-status").textContent = `${cfg.paused ? "File suspendue · " : ""}${data.counts.pending || 0} en attente · ${data.counts.review || 0} à valider · ${data.counts.running || 0} en cours. ${data.reason}`;
+    const pending = data.counts.pending || 0, review = data.counts.review || 0, running = data.counts.running || 0;
+    byId("wiki-queue-status").textContent = `${cfg.paused ? "Traitements suspendus. " : ""}${pending} en attente · ${review} à valider · ${running} en cours. ${data.reason}`;
+    byId("wiki-queue-summary").textContent = `${pending + review + running ? `${pending + review + running} tâche${pending + review + running === 1 ? "" : "s"} active${pending + review + running === 1 ? "" : "s"}` : "Aucune tâche active"} · ${data.reason}`;
     const list = byId("wiki-jobs"); list.replaceChildren();
-    for (const job of data.jobs) {
+    const activeJobs = data.jobs.filter(job => !["completed", "cancelled"].includes(job.status));
+    const recentCompleted = data.jobs.filter(job => job.status === "completed").slice(0, 5);
+    for (const job of [...activeJobs.slice(0, 20), ...recentCompleted]) {
       const row = document.createElement("article"); row.className = "wiki-job";
       const title = document.createElement("strong"); title.textContent = `${states[job.status] || job.status} · ${kinds[job.kind] || job.kind} ${job.payload.path || ""}`; row.appendChild(title);
       const progress = document.createElement("progress"); progress.max = 1; progress.value = job.progress; progress.setAttribute("aria-label", "Progression"); row.appendChild(progress);

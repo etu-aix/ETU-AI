@@ -167,14 +167,15 @@ def download(url: str, destination: Union[str, Path], expected_sha256: Optional[
 def safe_extract(archive: Union[str, Path], destination: Union[str, Path]) -> None:
     """Safely extract a ZIP or tarball archive into a target directory.
 
-    Protects against path traversal (Zip Slip / Tar Slip) vulnerabilities and rejects unsafe entries.
+    Protects against path traversal (Zip Slip / Tar Slip) vulnerabilities while
+    allowing relative links whose resolved targets stay inside the destination.
 
     Args:
         archive (str or Path): Path to the ZIP or tar archive file.
         destination (str or Path): Destination directory to extract into.
 
     Raises:
-        ValueError: If an archive entry contains unsafe paths or unsupported link structures.
+        ValueError: If an archive entry contains unsafe paths or link structures.
     """
     dest_dir = Path(destination).resolve()
 
@@ -192,19 +193,57 @@ def safe_extract(archive: Union[str, Path], destination: Union[str, Path]) -> No
             stream.extractall(dest_dir)
     else:
         with tarfile.open(archive) as stream:
-            for member in stream.getmembers():
+            members = stream.getmembers()
+            paths = {}
+            for member in members:
                 validate(member.name)
-                if not (member.isfile() or member.isdir()):
+                path = (dest_dir / member.name).resolve()
+                if path in paths:
+                    raise ValueError(f"Duplicate archive member: {member.name}")
+                paths[path] = member
+                if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
                     raise ValueError("Archive links and devices are not supported")
-            for member in stream.getmembers():
+                if member.issym():
+                    link = Path(member.linkname)
+                    if link.is_absolute() or "\\" in member.linkname or ":" in member.linkname:
+                        raise ValueError(f"Unsafe archive link: {member.name}")
+                    resolved_link = (path.parent / link).resolve()
+                    if not resolved_link.is_relative_to(dest_dir):
+                        raise ValueError(f"Unsafe archive link: {member.name}")
+                elif member.islnk():
+                    link = Path(member.linkname)
+                    if link.is_absolute() or "\\" in member.linkname or ":" in member.linkname:
+                        raise ValueError(f"Unsafe archive link: {member.name}")
+                    resolved_link = (dest_dir / link).resolve()
+                    if not resolved_link.is_relative_to(dest_dir):
+                        raise ValueError(f"Unsafe archive link: {member.name}")
+
+            # Do not allow links to become parent directories for other members.
+            link_paths = {path for path, member in paths.items() if member.issym() or member.islnk()}
+            if any(parent in link_paths for path in paths for parent in path.parents):
+                raise ValueError("Archive link cannot be used as a directory")
+
+            for member in members:
                 target = dest_dir / member.name
                 if member.isdir():
                     target.mkdir(parents=True, exist_ok=True)
-                else:
+                elif member.isfile():
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with stream.extractfile(member) as source, target.open("wb") as output:
                         shutil.copyfileobj(source, output)
                     target.chmod(member.mode & 0o777)
+
+            for member in members:
+                target = dest_dir / member.name
+                if member.issym():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.symlink_to(member.linkname)
+                elif member.islnk():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    link_target = (dest_dir / member.linkname).resolve()
+                    if not link_target.is_file() or link_target.is_symlink():
+                        raise ValueError(f"Invalid archive hard link: {member.name}")
+                    os.link(link_target, target)
 
 
 def publish_directory(staged: Union[str, Path], target: Union[str, Path]) -> None:

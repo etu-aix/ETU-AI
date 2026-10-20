@@ -2216,6 +2216,9 @@ function serverVariantPresentation(variant) {
 async function loadServerVariants() {
   const menu = getServerVariantMenu();
   const status = document.getElementById("settings-server-status");
+  status.dataset.loading = "true";
+  status.setAttribute("aria-busy", "true");
+  if (!status.textContent.trim()) status.textContent = "Chargement des versions du moteur…";
   try {
     const previousSelection = menu.value;
     const response = await fetch("/api/maintenance/server");
@@ -2235,6 +2238,8 @@ async function loadServerVariants() {
     });
     menu.setItems(uniqueVariants.map(serverVariantPresentation), previousSelection || data.selected_variant);
     status.textContent = data.status === "running" ? (data.message || "Réinstallation en cours…") : data.status === "error" ? data.message : data.catalog_error || `Version installée : ${data.installed_variant || "inconnue"} · ${data.release_tag}`;
+    status.dataset.loading = data.status === "running" ? "true" : "false";
+    status.setAttribute("aria-busy", data.status === "running" ? "true" : "false");
     document.getElementById("btn-settings-reinstall-server").disabled = data.status === "running" || !menu.value;
     if (data.status === "running") {
       clearTimeout(serverVariantPoller);
@@ -2246,6 +2251,8 @@ async function loadServerVariants() {
     }
   } catch (error) {
     status.textContent = error.message;
+    status.dataset.loading = "false";
+    status.setAttribute("aria-busy", "false");
     menu.setItems([]);
     document.getElementById("btn-settings-reinstall-server").disabled = true;
   }
@@ -2256,6 +2263,13 @@ async function reinstallServerVariant() {
   const button = document.getElementById("btn-settings-reinstall-server");
   if (!menu.value || !window.confirm(`Réinstaller ${menu.selectedItem.label} ? Le moteur local redémarrera.`)) return;
   button.disabled = true;
+  button.classList.add("is-loading");
+  button.setAttribute("aria-busy", "true");
+  button.querySelector("span:last-child").textContent = "Préparation…";
+  const status = document.getElementById("settings-server-status");
+  status.textContent = "Préparation de la réinstallation…";
+  status.dataset.loading = "true";
+  status.setAttribute("aria-busy", "true");
   try {
     const response = await fetch("/api/maintenance/server/reinstall", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variant: menu.value }),
@@ -2265,7 +2279,12 @@ async function reinstallServerVariant() {
     loadServerVariants();
     showDownloadsView();
   } catch (error) {
-    document.getElementById("settings-server-status").textContent = error.message;
+    status.textContent = error.message;
+    status.dataset.loading = "false";
+    status.setAttribute("aria-busy", "false");
+    button.classList.remove("is-loading");
+    button.removeAttribute("aria-busy");
+    button.querySelector("span:last-child").textContent = "Réinstaller cette version";
     button.disabled = false;
   }
 }

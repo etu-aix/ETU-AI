@@ -12,6 +12,7 @@ def main() -> None:
         for port in (8900, 8901):
             listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             listeners.append(listener)
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", port))
             listener.listen(2048)
         config = uvicorn.Config(app, host="127.0.0.1", proxy_headers=False, log_level="info")
