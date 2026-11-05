@@ -204,6 +204,9 @@
 .settings-server-actions { display: grid; grid-template-columns: auto minmax(260px, 1fr) auto; align-items: center; gap: 10px; }
 .settings-server-actions .etu-list-menu { width: 100%; min-width: 0; }
 .settings-server-label { color: var(--text-muted); font-size: .82rem; }
+.settings-server-older-toggle { display: inline-flex; width: fit-content; align-items: center; gap: 9px; color: var(--text-muted); font-size: .84rem; cursor: pointer; }
+.settings-server-older-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-color); }
+.settings-server-older-toggle:focus-within { outline: 2px solid var(--accent-color); outline-offset: 3px; border-radius: 3px; }
 .settings-server-status[data-loading="true"] { display: flex; align-items: center; gap: 8px; }
 .settings-server-status[data-loading="true"]::before,
 .settings-server-download-btn.is-loading::before {
@@ -389,16 +392,20 @@
 #modal-models .modal-tab-btn:hover { border: 0; background: var(--bg-tertiary); color: var(--text-main); }
 #modal-models .modal-tab-btn.active { border: 0; background: var(--bg-tertiary); color: var(--text-main); box-shadow: none; }
 .settings-provider-panel { max-width: 1100px; }
-#settings-provider-mount > .settings-provider-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 22px; min-height: 480px; padding: 0; overflow: visible; }
-#settings-provider-mount .api-provider-sidebar { position: sticky; top: 0; align-self: start; height: var(--provider-sidebar-height, calc(100dvh - 60px)); padding: 12px 10px 12px 0; overflow: hidden; border-right: 1px solid var(--border-color); background: transparent; }
-#settings-provider-mount .api-provider-list { flex: 1; min-height: 0; max-height: none; }
-#settings-provider-mount .api-provider-add { flex: none; }
-#settings-provider-mount .api-provider-settings { padding: 12px 0; overflow: visible; }
-#settings-provider-mount .api-key-intro { margin-bottom: 15px; }
+#settings-provider-mount > .settings-provider-layout,
+#wizard-provider-mount > .settings-provider-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 22px; min-height: 480px; padding: 0; overflow: visible; }
+:is(#settings-provider-mount, #wizard-provider-mount) .api-provider-sidebar { position: sticky; top: 0; align-self: start; height: var(--provider-sidebar-height, calc(100dvh - 60px)); padding: 12px 10px 12px 0; overflow: hidden; border-right: 1px solid var(--border-color); background: transparent; }
+:is(#settings-provider-mount, #wizard-provider-mount) .api-provider-list { flex: 1; min-height: 0; max-height: none; }
+:is(#settings-provider-mount, #wizard-provider-mount) .api-provider-add { flex: none; }
+:is(#settings-provider-mount, #wizard-provider-mount) .api-provider-settings { padding: 12px 0; overflow: visible; }
+:is(#settings-provider-mount, #wizard-provider-mount) .api-key-intro { margin-bottom: 15px; }
+#wizard-provider-mount .api-provider-sidebar { position: static; height: auto; max-height: 360px; }
+#wizard-provider-mount .api-provider-list { max-height: 250px; overflow-y: auto; }
 @media (max-width: 900px) {
   .settings-nav { flex-basis: 194px; }
   .settings-content { padding-inline: 22px; }
-  #settings-provider-mount > .settings-provider-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 16px; }
+  #settings-provider-mount > .settings-provider-layout,
+  #wizard-provider-mount > .settings-provider-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 16px; }
 }
 @media (max-width: 700px) {
   .downloads-content { padding: 18px 14px 30px; }
@@ -453,10 +460,11 @@
   .settings-update-copy { min-width: 0; align-self: center; }
   .settings-update-copy strong { font-size: 1.08rem; }
   .settings-update-banner #btn-settings-update { width: 100%; }
-  #settings-provider-mount > .settings-provider-layout { grid-template-columns: 1fr; gap: 0; }
-  #settings-provider-mount .api-provider-sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border-color); padding: 10px 0; }
-  #settings-provider-mount .api-provider-list { display: flex; max-height: 116px; overflow: auto; }
-  #settings-provider-mount .api-provider-nav-item { flex: 0 0 auto; width: auto; }
-  #settings-provider-mount .api-provider-nav-copy { max-width: 90px; }
-  #settings-provider-mount .api-provider-settings { padding: 14px 0; }
+  #settings-provider-mount > .settings-provider-layout,
+  #wizard-provider-mount > .settings-provider-layout { grid-template-columns: 1fr; gap: 0; }
+  :is(#settings-provider-mount, #wizard-provider-mount) .api-provider-sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border-color); padding: 10px 0; }
+  :is(#settings-provider-mount, #wizard-provider-mount) .api-provider-list { display: flex; max-height: 116px; overflow: auto; }
+  :is(#settings-provider-mount, #wizard-provider-mount) .api-provider-nav-item { flex: 0 0 auto; width: auto; }
+  :is(#settings-provider-mount, #wizard-provider-mount) .api-provider-nav-copy { max-width: 90px; }
+  :is(#settings-provider-mount, #wizard-provider-mount) .api-provider-settings { padding: 14px 0; }
 }

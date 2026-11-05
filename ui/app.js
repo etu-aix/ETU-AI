@@ -396,6 +396,7 @@ async function initApiSettings() {
   const clearKeyInput = document.getElementById("api-provider-clear-key");
   const clearKeyButton = document.getElementById("api-provider-clear-key-button");
   let savedModelSelection = "";
+  let chatgptAuthMethod = "api_key";
   let presets = {};
   let currentConfig = {};
   const settingsMessage = document.getElementById("api-settings-message");
@@ -422,7 +423,7 @@ async function initApiSettings() {
     const list = document.getElementById("api-provider-list");
     if (!list) return;
     list.replaceChildren();
-    Object.entries(presets).forEach(([id, preset]) => {
+    Object.entries(presets).filter(([id]) => id !== "chatgpt").forEach(([id, preset]) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "api-provider-nav-item";
@@ -441,7 +442,7 @@ async function initApiSettings() {
     const status = document.getElementById("api-key-status");
     status.textContent = hasKey ? "Clé enregistrée" : "Aucune clé";
     status.dataset.hasKey = String(Boolean(hasKey));
-    if (clearKeyButton) clearKeyButton.hidden = !hasKey;
+    if (clearKeyButton) clearKeyButton.hidden = !hasKey || (providerSelect.value === "openai" && chatgptAuthMethod !== "api_key");
   };
   const setClearKeyState = (value) => {
     if (clearKeyInput) clearKeyInput.checked = Boolean(value);
@@ -484,6 +485,7 @@ async function initApiSettings() {
           provider: providerSelect.value,
           base_url: document.getElementById("api-provider-url").value,
           api_key: document.getElementById("api-provider-key").value,
+          auth_method: providerSelect.value === "openai" ? chatgptAuthMethod : undefined,
         }),
       }).finally(() => clearTimeout(timeoutId));
       const result = await response.json();
@@ -521,11 +523,11 @@ async function initApiSettings() {
         modelHint.textContent = `La liste Mistral n’a pas répondu. ${replacementId} remplace le modèle retiré mistral-medium ; enregistrez pour l’activer.`;
         return;
       }
-      const conciseMessage = isTimeout ? "La réponse met trop de temps" : (/clé API|key|401|403/i.test(statusMessage) ? "Vérifiez la clé API" : (/404|statut/i.test(statusMessage) ? "Aucun modèle disponible" : (hasAvailableKey ? "Modèles indisponibles" : "Saisissez une clé API")));
-      const detail = isTimeout ? "Délai dépassé après 25 secondes. Vérifiez la connexion et réessayez." : statusMessage;
+      const conciseMessage = isTimeout ? "La réponse met trop de temps" : providerSelect.value === "openai" && chatgptAuthMethod === "account" && !hasAvailableKey ? "Connectez votre compte ChatGPT" : (/clé API|key|401|403/i.test(statusMessage) ? "Vérifiez la clé API" : (/404|statut/i.test(statusMessage) ? "Aucun modèle disponible" : (hasAvailableKey ? "Modèles indisponibles" : "Saisissez une clé API")));
+      const detail = isTimeout ? "Délai dépassé après 25 secondes. Vérifiez la connexion et réessayez." : (providerSelect.value === "openai" && chatgptAuthMethod === "account" && !hasAvailableKey ? "Connectez-vous avec votre compte ChatGPT, puis réessayez." : statusMessage);
       modelsContainer.replaceChildren(renderModelEmptyState(conciseMessage, detail));
       modelSearch.hidden = true;
-      modelHint.textContent = hasAvailableKey ? "Utilisez ↻ pour réessayer." : "Saisissez une clé API, puis utilisez ↻ pour charger les modèles.";
+      modelHint.textContent = hasAvailableKey ? "Utilisez ↻ pour réessayer." : providerSelect.value === "openai" && chatgptAuthMethod === "account" ? "Connectez votre compte pour charger les modèles." : "Saisissez une clé API, puis utilisez ↻ pour charger les modèles.";
     } finally {
       if (activeModelRequest === controller) activeModelRequest = null;
       if (sequence === loadSequence && refreshButton) {
@@ -555,7 +557,7 @@ async function initApiSettings() {
   const renderProviderBrand = (id, config = {}) => {
     const provider = presets[id] || {};
     const labels = {
-      openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral",
+      openai: "OpenAI", chatgpt: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral",
       openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek",
       xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity",
       nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models",
@@ -566,26 +568,140 @@ async function initApiSettings() {
     card.dataset.provider = id;
     setProviderMark(document.getElementById("api-provider-mark"), id);
     document.getElementById("api-provider-brand-name").textContent = provider.label || labels[id] || id;
-    document.getElementById("api-provider-brand-detail").textContent = `${provider.type === "openai" ? "API compatible OpenAI" : "Connexion API native"} · clé stockée localement`;
-    document.getElementById("api-provider-brand-state").textContent = config.enabled ? "Actif" : (config.has_api_key ? "Clé enregistrée" : "À configurer");
+    document.getElementById("api-provider-brand-detail").textContent = id === "openai" || id === "chatgpt" ? (config.auth_method === "account" ? "Compte ChatGPT" : "Clé API OpenAI") : `${provider.type === "openai" ? "API compatible OpenAI" : "Connexion API native"} · clé stockée localement`;
+    document.getElementById("api-provider-brand-state").textContent = config.enabled ? "Actif" : (config.has_api_key ? ((id === "openai" || id === "chatgpt") && config.auth_method === "account" ? "Compte connecté" : "Clé enregistrée") : "À configurer");
     card.classList.toggle("is-active", Boolean(config.enabled));
   };
   const updatePrivacyHint = (config) => {
     const hint = document.getElementById("chat-privacy-hint");
     const active = config?.active_provider;
     const providerLabel = active && config.providers?.[active]?.label;
-    if (hint) hint.textContent = providerLabel ? `Messages transmis à ${providerLabel}.` : "Les réponses restent sur cet ordinateur.";
+    if (hint) hint.textContent = active === "openai" || active === "chatgpt" ? (config?.auth_method === "account" ? "Compte ChatGPT utilisé · messages transmis à OpenAI." : "Clé API OpenAI utilisée · facturation API OpenAI.") : providerLabel ? `Messages transmis à ${providerLabel}.` : "Les réponses restent sur cet ordinateur.";
   };
   const applyProviderPreset = (id, preserveValues = false) => {
     const preset = presets[id];
     if (!preset) return;
+    const accountProvider = id === "openai" || id === "chatgpt";
+    const accountMode = accountProvider && chatgptAuthMethod === "account";
     const nativeProvider = preset.type !== "openai";
-    document.getElementById("api-provider-url-wrap").hidden = nativeProvider;
-    document.getElementById("api-provider-url").required = !nativeProvider;
+    document.getElementById("api-key-label").childNodes[0].textContent = accountProvider ? "Clé API OpenAI " : "Clé API ";
+    document.getElementById("chatgpt-auth-method-wrap").hidden = !accountProvider;
+    document.getElementById("chatgpt-auth-method").value = chatgptAuthMethod;
+    document.getElementById("chatgpt-api-key-note").hidden = !accountProvider || chatgptAuthMethod !== "api_key";
+    document.getElementById("chatgpt-account-panel").hidden = !accountMode;
+    document.querySelector(".api-key-intro strong").textContent = accountMode ? "Votre compte reste privé" : "Vos clés restent privées";
+    document.querySelector(".api-key-intro p").textContent = accountMode
+      ? "Les jetons de connexion sont conservés dans le coffre-fort de votre système."
+      : "Stockées dans le coffre-fort de votre système. Elles ne sont jamais affichées après l’enregistrement.";
+    document.getElementById("api-key-label").hidden = accountMode;
+    document.getElementById("api-provider-key").hidden = accountMode;
+    if (accountMode && clearKeyButton) clearKeyButton.hidden = true;
+    document.querySelector("#api-settings-form > .etu-text").hidden = accountMode;
+    document.getElementById("api-provider-url-wrap").hidden = (nativeProvider && !accountProvider) || accountMode;
+    document.getElementById("api-provider-url").required = !nativeProvider || (accountProvider && !accountMode);
     if (!preserveValues) {
       document.getElementById("api-provider-url").value = preset.base_url;
     }
   };
+  const accountSelect = document.getElementById("chatgpt-account-select");
+  const accountStatus = document.getElementById("chatgpt-account-status");
+  const connectButton = document.getElementById("chatgpt-connect");
+  const addAccountButton = document.getElementById("chatgpt-add-account");
+  const disconnectButton = document.getElementById("chatgpt-disconnect");
+  let chatgptAccounts = [];
+  const loadChatgptStatus = async () => {
+    const response = await fetch("/api/settings/provider/chatgpt");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "Impossible de lire les comptes ChatGPT.");
+    chatgptAccounts = result.accounts;
+    accountSelect.replaceChildren();
+    result.accounts.forEach((account) => {
+      const option = document.createElement("option");
+      option.value = account.client_id;
+      option.textContent = `${account.email || "Compte ChatGPT"} · ${account.client_id.slice(-6)}${account.connected ? "" : " (déconnecté)"}`;
+      accountSelect.append(option);
+    });
+    accountSelect.hidden = !result.accounts.length;
+    accountSelect.previousElementSibling.hidden = !result.accounts.length;
+    if (result.active) accountSelect.value = result.active;
+    connectButton.textContent = result.accounts.length ? "Reconnecter ce compte" : "Continuer avec ChatGPT";
+    addAccountButton.hidden = !result.accounts.length;
+    disconnectButton.hidden = !result.active;
+    const statusText = result.flow.status === "pending" ? "Terminez la connexion dans la fenêtre OpenAI…"
+      : result.active ? `Connecté : ${result.accounts.find((account) => account.client_id === result.active)?.email || "compte ChatGPT"}`
+      : "Aucun compte connecté.";
+    if (accountStatus.textContent !== statusText) accountStatus.textContent = statusText;
+    return result;
+  };
+  const startChatgptFlow = async (newAccount = false) => {
+    const popup = window.open("about:blank", "_blank");
+    connectButton.disabled = true;
+    addAccountButton.disabled = true;
+    accountStatus.textContent = "Ouverture de la connexion ChatGPT…";
+    try {
+      const response = await fetch("/api/settings/provider/chatgpt/start", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id: newAccount ? null : accountSelect.value || null }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Connexion impossible.");
+      if (!popup) throw new Error("Autorisez les fenêtres supplémentaires, puis réessayez.");
+      popup.location.href = result.url;
+      accountStatus.textContent = "Terminez la connexion dans la fenêtre OpenAI…";
+      for (let attempt = 0; attempt < 300; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const state = await loadChatgptStatus();
+        if (state.flow.status === "success") {
+          accountStatus.textContent = "Compte ChatGPT connecté.";
+          currentConfig = { ...currentConfig, has_api_key: true, auth_method: "account" };
+          renderProviderBrand("openai", currentConfig);
+          setKeyStatus(true);
+          await loadProviderModels({ hasSavedKey: true, selected: checkedModels() });
+          return;
+        }
+        if (state.flow.status === "error") throw new Error(state.flow.message || "Connexion annulée.");
+      }
+      throw new Error("La connexion a expiré. Réessayez.");
+    } catch (error) {
+      popup?.close();
+      accountStatus.textContent = error.message;
+    } finally {
+      connectButton.disabled = false;
+      addAccountButton.disabled = false;
+    }
+  };
+  connectButton.addEventListener("click", () => startChatgptFlow());
+  addAccountButton.addEventListener("click", () => startChatgptFlow(true));
+  accountSelect.addEventListener("change", async () => {
+    if (!chatgptAccounts.find((account) => account.client_id === accountSelect.value)?.connected) {
+      accountStatus.textContent = "Ce compte est déconnecté. Utilisez « Reconnecter ce compte ».";
+      return;
+    }
+    try {
+      const response = await fetch("/api/settings/provider/chatgpt/select", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_id: accountSelect.value }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Sélection impossible.");
+      currentConfig = { ...currentConfig, has_api_key: true, auth_method: "account" };
+      renderProviderBrand("openai", currentConfig);
+      setKeyStatus(true);
+      await loadProviderModels({ hasSavedKey: true, selected: checkedModels() });
+    } catch (error) { accountStatus.textContent = error.message; }
+  });
+  disconnectButton.addEventListener("click", async () => {
+    disconnectButton.disabled = true;
+    accountStatus.textContent = "Déconnexion…";
+    try {
+      const response = await fetch("/api/settings/provider/chatgpt/disconnect", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Déconnexion impossible.");
+      await loadChatgptStatus();
+      accountStatus.textContent = result.revoked ? "Compte déconnecté." : "Compte déconnecté localement. Vérifiez l'accès dans les réglages ChatGPT.";
+      providerSelect.dispatchEvent(new Event("change"));
+    } catch (error) { accountStatus.textContent = error.message; }
+    finally { disconnectButton.disabled = false; }
+  });
   providerSelect.addEventListener("change", async () => {
     applyProviderPreset(providerSelect.value);
     document.getElementById("api-provider-key").value = "";
@@ -595,6 +711,8 @@ async function initApiSettings() {
       if (!response.ok) throw new Error("Impossible de charger les réglages de ce fournisseur.");
       const config = await response.json();
       currentConfig = { ...currentConfig, ...config };
+      chatgptAuthMethod = providerSelect.value === "openai" ? (config.auth_method || "api_key") : "account";
+      applyProviderPreset(providerSelect.value, true);
       savedModelSelection = config.model || presets[providerSelect.value]?.model || "";
       renderProviderList(providerSelect.value);
       renderProviderBrand(providerSelect.value, config);
@@ -603,6 +721,7 @@ async function initApiSettings() {
       modelSearch.hidden = true;
       modelSearch.value = "";
       setKeyStatus(config.has_api_key);
+      if (providerSelect.value === "openai") await loadChatgptStatus();
       await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
     } catch (error) {
       setSettingsMessage(error.message, "error");
@@ -648,7 +767,7 @@ async function initApiSettings() {
     }
   });
   fetch("/api/settings/provider").then((response) => response.ok ? response.json() : null).then(updatePrivacyHint).catch(() => {});
-  open.addEventListener("click", async () => {
+  const loadProviderSettings = async (inWizard = false) => {
     setSettingsMessage("");
     try {
       const response = await fetch("/api/settings/provider");
@@ -657,6 +776,7 @@ async function initApiSettings() {
       currentConfig = config;
       presets = config.providers || {};
       providerSelect.value = config.provider || "openai-compatible";
+      chatgptAuthMethod = providerSelect.value === "openai" ? (config.auth_method || "api_key") : "account";
       if (!providerSelect.value) providerSelect.value = "custom";
       savedModelSelection = config.model || presets[providerSelect.value]?.model || "";
       renderProviderBrand(providerSelect.value, config);
@@ -668,11 +788,15 @@ async function initApiSettings() {
       document.getElementById("api-provider-key").value = "";
       setClearKeyState(false);
       setKeyStatus(config.has_api_key);
+      if (providerSelect.value === "openai") await loadChatgptStatus();
       renderProviderList(providerSelect.value);
-      showSettingsView("providers");
+      if (!inWizard) showSettingsView("providers");
+      else providerSelect.focus();
       await loadProviderModels({ hasSavedKey: config.has_api_key, selected: config.models || (config.model ? [config.model] : []) });
     } catch (error) { setSettingsMessage(error.message, "error"); }
-  });
+  };
+  open.addEventListener("click", () => loadProviderSettings());
+  window.openWizardProviderSettings = () => loadProviderSettings(true);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     setSettingsMessage("Enregistrement…", "info");
@@ -684,6 +808,7 @@ async function initApiSettings() {
       api_key: document.getElementById("api-provider-key").value,
       clear_api_key: Boolean(clearKeyInput?.checked),
       provider: providerSelect.value,
+      auth_method: providerSelect.value === "openai" ? chatgptAuthMethod : undefined,
     };
     try {
       const response = await fetch("/api/settings/provider", {
@@ -707,6 +832,23 @@ async function initApiSettings() {
     modelHint.textContent = hasTypedKey
       ? "Clé saisie. Utilisez ↻ pour charger les modèles."
       : "Utilisez ↻ pour recharger les modèles du fournisseur.";
+  });
+  document.getElementById("chatgpt-auth-method").addEventListener("change", async (event) => {
+    chatgptAuthMethod = event.target.value;
+    applyProviderPreset("openai", true);
+    renderProviderBrand("openai", { ...currentConfig, auth_method: chatgptAuthMethod });
+    document.getElementById("api-provider-key").value = "";
+    setClearKeyState(false);
+    const accountState = chatgptAuthMethod === "account" ? await loadChatgptStatus().catch(() => null) : null;
+    const savedCredential = chatgptAuthMethod === "account" ? Boolean(accountState?.active) : Boolean(currentConfig.has_openai_api_key);
+    currentConfig.has_api_key = savedCredential;
+    setKeyStatus(savedCredential);
+    if (chatgptAuthMethod === "api_key") {
+      modelHint.textContent = "Saisissez votre clé API OpenAI puis actualisez la liste des modèles.";
+      modelsContainer.replaceChildren(renderModelEmptyState("Clé API OpenAI", "Ajoutez une clé API pour charger les modèles."));
+    } else {
+      await loadProviderModels({ hasSavedKey: currentConfig.has_api_key, selected: checkedModels() });
+    }
   });
 }
 
@@ -970,9 +1112,18 @@ async function initSetupWizard() {
   // L'orbe CSS conserve un retour visuel sans boucle de rendu permanente.
 
   // Boutons de navigation du Wizard
-  document.getElementById("btn-wizard-to-step2").addEventListener("click", () => {
+  document.getElementById("btn-wizard-to-step2").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
     showWizardStep(2);
-    loadWizardModelSelection();
+    try {
+      await loadWizardModelSelection();
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
     if (wizardParticles) {
       wizardParticles.setTheme("cyan");
       wizardParticles.addRipple(window.innerWidth / 2, window.innerHeight / 2, 1.5);
@@ -990,11 +1141,81 @@ async function initSetupWizard() {
     startWizardInstallation();
   });
 
+  document.getElementById("btn-wizard-open-during-install").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/setup/defer", { method: "POST" });
+      if (!response.ok) throw new Error("Impossible d'ouvrir ETU-AI pendant la préparation.");
+      openMainApp();
+    } catch (error) {
+      button.disabled = false;
+      showToast(error.message || "Impossible d'ouvrir ETU-AI.", "error");
+    }
+  });
+
+  document.getElementById("btn-wizard-cancel-install").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Annulation…";
+    try {
+      const response = await fetch("/api/setup/cancel", { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Impossible d'annuler l'installation.");
+      button.textContent = "Annulation en cours…";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Annuler l'installation";
+      showToast(error.message || "Impossible d'annuler l'installation.", "error");
+    }
+  });
+
+  const deferSetup = async () => {
+    try {
+      const response = await fetch("/api/setup/defer", { method: "POST" });
+      if (!response.ok) throw new Error("Impossible d'enregistrer ce choix.");
+      openMainApp();
+    } catch (error) {
+      showToast(error.message || "Impossible de reporter la configuration.", "error");
+    }
+  };
+  document.getElementById("btn-wizard-skip-step1").addEventListener("click", deferSetup);
+  document.getElementById("btn-wizard-skip-step2").addEventListener("click", deferSetup);
+
+  let wizardProviderReturnStep = 1;
+  const providerMount = document.getElementById("settings-provider-mount");
+  const wizardProviderMount = document.getElementById("wizard-provider-mount");
+  const moveProviderPanel = (target) => {
+    const providerLayout = providerMount?.querySelector(":scope > .settings-provider-layout")
+      || wizardProviderMount?.querySelector(":scope > .settings-provider-layout");
+    if (providerLayout && target) target.append(providerLayout);
+  };
+  const openProviderSetup = () => {
+    const activeStep = document.querySelector(".wizard-step.active")?.id.match(/wizard-step-(\d+)/)?.[1];
+    wizardProviderReturnStep = Number(activeStep) || 1;
+    moveProviderPanel(wizardProviderMount);
+    showWizardStep(4);
+    window.openWizardProviderSettings?.();
+  };
+  document.getElementById("btn-wizard-provider-step1").addEventListener("click", openProviderSetup);
+  document.getElementById("btn-wizard-provider-step2").addEventListener("click", openProviderSetup);
+  document.getElementById("btn-wizard-provider-back").addEventListener("click", () => {
+    moveProviderPanel(providerMount);
+    showWizardStep(wizardProviderReturnStep);
+  });
+  document.getElementById("btn-wizard-provider-open-app").addEventListener("click", async () => {
+    try {
+      const response = await fetch("/api/setup/defer", { method: "POST" });
+      if (!response.ok) throw new Error("Impossible d'enregistrer l'état de l'installation.");
+      moveProviderPanel(providerMount);
+      openMainApp();
+    } catch (error) {
+      showToast(error.message || "Impossible d'ouvrir ETU-AI.", "error");
+    }
+  });
+
   document.getElementById("btn-wizard-finish").addEventListener("click", () => {
-    wizardContainer.style.display = "none";
-    appContainer.style.display = "flex";
-    loadServerStatus();
-    loadConversations();
+    openMainApp();
   });
 
   // Micro-interactions sur les éléments de fonctionnalités
@@ -1013,9 +1234,8 @@ async function initSetupWizard() {
     // RÈGLE FONDAMENTALE : LE SETUP NE SE FAIT PAS À CHAQUE DÉMARRAGE !
     // Si setup_completed est vrai, on ouvre directement l'application de chat !
     // =========================================================================
-    if (statusData.completed) {
-      wizardContainer.style.display = "none";
-      appContainer.style.display = "flex";
+    if (statusData.completed || statusData.deferred) {
+      openMainApp();
       return;
     }
 
@@ -1036,29 +1256,71 @@ async function initSetupWizard() {
     loadHardwareDiagnosis();
   } catch (err) {
     console.warn("Impossible de vérifier l'état du setup :", err);
-    wizardContainer.style.display = "flex";
-    appContainer.style.display = "none";
-    showWizardStep(1);
+    openMainApp();
   }
+}
+
+function openMainApp() {
+  document.getElementById("wizard-container").style.display = "none";
+  document.getElementById("app-container").style.display = "flex";
+  loadServerStatus();
+  loadConversations();
 }
 
 function showWizardStep(stepNum) {
   document.querySelectorAll(".wizard-step").forEach((el) => el.classList.remove("active"));
   const target = document.getElementById(`wizard-step-${stepNum}`);
   if (target) target.classList.add("active");
+  if (target) {
+    const content = target.querySelector(".wizard-content");
+    if (content) content.scrollTop = 0;
+    const heading = target.querySelector("h3");
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }
+  }
+  const label = document.getElementById("wizard-step-label");
+  if (label) label.textContent = { 1: "Votre ordinateur", 2: "Modèles", 3: "Préparation", 4: "Fournisseur IA" }[stepNum] || "Installation";
   document.getElementById("wizard-container").scrollTop = 0;
 }
 
+function updateWizardNpuNotice(npus = []) {
+  const notices = [
+    { banner: document.getElementById("wizard-npu-hardware-notice"), title: document.getElementById("npu-hardware-title"), detail: document.getElementById("npu-hardware-text") },
+    { banner: document.getElementById("wizard-npu-banner"), title: document.getElementById("npu-banner-title"), detail: document.getElementById("npu-banner-text") },
+  ].filter((notice) => notice.banner);
+  if (!notices.length) return;
+  const detected = Array.isArray(npus) ? npus : [];
+  const intelNpu = detected.some((item) => /intel/i.test(`${item.name || ""} ${item.manufacturer || ""}`));
+  if (!detected.length) {
+    notices.forEach(({ banner }) => { banner.hidden = true; });
+    return;
+  }
+  const titleText = `Puce NPU détectée : ${detected[0].name || "NPU"}`;
+  const detailText = intelNpu
+      ? "OpenVINO peut exploiter ce NPU avec certains modèles GGUF texte. Le contexte initial est limité à 1 024 tokens et l’accélération sera contrôlée au démarrage. Choisissez une version OpenVINO compatible dans le menu."
+      : "Cette puce NPU est détectée, mais le moteur OpenVINO proposé par ETU-AI cible les NPU Intel. L’installation ne pourra pas confirmer son accélération.";
+  notices.forEach(({ banner, title, detail }) => {
+    if (title) title.textContent = titleText;
+    if (detail) detail.textContent = detailText;
+    banner.hidden = false;
+  });
+}
+
 async function loadHardwareDiagnosis() {
+  const continueButton = document.getElementById("btn-wizard-to-step2");
+  continueButton.disabled = true;
+  continueButton.setAttribute("aria-busy", "true");
   try {
     const resp = await fetch("/api/status");
+    if (!resp.ok) throw new Error("Diagnostic indisponible");
     const data = await resp.json();
 
     const hwCpu = document.getElementById("hw-cpu");
     const hwRam = document.getElementById("hw-ram");
     const hwGpu = document.getElementById("hw-gpu");
     const hwNpu = document.getElementById("hw-npu");
-    const hwRec = document.getElementById("hw-rec-backend");
     const hwBadge = document.getElementById("hw-backend-badge");
     const moodText = document.getElementById("wizard-mood-text");
 
@@ -1089,8 +1351,8 @@ async function loadHardwareDiagnosis() {
     if (hwNpu) {
       if (data.npus && data.npus.length > 0) {
         const npuNames = data.npus.map((n) => n.name).join(", ");
-        hwNpu.textContent = `⚡ ${npuNames}`;
-        hwNpu.style.color = "#38bdf8";
+        hwNpu.textContent = npuNames;
+        hwNpu.style.color = "var(--accent-color)";
         if (moodText) moodText.textContent = data.installed_backend === "npu"
           ? "NPU Intel détecté ; moteur OpenVINO installé"
           : "Puce NPU détectée ; backend à confirmer";
@@ -1102,13 +1364,13 @@ async function loadHardwareDiagnosis() {
         if (wizardParticles) wizardParticles.setTheme("emerald");
       }
     }
+    updateWizardNpuNotice(data.npus || []);
 
+    const recommendedBackend = String(data.backend || "cpu").toLowerCase();
+    wizardRecommendedBackend = recommendedBackend.toUpperCase();
     const backend = data.installed_backend === "npu"
       ? "NPU OpenVINO"
-      : (data.backend || "cpu").toUpperCase();
-    if (hwRec) hwRec.textContent = data.installed_backend === "npu"
-      ? `Moteur installé : ${backend}`
-      : `Accélération recommandée : ${backend}`;
+      : recommendedBackend.toUpperCase();
     if (hwBadge) {
       const isCpu = backend === "CPU";
       hwBadge.textContent = isCpu ? "Mode CPU" : backend === "NPU OpenVINO" ? backend : `GPU ${backend}`;
@@ -1116,6 +1378,20 @@ async function loadHardwareDiagnosis() {
     }
   } catch (err) {
     console.error("Erreur diagnostic matériel :", err);
+    const badge = document.getElementById("hw-backend-badge");
+    if (badge) badge.textContent = "À vérifier";
+    ["hw-cpu", "hw-ram", "hw-gpu", "hw-npu"].forEach((id) => {
+      const value = document.getElementById(id);
+      if (value) value.textContent = "Indisponible";
+    });
+    updateWizardNpuNotice([]);
+    const backendHint = document.getElementById("wizard-backend-hint");
+    if (backendHint) backendHint.textContent = "La détection du matériel a échoué. Vous pouvez réessayer plus tard dans les paramètres.";
+    wizardRecommendedBackend = "CPU";
+  } finally {
+    await loadWizardServerVariants();
+    continueButton.disabled = false;
+    continueButton.removeAttribute("aria-busy");
   }
 }
 
@@ -1125,8 +1401,14 @@ let allLoadedWizardModels = [];
 let activeWizardCategory = "all";
 const wizardSelectedModels = new Map();
 let wizardSelectionInitialized = false;
+let wizardModelRequestId = 0;
+let wizardModelController = null;
 
 async function loadWizardModelSelection(searchQuery = "") {
+  const requestId = ++wizardModelRequestId;
+  wizardModelController?.abort();
+  const controller = new AbortController();
+  wizardModelController = controller;
   const container = document.getElementById("wizard-model-selection-list");
   const counterEl = document.getElementById("selected-models-count");
   const moodText = document.getElementById("wizard-mood-text");
@@ -1178,7 +1460,7 @@ async function loadWizardModelSelection(searchQuery = "") {
             wizardSelectedModels.set(chosen.filename, { repo: chosen.repo, filename: chosen.filename, npu_compatible: isModelNpuCandidate(chosen) });
             renderWizardModelCards(allLoadedWizardModels, activeWizardCategory);
             const primaryName = data.primary_model?.name || recs[0].name;
-            showToast(`⚡ IA optimale sélectionnée pour ce PC : <strong>${escapeHtml(primaryName)}</strong>`, "success", 4000);
+            showToast(`IA optimale sélectionnée pour ce PC : <strong>${escapeHtml(primaryName)}</strong>`, "success", 4000);
             if (moodText) moodText.textContent = `Recommandation automatique : ${primaryName}`;
           }
         } catch (e) {
@@ -1191,7 +1473,9 @@ async function loadWizardModelSelection(searchQuery = "") {
     }
   }
 
-  container.innerHTML = "<p class='etu-text'>Analyse de compatibilité et recherche sur Hugging Face...</p>";
+  container.setAttribute("aria-busy", "true");
+  container.innerHTML = '<div class="hf-loading" role="status"><span class="etu-spinner" aria-hidden="true"></span><span>Chargement des modèles…</span></div>';
+  document.getElementById("btn-wizard-start-install").disabled = true;
 
   try {
     let modelsList = [];
@@ -1200,44 +1484,26 @@ async function loadWizardModelSelection(searchQuery = "") {
     if (searchQuery) {
       // Recherche en direct via l'API Hugging Face sans credential
       const resp = await fetch(
-        `/api/models/huggingface/search?q=${encodeURIComponent(searchQuery)}&only_compatible=${onlyCompatible}&limit=60`
+        `/api/models/huggingface/search?q=${encodeURIComponent(searchQuery)}&only_compatible=${onlyCompatible}&limit=60`,
+        { signal: controller.signal }
       );
+      if (!resp.ok) throw new Error("La recherche est indisponible. Réessayez dans un instant.");
       const data = await resp.json();
       modelsList = data.models || [];
       hardwareData = data.hardware || {};
     } else {
       // Catalogue global enrichi de toutes les IA compatibles
-      const resp = await fetch("/api/models/catalog");
+      const resp = await fetch("/api/models/catalog", { signal: controller.signal });
+      if (!resp.ok) throw new Error("Le catalogue est indisponible. Réessayez dans un instant.");
       const data = await resp.json();
       modelsList = data.catalog || [];
       hardwareData = data.hardware || {};
     }
 
+    if (requestId !== wizardModelRequestId) return;
     allLoadedWizardModels = modelsList;
 
-    // Affichage bannière NPU si détecté
-    const npuBanner = document.getElementById("wizard-npu-banner");
-    if (npuBanner) {
-      const npuChoice = document.getElementById("wizard-npu-choice");
-      const useNpu = document.getElementById("wizard-use-npu");
-      if (hardwareData && hardwareData.has_npu && hardwareData.npus && hardwareData.npus.length > 0) {
-        const npuName = hardwareData.npus[0].name;
-        const intelNpu = hardwareData.npus.some((item) => /intel/i.test(`${item.name || ""} ${item.manufacturer || ""}`));
-        const npuTitle = document.getElementById("npu-banner-title");
-        const npuText = document.getElementById("npu-banner-text");
-        if (npuTitle) npuTitle.textContent = `Puce NPU Détectée : ${npuName}`;
-        if (npuText) npuText.textContent = intelNpu
-          ? "OpenVINO v1.0.2 peut utiliser ce NPU avec certains modèles GGUF texte (Qwen 2.5 1,5B a été vérifié). Le contexte initial sera limité à 1 024 tokens ; le moteur sera vérifié avant utilisation."
-          : "Ce NPU est détecté, mais le moteur OpenVINO de l’installateur cible les NPU Intel.";
-        if (npuChoice) npuChoice.hidden = !intelNpu;
-        if (!intelNpu && useNpu) useNpu.checked = false;
-        npuBanner.style.display = "flex";
-      } else {
-        if (npuChoice) npuChoice.hidden = true;
-        if (useNpu) useNpu.checked = false;
-        npuBanner.style.display = "none";
-      }
-    }
+    updateWizardNpuNotice(hardwareData?.npus || []);
 
     // Mise à jour des compteurs de catégories
     updateCategoryCounts(modelsList);
@@ -1246,7 +1512,19 @@ async function loadWizardModelSelection(searchQuery = "") {
     renderWizardModelCards(modelsList, activeWizardCategory);
 
   } catch (err) {
-    container.innerHTML = `<p class='etu-text etu-badge-warning'>Erreur chargement catalogue : ${err}</p>`;
+    if (requestId !== wizardModelRequestId || err.name === "AbortError") return;
+    container.innerHTML = `<div class="wizard-catalog-error" role="status"><p class="etu-text">${escapeHtml(err.message || "Le catalogue n’a pas pu être chargé.")}</p></div>`;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "etu-btn etu-btn-secondary";
+    retry.textContent = "Réessayer";
+    retry.addEventListener("click", () => loadWizardModelSelection(searchQuery));
+    container.querySelector(".wizard-catalog-error").append(retry);
+  } finally {
+    if (requestId === wizardModelRequestId) {
+      container.removeAttribute("aria-busy");
+      document.getElementById("btn-wizard-start-install").disabled = wizardSelectedModels.size === 0;
+    }
   }
 }
 
@@ -1320,94 +1598,75 @@ function renderWizardModelCards(models, categoryFilter = "all") {
   const updateCounter = () => {
     const selectedCount = wizardSelectedModels.size;
     if (counterEl) counterEl.textContent = selectedCount;
+    document.getElementById("btn-wizard-start-install").disabled = selectedCount === 0 || container.getAttribute("aria-busy") === "true";
     if (moodText) {
       moodText.textContent = `${selectedCount} modèle(s) sélectionné(s) pour votre machine`;
     }
   };
 
-  filtered.forEach((item) => {
-    const isSelected = wizardSelectedModels.has(item.filename);
-    const card = document.createElement("div");
+  filtered.forEach((item, index) => {
     const npuCandidate = isModelNpuCandidate(item);
-    card.className = `model-select-card ${isSelected ? "selected" : ""} ${item.is_installed ? "is-installed" : ""} ${npuCandidate ? "is-npu-card" : ""}`;
+    const { card, select, actions, installed, quants } = createHfModelCard(item, { index: `wizard-${index}` });
+    if ([...select.options].some((option) => option.value === item.filename)) select.value = item.filename;
+    const selectedVariant = quants.find((quant) => wizardSelectedModels.get(quant.filename)?.repo === item.repo);
+    if (selectedVariant) select.value = selectedVariant.filename;
+    const isSelected = Boolean(selectedVariant);
+    card.classList.toggle("is-selected", isSelected);
     card.dataset.repo = item.repo;
     card.dataset.filename = item.filename;
     card.dataset.npu = npuCandidate ? "true" : "false";
+    const quantification = card.querySelector(".hf-model-quantification label");
+    if (quantification) quantification.textContent = "Fichier à installer";
+    const checkboxId = `wizard-model-${index}`;
+    const checkboxLabel = document.createElement("label");
+    checkboxLabel.className = "hf-model-select-control";
+    checkboxLabel.htmlFor = checkboxId;
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.id = checkboxId;
+    checkbox.checked = isSelected;
+    checkbox.setAttribute("aria-label", `Sélectionner ${item.name}`);
+    checkboxLabel.append(checkbox, document.createTextNode("Sélectionner"));
+    actions.prepend(checkboxLabel);
 
-    let badgesHtml = `<span class="etu-badge etu-badge-${item.compatibility?.color || 'info'}">${item.compatibility?.badge || 'Compatible'}</span>`;
-    if (npuCandidate) {
-      badgesHtml += ` <span class="etu-badge etu-badge-cyan">${window.ETUSVG?.icon("npu", "") || ""} Candidat NPU</span>`;
-    }
-    if (item.is_installed) {
-      const sizeInfo = item.local_size_gib ? `${item.local_size_gib} Go` : `${item.size_gib} Go`;
-      badgesHtml += ` <span class="etu-badge etu-badge-success">✓ Déjà présent (${sizeInfo})</span>`;
-    }
-    if (item.is_custom_local) {
-      badgesHtml += ` <span class="etu-badge etu-badge-purple">📁 Modèle Local</span>`;
-    }
-    if (item.is_huggingface_live) {
-      badgesHtml += ` <span class="etu-badge etu-badge-info">🤗 Hugging Face</span>`;
-    } else if (item.file_verified === false && !item.is_installed) {
-      badgesHtml += ` <span class="etu-badge etu-badge-warning">Fichier à vérifier</span>`;
-    }
-
-    const installedNotice = item.is_installed
-      ? `<div class="model-installed-flag">✓ Déjà détecté sur votre disque (aucun téléchargement requis)</div>`
-      : "";
-
-    const ramRequired = item.compatibility?.required_ram_gib || item.required_ram_gib || (item.size_gib ? Math.round(item.size_gib * 1.3) : 6.0);
-
-    card.innerHTML = `
-      <input type="checkbox" id="chk-${escapeHtml(item.id || item.filename)}" ${isSelected ? "checked" : ""}>
-      <div class="model-card-details">
-        <div class="model-card-top">
-          <span class="model-card-title">${escapeHtml(item.name)}</span>
-          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-            ${badgesHtml}
-          </div>
-        </div>
-        <p class="model-card-desc">${escapeHtml(item.description || item.repo)}</p>
-        <div class="model-card-meta">
-          <span>💾 Taille : ${item.size_gib} Go</span>
-          <span>🧠 RAM requise : ~${ramRequired} Go</span>
-          <span>🏷️ Format : ${item.quant || 'Q4_K_M'}</span>
-          ${item.downloads ? `<span>⬇️ ${item.downloads.toLocaleString()} dl</span>` : ""}
-        </div>
-        ${installedNotice}
-      </div>
-    `;
-
-    // Réactivité au survol
-    card.addEventListener("mouseenter", () => {
-      if (npuCandidate && wizardParticles) {
-        wizardParticles.setTheme("cyan");
-      } else if (ramRequired >= 8 && wizardParticles) {
-        wizardParticles.setTheme("purple");
-      }
-    });
-
-    // Clic sur la carte
-    card.addEventListener("click", (e) => {
-      const chk = card.querySelector("input[type='checkbox']");
-      if (e.target !== chk) {
-        chk.checked = !chk.checked;
-      }
-      if (chk.checked) {
-        card.classList.add("selected");
-      wizardSelectedModels.set(item.filename, { repo: item.repo, filename: item.filename, npu_compatible: npuCandidate });
+    const setSelected = (selected) => {
+      checkbox.checked = selected;
+      card.classList.toggle("is-selected", selected);
+      if (selected) {
+        wizardSelectedModels.set(select.value, {
+          repo: item.repo,
+          filename: select.value,
+          npu_compatible: npuCandidate,
+          quant: item.quant || quants.find((quant) => quant.filename === select.value)?.quant,
+        });
       } else {
-        card.classList.remove("selected");
-        wizardSelectedModels.delete(item.filename);
+        for (const [filename, model] of wizardSelectedModels) {
+          if (model.repo === item.repo && (model.filename === item.filename || quants.some((quant) => quant.filename === filename))) {
+            wizardSelectedModels.delete(filename);
+          }
+        }
       }
       updateCounter();
+    };
 
-      if (wizardParticles) {
-        const rect = card.getBoundingClientRect();
-        const rippleX = e.clientX || (rect.left + rect.width / 2);
-        const rippleY = e.clientY || (rect.top + rect.height / 2);
-        wizardParticles.addRipple(rippleX, rippleY, 1.3);
+    checkbox.addEventListener("change", () => setSelected(checkbox.checked));
+    select.addEventListener("change", () => {
+      const installedBadge = card.querySelector(".hf-installed-badge");
+      if (installedBadge) installedBadge.hidden = !installed.has(select.value);
+      if (!checkbox.checked) return;
+      for (const [filename, model] of wizardSelectedModels) {
+        if (model.repo === item.repo && (model.filename === item.filename || quants.some((quant) => quant.filename === filename))) {
+          wizardSelectedModels.delete(filename);
+        }
       }
+      setSelected(true);
     });
+    card.addEventListener("click", (event) => {
+      if (event.target.closest("a, button, select, label, input")) return;
+      setSelected(!checkbox.checked);
+    });
+    const installedBadge = card.querySelector(".hf-installed-badge");
+    if (installedBadge && installed.size) installedBadge.hidden = false;
 
     container.appendChild(card);
   });
@@ -1423,6 +1682,10 @@ async function startWizardInstallation() {
 
   const selectedModels = [...wizardSelectedModels.values()];
 
+  const startButton = document.getElementById("btn-wizard-start-install");
+  if (startButton.disabled) return;
+  startButton.disabled = true;
+  startButton.setAttribute("aria-busy", "true");
   showWizardStep(3);
 
   // Ambiance Thinking Orb Installation
@@ -1437,22 +1700,30 @@ async function startWizardInstallation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         selected_models: selectedModels,
-        backend: document.getElementById("wizard-use-npu")?.checked ? "npu" : "auto",
+        selected_variant: getWizardBackendMenu()?.value === "auto" ? null : getWizardBackendMenu()?.value,
       }),
     });
     const data = await resp.json();
     if (data.started || data.status === "running") {
       startPollingSetupProgress();
+    } else {
+      throw new Error(data.detail || "L'installation n'a pas pu démarrer.");
     }
   } catch (err) {
-    alert("Impossible de démarrer l'installation : " + err);
+    showWizardStep(2);
+    startButton.disabled = false;
+    startButton.removeAttribute("aria-busy");
+    showToast("Impossible de démarrer l'installation : " + err.message, "error");
   }
 }
 
 function startPollingSetupProgress() {
   if (setupPollingInterval) clearInterval(setupPollingInterval);
+  let pollingInFlight = false;
 
   setupPollingInterval = setInterval(async () => {
+    if (pollingInFlight) return;
+    pollingInFlight = true;
     try {
       const resp = await fetch("/api/setup/status");
       const data = await resp.json();
@@ -1460,12 +1731,19 @@ function startPollingSetupProgress() {
       const bar = document.getElementById("wizard-progress-bar");
       const percentEl = document.getElementById("wizard-progress-percent");
       const statusText = document.getElementById("wizard-progress-status");
-      const masterOrb = document.getElementById("wizard-master-orb");
+      const progressTrack = document.querySelector("#wizard-step-3 .wizard-progress-track");
+      const installVisual = document.querySelector("#wizard-step-3 .wizard-install-visual");
       const installSub = document.getElementById("install-subtitle");
       const moodText = document.getElementById("wizard-mood-text");
 
-      if (bar) bar.style.width = `${data.progress_percent}%`;
-      if (percentEl) percentEl.textContent = `${data.progress_percent}%`;
+      const progress = Math.min(100, Math.max(0, Number(data.progress_percent) || 0));
+      if (bar) bar.style.width = `${progress}%`;
+      if (percentEl) percentEl.textContent = `${Math.round(progress)} %`;
+      if (progressTrack) {
+        progressTrack.setAttribute("aria-valuenow", String(Math.round(progress)));
+        progressTrack.dataset.state = data.status;
+      }
+      if (installVisual) installVisual.dataset.state = data.status === "running" ? "running" : data.status;
 
       // Réactivité de la Thinking Orb selon l'étape
       if (data.current_step === 0 && wizardParticles) {
@@ -1487,17 +1765,27 @@ function startPollingSetupProgress() {
         const item = document.getElementById(`step-item-${idx}`);
         if (!item) return;
 
-        item.classList.remove("running", "completed");
+        item.classList.remove("running", "completed", "cancelled", "error");
+        item.removeAttribute("aria-current");
         const icon = item.querySelector(".step-icon");
+        const stateLabel = item.querySelector(".step-state");
+        if (stateLabel) stateLabel.textContent = { running: "En cours", completed: "Terminé", cancelled: "Annulé", error: "Erreur", pending: "À venir" }[step.status] || "À venir";
 
         if (step.status === "running") {
           item.classList.add("running");
+          item.setAttribute("aria-current", "step");
           if (icon) icon.innerHTML = '<span class="etu-spinner" style="border-width:2px;width:12px;height:12px;"></span>';
           if (statusText) statusText.textContent = step.title;
           if (moodText) moodText.textContent = `En cours : ${step.title}`;
         } else if (step.status === "completed") {
           item.classList.add("completed");
           if (icon) icon.textContent = "✓";
+        } else if (step.status === "cancelled") {
+          item.classList.add("cancelled");
+          if (icon) icon.textContent = "–";
+        } else if (step.status === "error") {
+          item.classList.add("error");
+          if (icon) icon.textContent = "!";
         } else {
           if (icon) icon.textContent = `${idx + 1}`;
         }
@@ -1513,23 +1801,17 @@ function startPollingSetupProgress() {
       // Si terminé avec succès
       if (data.status === "completed" || (data.completed && data.beacon_online)) {
         clearInterval(setupPollingInterval);
-
-        if (wizardParticles) {
-          wizardParticles.setTheme("emerald");
-          // Multiples ondes de choc festives
-          wizardParticles.addRipple(window.innerWidth / 2, window.innerHeight * 0.4, 2.5);
-          setTimeout(() => wizardParticles.addRipple(window.innerWidth * 0.35, window.innerHeight * 0.45, 1.8), 250);
-          setTimeout(() => wizardParticles.addRipple(window.innerWidth * 0.65, window.innerHeight * 0.45, 1.8), 500);
-        }
+        document.getElementById("btn-wizard-open-during-install").style.display = "none";
+        document.getElementById("btn-wizard-cancel-install").style.display = "none";
 
         const titleEl = document.getElementById("install-title");
         if (titleEl) {
           titleEl.textContent = "Installation terminée avec succès !";
-          titleEl.style.color = "#34d399";
+          titleEl.style.color = "var(--success)";
         }
         if (statusText) {
           statusText.textContent = "Serveur MAIA-Beacon actif sur le port 11343 !";
-          statusText.style.color = "#34d399";
+          statusText.style.color = "var(--success)";
         }
         if (installSub) {
           installSub.textContent = "Votre assistant ETU-AI est configuré, optimisé et prêt à l'emploi.";
@@ -1539,7 +1821,11 @@ function startPollingSetupProgress() {
         }
 
         const finishBtn = document.getElementById("btn-wizard-finish");
-        if (finishBtn) finishBtn.style.display = "inline-flex";
+        if (finishBtn) {
+          finishBtn.style.display = "inline-flex";
+          finishBtn.textContent = "Ouvrir ETU-AI";
+        }
+        window.setTimeout(openMainApp, 1200);
       } else if (data.status === "error") {
         clearInterval(setupPollingInterval);
         if (wizardParticles) wizardParticles.setTheme("amber");
@@ -1554,9 +1840,36 @@ function startPollingSetupProgress() {
           statusText.style.color = "var(--danger)";
         }
         if (moodText) moodText.textContent = "Erreur d'installation";
+        const finishBtn = document.getElementById("btn-wizard-finish");
+        if (finishBtn) {
+          finishBtn.textContent = "Continuer sans moteur local";
+          finishBtn.style.display = "inline-flex";
+        }
+        const openBtn = document.getElementById("btn-wizard-open-during-install");
+        const cancelBtn = document.getElementById("btn-wizard-cancel-install");
+        if (openBtn) openBtn.style.display = "none";
+        if (cancelBtn) cancelBtn.style.display = "none";
+      } else if (data.status === "cancelled") {
+        clearInterval(setupPollingInterval);
+        if (installSub) installSub.textContent = "L’installation a été arrêtée. Vos modèles locaux restent disponibles.";
+        if (statusText) statusText.textContent = "Installation annulée";
+        if (moodText) moodText.textContent = "Configuration reportée";
+        const titleEl = document.getElementById("install-title");
+        if (titleEl) titleEl.textContent = "Installation arrêtée";
+        const finishBtn = document.getElementById("btn-wizard-finish");
+        if (finishBtn) {
+          finishBtn.textContent = "Ouvrir ETU-AI";
+          finishBtn.style.display = "inline-flex";
+        }
+        const openBtn = document.getElementById("btn-wizard-open-during-install");
+        const cancelBtn = document.getElementById("btn-wizard-cancel-install");
+        if (openBtn) openBtn.style.display = "none";
+        if (cancelBtn) cancelBtn.style.display = "none";
       }
     } catch (err) {
       console.warn("Erreur de suivi setup :", err);
+    } finally {
+      pollingInFlight = false;
     }
   }, 800);
 }
@@ -1780,6 +2093,66 @@ function initModals() {
 
 const hfExplorerState = { key: "", query: "", onlyCompatible: true, page: 1, models: [], complete: false, requestId: 0, controller: null };
 
+function createHfModelCard(item, { requestId = "wizard", index = 0, nativeFormat = false } = {}) {
+  const icon = (name) => window.ETUSVG?.icon(name) || "";
+  const compatibility = item.compatibility || {};
+  const badgeText = String(compatibility.badge || "Compatible").replace(/^[^A-Za-zÀ-ÿ0-9]+/, "");
+  const badgeIcon = compatibility.has_gpu_acceleration ? "gpu" : nativeFormat || compatibility.npu_candidate ? "npu" : "cpu";
+  let badgesHtml = `<span class="etu-badge etu-badge-${compatibility.color || "info"} hf-card-badge">${icon(badgeIcon)}${escapeHtml(badgeText)}</span>`;
+  if (compatibility.npu_candidate) {
+    badgesHtml += ` <span class="etu-badge etu-badge-cyan hf-card-badge" title="Accélération NPU à confirmer avec ce modèle">${icon("npu")} Candidat NPU</span>`;
+  }
+  badgesHtml += ` <span class="etu-badge etu-badge-success hf-card-badge hf-installed-badge" hidden>${icon("check")} Installé</span>`;
+
+  const quants = item.quantizations || [{ filename: item.filename, size_gib: item.size_gib, quant: item.quant }];
+  const selectOptions = quants.map((quant) => {
+    const variantLabel = item.format ? `${quant.quant} · ${quant.filename}` : quant.quant || "GGUF";
+    return `<option value="${escapeHtml(quant.filename)}">${escapeHtml(variantLabel)} (~${Number(quant.size_gib || 0).toLocaleString("fr-FR")} Go)</option>`;
+  }).join("");
+  const quantId = `hf-quant-${requestId}-${index}`;
+  const modelPage = `https://huggingface.co/${String(item.repo).split("/").map(encodeURIComponent).join("/")}`;
+  const parameters = item.params && !/^inconnu$/i.test(item.params) ? `<span class="hf-parameter-badge">${escapeHtml(item.params)}</span>` : "";
+  const description = item.description && !item.description.startsWith("Modèle GGUF haute performance disponible sur Hugging Face") ? `<p class="hf-model-desc">${escapeHtml(item.description)}</p>` : "";
+  const requiredRam = Number(compatibility.required_ram_gib || item.required_ram_gib);
+  const memoryLabel = requiredRam > 0 ? `~${requiredRam.toLocaleString("fr-FR")} Go` : "Non renseignée";
+  const card = document.createElement("article");
+  card.className = "hf-model-card";
+  card.innerHTML = `
+    <header class="hf-model-top">
+      <div class="hf-model-identity">
+        <div class="hf-model-title-row">
+          <h4 class="hf-model-title">${escapeHtml(item.name)}</h4>
+          ${parameters}
+        </div>
+        <span class="hf-model-author">${escapeHtml(item.repo)}</span>
+      </div>
+      ${item.repo === "local" ? '<span class="hf-model-author">Fichier local</span>' : `<a class="hf-model-page" href="${escapeHtml(modelPage)}" target="_blank" rel="noopener noreferrer" aria-label="Voir ${escapeHtml(item.name)} sur Hugging Face">${icon("externalLink")}<span>Page du modèle</span></a>`}
+    </header>
+    <div class="hf-model-badges">${badgesHtml}</div>
+    ${description}
+    <div class="hf-model-metrics">
+      <div class="hf-model-metric"><span>${icon("download")}Téléchargements</span><strong>${Number(item.downloads || 0).toLocaleString("fr-FR")}</strong></div>
+      <div class="hf-model-metric"><span>${icon("heart")}Soutiens</span><strong>${Number(item.likes || 0).toLocaleString("fr-FR")}</strong></div>
+      <div class="hf-model-metric"><span>${icon("memory")}Mémoire estimée</span><strong>${memoryLabel}</strong></div>
+    </div>
+    ${compatibility.recommendation ? `<p class="hf-model-recommendation">${icon("hint")}<span>${escapeHtml(compatibility.recommendation)}</span></p>` : ""}
+    <div class="hf-model-bottom">
+      <div class="hf-model-quantification">
+        <label for="${quantId}">Quantification</label>
+        <select id="${quantId}" class="hf-quant-select">${selectOptions}</select>
+      </div>
+      <div class="hf-model-actions"></div>
+    </div>`;
+  return {
+    card,
+    icon,
+    quants,
+    select: card.querySelector(".hf-quant-select"),
+    actions: card.querySelector(".hf-model-actions"),
+    installed: new Set(item.installed_filenames || (item.is_installed ? [item.filename] : [])),
+  };
+}
+
 function validateHfExplorerResponse(data, requestedFormat) {
   if (requestedFormat === "gguf") return;
   if (data.model_format !== requestedFormat) {
@@ -1904,62 +2277,7 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
     }
 
     models.forEach((item, index) => {
-      const card = document.createElement("article");
-      card.className = "hf-model-card";
-
-      const icon = (name) => window.ETUSVG?.icon(name) || "";
-      const compatibility = item.compatibility || {};
-      const badgeText = String(compatibility.badge || "Compatible").replace(/^[^A-Za-zÀ-ÿ0-9]+/, "");
-      const badgeIcon = compatibility.has_gpu_acceleration ? "gpu" : nativeFormat || compatibility.npu_candidate ? "npu" : "cpu";
-      let badgesHtml = `<span class="etu-badge etu-badge-${compatibility.color || 'info'} hf-card-badge">${icon(badgeIcon)}${escapeHtml(badgeText)}</span>`;
-      if (compatibility.npu_candidate) {
-        badgesHtml += ` <span class="etu-badge etu-badge-cyan hf-card-badge" title="Accélération NPU à confirmer avec ce modèle">${icon("npu")} Candidat NPU</span>`;
-      }
-      badgesHtml += ` <span class="etu-badge etu-badge-success hf-card-badge hf-installed-badge" hidden>${icon("check")} Installé</span>`;
-
-      // Construction du sélecteur de quantification
-      const quants = item.quantizations || [{ filename: item.filename, size_gib: item.size_gib, quant: item.quant }];
-      let selectOptions = "";
-      quants.forEach((quant) => {
-        const variantLabel = item.format ? `${quant.quant} · ${quant.filename}` : quant.quant || "GGUF";
-        selectOptions += `<option value="${escapeHtml(quant.filename)}">${escapeHtml(variantLabel)} (~${Number(quant.size_gib || 0).toLocaleString("fr-FR")} Go)</option>`;
-      });
-      const quantId = `hf-quant-${requestId}-${index}`;
-      const modelPage = `https://huggingface.co/${String(item.repo).split("/").map(encodeURIComponent).join("/")}`;
-      const parameters = item.params && !/^inconnu$/i.test(item.params) ? `<span class="hf-parameter-badge">${escapeHtml(item.params)}</span>` : "";
-      const description = item.description && !item.description.startsWith("Modèle GGUF haute performance disponible sur Hugging Face") ? `<p class="hf-model-desc">${escapeHtml(item.description)}</p>` : "";
-      const requiredRam = Number(compatibility.required_ram_gib || item.required_ram_gib);
-      const memoryLabel = requiredRam > 0 ? `~${requiredRam.toLocaleString("fr-FR")} Go` : "Non renseignée";
-
-      card.innerHTML = `
-        <header class="hf-model-top">
-          <div class="hf-model-identity">
-            <div class="hf-model-title-row">
-              <h4 class="hf-model-title">${escapeHtml(item.name)}</h4>
-              ${parameters}
-            </div>
-            <span class="hf-model-author">${escapeHtml(item.repo)}</span>
-          </div>
-          <a class="hf-model-page" href="${escapeHtml(modelPage)}" target="_blank" rel="noopener noreferrer" aria-label="Voir ${escapeHtml(item.name)} sur Hugging Face">${icon("externalLink")}<span>Page du modèle</span></a>
-        </header>
-        <div class="hf-model-badges">${badgesHtml}</div>
-        ${description}
-        <div class="hf-model-metrics">
-          <div class="hf-model-metric"><span>${icon("download")}Téléchargements</span><strong>${Number(item.downloads || 0).toLocaleString("fr-FR")}</strong></div>
-          <div class="hf-model-metric"><span>${icon("heart")}Soutiens</span><strong>${Number(item.likes || 0).toLocaleString("fr-FR")}</strong></div>
-          <div class="hf-model-metric"><span>${icon("memory")}Mémoire estimée</span><strong>${memoryLabel}</strong></div>
-        </div>
-        ${compatibility.recommendation ? `<p class="hf-model-recommendation">${icon("hint")}<span>${escapeHtml(compatibility.recommendation)}</span></p>` : ""}
-        <div class="hf-model-bottom">
-          <div class="hf-model-quantification">
-            <label for="${quantId}">Quantification</label>
-            <select id="${quantId}" class="hf-quant-select">
-              ${selectOptions}
-            </select>
-          </div>
-          <div class="hf-model-actions"></div>
-        </div>
-      `;
+      const { card, icon, quants, select, actions, installed } = createHfModelCard(item, { requestId, index, nativeFormat });
 
       if (item.can_install === false) {
         card.querySelector(".hf-model-quantification").textContent = `Format : ${item.format === "openvino" ? "OpenVINO IR" : "ONNX"} · dépôt complet requis`;
@@ -1968,9 +2286,6 @@ async function loadHfExplorerResults(searchQuery = "", onlyCompatible = true, pa
         return;
       }
 
-      const select = card.querySelector(".hf-quant-select");
-      const actions = card.querySelector(".hf-model-actions");
-      const installed = new Set(item.installed_filenames || (item.is_installed ? [item.filename] : []));
       if (installed.size) select.value = [...installed][0];
       if (["openvino", "onnx"].includes(item.format)) {
         card.querySelector(".hf-model-quantification label").textContent = "Quantification / variante publiée";
@@ -2171,6 +2486,25 @@ function closeDownloadsView({ fromRoute = false, syncRoute = true } = {}) {
 
 let serverVariantPoller = null;
 let serverVariantMenu = null;
+let wizardBackendMenu = null;
+let wizardRecommendedBackend = "CPU";
+function getWizardBackendMenu() {
+  if (!wizardBackendMenu) {
+    wizardBackendMenu = ETUComponents.listMenu(document.getElementById("wizard-backend-menu"), {
+      onChange: () => updateWizardBackendHint(),
+      placement: "up",
+    });
+  }
+  return wizardBackendMenu;
+}
+function updateWizardBackendHint() {
+  const hint = document.getElementById("wizard-backend-hint");
+  if (!hint) return;
+  const selected = getWizardBackendMenu()?.selectedItem;
+  hint.textContent = selected?.id === "auto"
+    ? "Versions indisponibles pour le moment. ETU-AI choisira un moteur compatible."
+    : selected ? `La version ${selected.label} sera installée.` : "Aucune version compatible disponible.";
+}
 function getServerVariantMenu() {
   if (!serverVariantMenu) serverVariantMenu = ETUComponents.listMenu(document.getElementById("settings-server-menu"));
   return serverVariantMenu;
@@ -2203,6 +2537,7 @@ function serverVariantPresentation(variant) {
   const platformNames = { windows: "Windows", macos: "macOS", linux: "Linux" };
   return {
     id: variant.id,
+    variant: backend,
     label: `${tag} · ${title}`,
     optionLabel: title,
     group: tag,
@@ -2213,9 +2548,50 @@ function serverVariantPresentation(variant) {
     disabled: !compatible,
   };
 }
+function presentServerVariants(variants) {
+  const unique = [...new Map((variants || []).map((variant) => [variant.id, variant])).values()];
+  const versions = [...new Set(unique.map((variant) => serverVariantPresentation(variant).group))];
+  unique.sort((a, b) => {
+    const first = serverVariantPresentation(a);
+    const second = serverVariantPresentation(b);
+    return versions.indexOf(first.group) - versions.indexOf(second.group)
+      || Number(first.disabled) - Number(second.disabled)
+      || first.subgroup.localeCompare(second.subgroup, "fr");
+  });
+  return unique.map(serverVariantPresentation);
+}
+function latestServerVariants(variants) {
+  const items = presentServerVariants(variants);
+  const latest = items[0]?.group;
+  return latest ? items.filter((item) => item.group === latest) : items;
+}
+async function loadWizardServerVariants() {
+  const menu = getWizardBackendMenu();
+  const hint = document.getElementById("wizard-backend-hint");
+  if (hint) hint.textContent = "Chargement des versions du moteur…";
+  try {
+    const response = await fetch("/api/maintenance/server");
+    if (!response.ok) throw new Error("Catalogue indisponible");
+    const data = await response.json();
+    const items = latestServerVariants(data.variants);
+    if (!items.some((item) => !item.disabled)) throw new Error(data.catalog_error || "Aucune version compatible");
+    const previous = items.some((item) => item.id === menu.value && !item.disabled) ? menu.value : null;
+    const recommended = items.find((item) => !item.disabled && (item.variant === wizardRecommendedBackend.toLowerCase() || item.variant.startsWith(wizardRecommendedBackend.toLowerCase())));
+    menu.setItems(items, previous || data.selected_variant || recommended?.id);
+    updateWizardBackendHint();
+  } catch (error) {
+    menu.setItems([{ id: "auto", label: "Choix automatique", optionLabel: "Choix automatique", description: "Le catalogue des versions est momentanément indisponible.", platform: "cpu", badges: ["cpu"] }], "auto");
+    updateWizardBackendHint();
+  }
+}
 async function loadServerVariants() {
   const menu = getServerVariantMenu();
   const status = document.getElementById("settings-server-status");
+  const showOlderToggle = document.getElementById("settings-server-show-older");
+  if (showOlderToggle && !showOlderToggle.dataset.bound) {
+    showOlderToggle.addEventListener("change", loadServerVariants);
+    showOlderToggle.dataset.bound = "true";
+  }
   status.dataset.loading = "true";
   status.setAttribute("aria-busy", "true");
   if (!status.textContent.trim()) status.textContent = "Chargement des versions du moteur…";
@@ -2227,17 +2603,13 @@ async function loadServerVariants() {
       throw new Error(failure.detail || `Liste des versions indisponible (${response.status})`);
     }
     const data = await response.json();
-    const uniqueVariants = [...new Map(data.variants.map((variant) => [variant.id, variant])).values()];
-    const versions = [...new Set(uniqueVariants.map((variant) => serverVariantPresentation(variant).group))];
-    uniqueVariants.sort((a, b) => {
-      const first = serverVariantPresentation(a);
-      const second = serverVariantPresentation(b);
-      return versions.indexOf(first.group) - versions.indexOf(second.group)
-        || Number(first.disabled) - Number(second.disabled)
-        || first.subgroup.localeCompare(second.subgroup, "fr");
-    });
-    menu.setItems(uniqueVariants.map(serverVariantPresentation), previousSelection || data.selected_variant);
-    status.textContent = data.status === "running" ? (data.message || "Réinstallation en cours…") : data.status === "error" ? data.message : data.catalog_error || `Version installée : ${data.installed_variant || "inconnue"} · ${data.release_tag}`;
+    const allItems = presentServerVariants(data.variants);
+    const visibleItems = showOlderToggle?.checked ? allItems : latestServerVariants(data.variants);
+    menu.setItems(visibleItems, previousSelection || data.selected_variant);
+    const latestTag = allItems[0]?.group;
+    const installedTag = data.installed_variant ? data.release_tag : null;
+    const hiddenOlderInstalled = !showOlderToggle?.checked && installedTag && latestTag && installedTag !== latestTag;
+    status.textContent = data.status === "running" ? (data.message || "Réinstallation en cours…") : data.status === "error" ? data.message : data.catalog_error || `Version installée : ${data.installed_variant || "inconnue"} · ${data.release_tag}${hiddenOlderInstalled ? ` · ${installedTag} est une ancienne version masquée` : ""}`;
     status.dataset.loading = data.status === "running" ? "true" : "false";
     status.setAttribute("aria-busy", data.status === "running" ? "true" : "false");
     document.getElementById("btn-settings-reinstall-server").disabled = data.status === "running" || !menu.value;
@@ -2615,8 +2987,11 @@ function recordDownloadSample(tasks, serverInstall = null) {
   const now = Date.now();
   const elapsedSeconds = lastDownloadSampleAt ? Math.max((now - lastDownloadSampleAt) / 1000, 0.1) : 1;
   const active = tasks.filter(task => ["queued", "downloading"].includes(task.status));
-  const network = downloading.reduce((sum, task) => sum + (Number(task.speed_mbps) || 0), 0);
-  const total = active.reduce((sum, task) => sum + (Number(task.downloaded_bytes) || 0), 0);
+  const serverDownloading = serverInstall?.status === "running" && serverInstall?.phase === "downloading";
+  const network = downloading.reduce((sum, task) => sum + (Number(task.speed_mbps) || 0), 0)
+    + (serverDownloading ? Number(serverInstall.speed_mbps) || 0 : 0);
+  const total = active.reduce((sum, task) => sum + (Number(task.downloaded_bytes) || 0), 0)
+    + (serverDownloading ? Number(serverInstall.downloaded_bytes) || 0 : 0);
   let diskBytes = 0;
   const currentIds = new Set();
   for (const task of tasks) {
@@ -2627,6 +3002,15 @@ function recordDownloadSample(tasks, serverInstall = null) {
     if (previous !== undefined && bytes > previous) diskBytes += bytes - previous;
     previousDownloadedBytes.set(id, bytes);
   }
+  if (serverDownloading) {
+    const bytes = Number(serverInstall.downloaded_bytes) || 0;
+    const previous = previousDownloadedBytes.get("server-reinstall");
+    if (previous !== undefined && bytes > previous) diskBytes += bytes - previous;
+    previousDownloadedBytes.set("server-reinstall", bytes);
+    currentIds.add("server-reinstall");
+  } else {
+    previousDownloadedBytes.delete("server-reinstall");
+  }
   for (const id of previousDownloadedBytes.keys()) if (!currentIds.has(id)) previousDownloadedBytes.delete(id);
   const disk = diskBytes / elapsedSeconds / 1024 ** 2;
   downloadPeakSpeed = Math.max(downloadPeakSpeed, network);
@@ -2635,11 +3019,12 @@ function recordDownloadSample(tasks, serverInstall = null) {
   if (downloadSpeedHistory.length > 60) downloadSpeedHistory.splice(0, downloadSpeedHistory.length - 60);
   lastDownloadSampleAt = now;
   const setText = (id, value) => { const element = document.getElementById(id); if (element) element.textContent = value; };
-  setText("download-current-speed", downloading.length ? `${network.toFixed(1)} Mo/s` : "—");
+  setText("download-current-speed", downloading.length || serverDownloading ? `${network.toFixed(1)} Mo/s` : "—");
   setText("download-peak-speed", `${downloadPeakSpeed.toFixed(1)} Mo/s`);
   setText("download-total-size", formatDownloadBytes(total));
-  setText("download-disk-speed", downloading.length ? `${disk.toFixed(1)} Mo/s` : "—");
-  setText("download-active-count", `${downloading.length || 1} transfert${downloading.length > 1 ? "s" : ""} en cours`);
+  setText("download-disk-speed", downloading.length || serverDownloading ? `${disk.toFixed(1)} Mo/s` : "—");
+  const activeTransfers = downloading.length + Number(serverDownloading);
+  setText("download-active-count", `${activeTransfers || 1} transfert${activeTransfers > 1 ? "s" : ""} en cours`);
   drawDownloadSpeedChart();
 }
 
@@ -2700,9 +3085,12 @@ function updateDownloadNavigation(tasks = [], serverInstall = null) {
   const queued = tasks.filter(task => task.status === "queued").length;
   const serverRunning = serverInstall?.status === "running";
   const running = downloading.length + Number(serverRunning);
-  const indeterminate = Boolean(serverRunning || downloading.some(task => !(Number(task.total_bytes) > 0)));
-  const total = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.total_bytes) || 0), 0);
-  const received = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.downloaded_bytes) || 0), 0);
+  const serverHasDownloadSize = serverRunning && serverInstall?.phase === "downloading" && Number(serverInstall.total_bytes) > 0;
+  const indeterminate = Boolean((serverRunning && !serverHasDownloadSize) || downloading.some(task => !(Number(task.total_bytes) > 0)));
+  const total = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.total_bytes) || 0), 0)
+    + (serverHasDownloadSize ? Number(serverInstall.total_bytes) || 0 : 0);
+  const received = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.downloaded_bytes) || 0), 0)
+    + (serverHasDownloadSize ? Number(serverInstall.downloaded_bytes) || 0 : 0);
   const percentage = total ? Math.min(100, Math.round(received / total * 100)) : 0;
   button.classList.toggle("is-downloading", running > 0);
   button.classList.toggle("is-download-indeterminate", running > 0 && indeterminate);
@@ -2762,15 +3150,23 @@ function renderDownloadManager(tasks, serverInstall = null) {
     row.className = "download-manager-item download-manager-item--server";
     const heading = createDownloadHeading("Installation / mise à jour du moteur", { kind: "engine" });
     const status = document.createElement("span");
-    const serverLabels = { running: "Téléchargement / installation en cours", completed: "Terminé", error: "Erreur" };
-    status.textContent = serverLabels[serverInstall.status];
+    const serverLabels = { running: "En cours", completed: "Terminé", error: "Erreur" };
+    status.textContent = serverInstall.status === "running" && serverInstall.phase === "downloading" && Number(serverInstall.total_bytes) > 0
+      ? `Téléchargement · ${Math.round(Number(serverInstall.percentage) || 0)} %`
+      : serverInstall.status === "running" && serverInstall.phase === "installing" ? "Vérification et installation" : serverLabels[serverInstall.status];
     const progress = document.createElement("progress");
     progress.max = 100;
     if (serverInstall.status === "completed") progress.value = 100;
     else if (serverInstall.status === "error") progress.value = 0;
+    else if (serverInstall.phase === "downloading" && Number(serverInstall.total_bytes) > 0) {
+      progress.value = Math.max(0, Math.min(100, Number(serverInstall.percentage) || 0));
+    } else progress.removeAttribute("value");
     const details = document.createElement("small");
     const version = serverInstall.release_tag ? `Version ${serverInstall.release_tag}` : "Moteur llama.cpp";
-    details.textContent = `${version} · ${serverInstall.message || "Préparation…"}`;
+    const downloadStats = serverInstall.phase === "downloading"
+      ? ` · ${formatDownloadBytes(serverInstall.downloaded_bytes)} / ${serverInstall.total_bytes ? formatDownloadBytes(serverInstall.total_bytes) : "taille inconnue"} · ${(Number(serverInstall.speed_mbps) || 0).toFixed(2)} Mo/s`
+      : "";
+    details.textContent = `${version} · ${serverInstall.message || "Préparation…"}${downloadStats}`;
     row.append(heading, status, progress, details);
     groups[serverIsActive ? "running" : "done"].entries.append(row);
   }
@@ -2909,7 +3305,7 @@ async function refreshDownloadManager() {
   if (downloadRefreshInFlight) return;
   downloadRefreshInFlight = true;
   try {
-    const response = await fetch("/api/models/tasks");
+    const response = await fetch("/api/models/tasks", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const tasks = (await response.json()).tasks || [];
     let serverInstall = null;

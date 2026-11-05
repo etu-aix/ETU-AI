@@ -229,6 +229,18 @@ html[data-theme="dark"] .api-provider-mark img { filter: invert(1); }
 #api-key-status { display: inline-flex; margin-left: 6px; padding: 3px 8px; border-radius: 999px; background: color-mix(in srgb, var(--success) 12%, var(--bg-secondary)); color: var(--success); font-size: .68rem; font-weight: 600; letter-spacing: 0; }
 #api-key-status[data-has-key="false"] { background: color-mix(in srgb, var(--warning) 13%, var(--bg-secondary)); color: var(--warning); }
 #api-settings-form > .etu-text { padding: 11px 13px; border-radius: 10px; background: var(--bg-secondary); color: var(--text-muted); font-size: .76rem; line-height: 1.55; }
+.chatgpt-account-panel { display: grid; gap: 10px; padding: 12px 0; }
+.chatgpt-account-panel[hidden], #api-key-label[hidden], #api-provider-key[hidden], #api-settings-form > .etu-text[hidden] { display: none; }
+.chatgpt-account-panel > label { color: var(--text-muted); font-size: .76rem; font-weight: 650; }
+.chatgpt-account-panel select { width: 100%; min-height: 44px; padding: 10px 13px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-primary); color: var(--text-main); font: inherit; }
+.chatgpt-account-panel select:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent-color) 25%, transparent); }
+#chatgpt-auth-method { width: 100%; min-height: 44px; padding: 10px 13px; border: 1px solid var(--border-color); border-radius: 11px; background: var(--bg-primary); color: var(--text-main); font: inherit; }
+#chatgpt-auth-method:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent-color) 25%, transparent); }
+#chatgpt-auth-method-wrap[hidden] { display: none; }
+.chatgpt-account-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.chatgpt-account-actions > button { min-height: 44px; }
+.chatgpt-account-actions > button[hidden], .chatgpt-account-panel select[hidden] { display: none; }
+.chatgpt-account-panel > p { margin: 0; color: var(--text-muted); font-size: .78rem; line-height: 1.5; }
 #api-settings-form > button { width: 100%; min-height: 44px; margin-top: 3px; border-radius: 11px; font-weight: 650; }
 .api-clear-key-button { justify-self: start; padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border-color)); border-radius: 8px; background: transparent; color: var(--danger); font: inherit; font-size: .78rem; cursor: pointer; }
 .api-clear-key-button:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }

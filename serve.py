@@ -15,7 +15,8 @@ def main() -> None:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", port))
             listener.listen(2048)
-        config = uvicorn.Config(app, host="127.0.0.1", proxy_headers=False, log_level="info")
+        # OAuth callbacks contain a short-lived authorization code in the URL.
+        config = uvicorn.Config(app, host="127.0.0.1", proxy_headers=False, log_level="info", access_log=False)
         server = uvicorn.Server(config)
         app.state.uvicorn_server = server
         server.run(sockets=listeners)

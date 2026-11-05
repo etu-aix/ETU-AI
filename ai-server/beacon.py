@@ -289,6 +289,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Use validated local artifacts only; no pip or downloads",
     )
     parser.add_argument("--update", action="store_true", help="Explicitly refresh configured source/binary/model versions")
+    parser.add_argument("--server-variant", help="Install this exact llama-server release variant")
+    parser.add_argument("--server-asset-name", help="Validated archive name for the selected release variant")
+    parser.add_argument("--server-asset-url", help="Validated archive URL for the selected release variant")
     parser.add_argument("--force-rebuild", action="store_true", help="Build llama from the configured source ref")
     parser.add_argument("--verify-only", action="store_true", help="Start, run a real inference smoke test, then stop")
     args = parser.parse_args(argv)
@@ -299,6 +302,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if sys.version_info < (3, 11):
         raise RuntimeError("Python 3.11 or newer is required")
     config = load_config()
+    if args.server_variant:
+        if not args.server_asset_name or not args.server_asset_url:
+            parser.error("--server-variant requires --server-asset-name and --server-asset-url")
+        config["_exact_asset_name"] = args.server_asset_name
+        config["_exact_asset_url"] = args.server_asset_url
     print_effective_config(config)
     hardware = scan_hardware()
     print_system_report(hardware)
@@ -314,7 +322,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         }
         for path in sorted(resources, key=lambda p: str(p.resolve())):
             locks.enter_context(file_lock(path))
-        exe = setup_llama(hardware, args.force_rebuild, args.offline, args.update, config)
+        exe = setup_llama(hardware, args.force_rebuild, args.offline, args.update, config, exact_variant=args.server_variant)
         backend_state = read_json(STATE_FILE)
         beacon_dir, python = setup_maia(exe, args.offline, args.update, config)
         model_path = ensure_model(config, args.offline, args.update)

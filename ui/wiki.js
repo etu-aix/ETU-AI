@@ -9,7 +9,8 @@
     return el;
   };
   let cfg = {}, current = null, dirty = false, graph = { nodes: [], edges: [] }, timer, graphObserver;
-  let scale = 1, pan = { x: 0, y: 0 }, selectedNode = null, frame = 0, chatTimer;
+  let scale = 1, pan = { x: 0, y: 0 }, selectedNode = null, hoveredNode = null, frame = 0, chatTimer;
+  const nodePositions = new Map();
   async function api(path, method = "GET", body) {
     const response = await fetch(`/api/wiki${path}`, { method, headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const data = await response.json();
@@ -29,11 +30,10 @@
     if (!mount || mount.children.length) return;
     mount.innerHTML = `<div class="wiki">
       <header class="wiki-header">
-        <div class="wiki-heading"><span class="settings-eyebrow">VOTRE ESPACE PERSONNEL</span><h3>Connaissances</h3><p>Vos documents Markdown, leur recherche et les souvenirs de l’assistant, stockés sur cet ordinateur.</p></div>
+        <div class="wiki-heading"><p>Retrouvez et modifiez vos documents Markdown, conservés sur cet ordinateur.</p></div>
         <div class="wiki-toolbar wiki-header-actions"><button id="wiki-open-folder" class="etu-btn etu-btn-secondary" type="button">Ouvrir le dossier</button><button id="wiki-open-obsidian" class="etu-btn etu-btn-secondary" type="button">Ouvrir dans Obsidian</button></div>
         <small id="wiki-folder-path" class="wiki-folder-path"></small>
       </header>
-      <details class="wiki-config wiki-card"><summary><span><strong>Réglages du Wiki</strong><small>Recherche dans les réponses, mémoire et traitements automatiques</small></span></summary><form id="wiki-settings"><div id="wiki-fields" class="wiki-fields"></div><button class="etu-btn etu-btn-primary" type="submit">Enregistrer les paramètres</button></form></details>
       <div id="wiki-feedback" class="wiki-feedback" role="status" aria-live="polite"></div>
       <section class="wiki-card wiki-documents" aria-labelledby="wiki-documents-title">
         <div class="wiki-documents-head">
@@ -41,11 +41,13 @@
           <div class="wiki-documents-controls"><label class="wiki-search"><span class="sr-only">Rechercher dans le Wiki</span><input id="wiki-search" type="search" aria-label="Rechercher dans le Wiki" placeholder="Rechercher un document ou un passage…"><button id="wiki-search-button" class="etu-btn etu-btn-secondary" type="button">Rechercher</button></label><div class="wiki-toolbar"><button id="wiki-new" class="etu-btn etu-btn-primary" type="button">Nouveau document</button><button id="wiki-deleted" class="etu-btn etu-btn-secondary" type="button">Documents supprimés</button></div></div>
         </div>
         <div class="wiki-workspace"><nav id="wiki-files" class="wiki-files" aria-label="Dossiers et connaissances"></nav><div class="wiki-editor">
+          <div id="wiki-editor-empty" class="wiki-editor-empty"><strong>Choisissez un document</strong><p>Sélectionnez une note dans la liste ou créez-en une nouvelle.</p></div>
           <label class="wiki-path-label" for="wiki-path">Titre et emplacement</label><input id="wiki-path" aria-label="Chemin du document" placeholder="Projets/Architecture.md"><textarea id="wiki-content" aria-label="Contenu Markdown" placeholder="# Nouvelle connaissance"></textarea>
           <div class="wiki-editor-footer"><small id="wiki-origin">Sélectionnez un document ou créez-en un.</small><div id="wiki-actions" class="wiki-toolbar"></div></div><div id="wiki-preview" class="wiki-preview" hidden></div><div id="wiki-links" class="wiki-links"></div><details class="wiki-history-details"><summary>Historique et restauration</summary><div id="wiki-history" class="wiki-history"></div></details>
         </div></div>
       </section>
-      <details class="wiki-card wiki-secondary"><summary><span><strong>Relations entre les connaissances</strong><small>Visualisez les liens entre vos documents</small></span></summary><div class="wiki-secondary-body"><div class="wiki-graph-controls"><input id="wiki-graph-filter" aria-label="Filtrer le graphe" placeholder="Filtrer par catégorie ou titre"><select id="wiki-depth" aria-label="Distance des relations"><option value="all">Toutes les relations</option><option value="1">Liens directs</option><option value="2">Liens à deux niveaux</option></select><button id="wiki-graph-reset" class="etu-btn etu-btn-secondary" type="button">Recentrer</button></div><canvas id="wiki-graph" class="wiki-graph" role="img" aria-label="Graphe des connaissances : zoom avec la molette, déplacement par glissement, clic pour ouvrir. Les documents sont aussi accessibles dans la liste."></canvas><small id="wiki-graph-info" class="wiki-section-note"></small></div></details>
+      <details class="wiki-card wiki-secondary"><summary><span><strong>Relations entre les connaissances</strong><small>Explorez les liens entre vos documents</small></span></summary><div class="wiki-secondary-body"><div class="wiki-graph-controls"><input id="wiki-graph-filter" aria-label="Filtrer le graphe" placeholder="Filtrer par catégorie ou titre"><select id="wiki-depth" aria-label="Distance des relations"><option value="all">Toutes les relations</option><option value="1">Liens directs</option><option value="2">Liens à deux niveaux</option></select><button id="wiki-graph-reset" class="etu-btn etu-btn-secondary" type="button">Recentrer</button></div><canvas id="wiki-graph" class="wiki-graph" role="img" aria-label="Graphe des connaissances : glissez un nœud pour le déplacer, glissez le fond pour vous déplacer, utilisez la molette pour zoomer et cliquez sur un nœud pour ouvrir son document. Les documents sont aussi accessibles dans la liste."></canvas><small id="wiki-graph-info" class="wiki-section-note"></small></div></details>
+      <details class="wiki-config wiki-card"><summary><span><strong>Réglages du Wiki</strong><small>Recherche dans les réponses, mémoire et traitements automatiques</small></span></summary><form id="wiki-settings"><div id="wiki-fields" class="wiki-fields"></div><button class="etu-btn etu-btn-primary" type="submit">Enregistrer les paramètres</button></form></details>
       <details class="wiki-card wiki-secondary wiki-queue"><summary><span><strong>Traitements en arrière-plan</strong><small id="wiki-queue-summary">Indexation et mémorisation automatique</small></span></summary><div class="wiki-secondary-body"><p id="wiki-queue-status" role="status"></p><div id="wiki-queue-actions" class="wiki-toolbar"></div><details class="wiki-job-history"><summary>Activité récente</summary><div id="wiki-jobs" class="wiki-jobs"></div></details></div></details>
     </div>`;
     const help = {
@@ -130,14 +132,19 @@
       } catch (error) { feedback(error.message); }
     });
     byId("wiki-search").addEventListener("keydown", event => { if (event.key === "Enter") search().catch(error => feedback(error.message)); });
-    byId("wiki-new").addEventListener("click", () => { if (!discard()) return; current = null; byId("wiki-path").value = ""; byId("wiki-path").readOnly = false; byId("wiki-content").value = "# "; dirty = true; byId("wiki-history").replaceChildren(); byId("wiki-origin").textContent = "Nouveau document"; byId("wiki-links").replaceChildren(); byId("wiki-preview").hidden = true; byId("wiki-path").focus(); });
-    byId("wiki-actions").append(button("Enregistrer", save), button("Aperçu", preview), button("Supprimer", remove));
+    byId("wiki-new").addEventListener("click", () => { if (!discard()) return; current = null; byId("wiki-path").value = ""; byId("wiki-path").readOnly = false; byId("wiki-content").value = "# "; dirty = true; byId("wiki-history").replaceChildren(); byId("wiki-origin").textContent = "Nouveau document"; byId("wiki-links").replaceChildren(); byId("wiki-preview").hidden = true; updateDocumentActions(); byId("wiki-path").focus(); });
+    for (const [id, label, action] of [["wiki-save", "Enregistrer", save], ["wiki-show-preview", "Aperçu", preview], ["wiki-remove", "Supprimer", remove]]) {
+      const control = button(label, action); control.id = id; byId("wiki-actions").appendChild(control);
+    }
+    byId("wiki-path").addEventListener("input", updateDocumentActions);
+    updateDocumentActions();
     byId("wiki-deleted").addEventListener("click", async () => {
       const data = await api("/deleted"); byId("wiki-files").replaceChildren();
       for (const doc of data.documents) byId("wiki-files").appendChild(button(doc.path, async () => {
         if (!discard()) return;
         current = { path: doc.path, hash: null, content: "" }; dirty = false;
         byId("wiki-path").value = doc.path; byId("wiki-path").readOnly = true; byId("wiki-content").value = "";
+        updateDocumentActions();
         byId("wiki-origin").textContent = "Document supprimé : sélectionnez une révision pour le restaurer.";
         byId("wiki-preview").hidden = true; byId("wiki-links").replaceChildren(); await history();
       }));
@@ -151,6 +158,15 @@
     setupCanvas();
   }
   function discard() { return !dirty || window.confirm("Abandonner les modifications du document ?"); }
+  function updateDocumentActions() {
+    const hasPath = Boolean(byId("wiki-path").value.trim());
+    const editing = Boolean(current || dirty);
+    byId("wiki-editor-empty").hidden = editing;
+    byId("wiki-editor-empty").parentElement.classList.toggle("is-empty", !editing);
+    byId("wiki-save").disabled = !hasPath;
+    byId("wiki-show-preview").disabled = !hasPath;
+    byId("wiki-remove").disabled = !current?.hash;
+  }
   function updateFields() {
     for (const input of byId("wiki-settings").elements) if (input.name) { if (input.type === "checkbox") input.checked = cfg[input.name]; else input.value = cfg[input.name]; }
   }
@@ -229,7 +245,7 @@
     } catch (error) {
       if (error.status !== 404) { feedback(error.message); return; }
       if (dirty) { feedback("Ce document a été supprimé dans un autre éditeur. Copiez vos changements avant de recharger."); return; }
-      current = null; byId("wiki-content").value = "";
+      current = null; byId("wiki-content").value = ""; byId("wiki-path").value = ""; updateDocumentActions();
       feedback("Le document ouvert a été supprimé depuis un autre éditeur.");
     }
   }
@@ -238,6 +254,7 @@
     const doc = await api(`/document?path=${encodeURIComponent(path)}`);
     current = doc; dirty = false; selectedNode = path;
     byId("wiki-path").value = doc.path; byId("wiki-path").readOnly = true; byId("wiki-content").value = doc.content;
+    updateDocumentActions();
     byId("wiki-origin").textContent = `Origine : ${provenance(doc.origin)}`;
     preview(); await Promise.all([history(), files()]); requestDraw();
   }
@@ -251,6 +268,7 @@
     await api("/document", "DELETE", { path: current.path, expected_hash: current.hash });
     // Keep the path and history visible so deletion can be undone immediately.
     current = { path: current.path, hash: null, content: "" }; dirty = false; byId("wiki-content").value = "";
+    updateDocumentActions();
     await Promise.all([files(), history(), loadGraph()]); feedback("Document supprimé. Sélectionnez une révision pour le restaurer.");
   }
   function preview() {
@@ -285,6 +303,7 @@
     const q = byId("wiki-search").value.trim(); if (!q) { await files(); feedback(""); return; }
     const data = await api(`/search?q=${encodeURIComponent(q)}`); const list = byId("wiki-files"); list.replaceChildren();
     for (const source of data.sources) { list.appendChild(button(source.path, () => open(source.path))); const excerpt = document.createElement("small"); excerpt.textContent = source.text.slice(0, 200); list.appendChild(excerpt); }
+    if (!data.sources.length) list.textContent = "Aucun résultat. Essayez d’autres mots.";
     byId("wiki-document-count").textContent = `${data.sources.length} résultat${data.sources.length === 1 ? "" : "s"}`;
     feedback(`${data.sources.length} documents pertinents trouvés`);
   }
@@ -318,6 +337,7 @@
         catch (error) { if (!String(error.message).includes(job.payload.path)) throw error; doc = { path: job.payload.path, hash: null, content: "" }; }
         current = doc; selectedNode = doc.path; byId("wiki-path").value = doc.path; byId("wiki-path").readOnly = true;
         byId("wiki-content").value = `${doc.content}\n\n<!-- Proposition à vérifier et fusionner -->\n${job.payload.content}`;
+        updateDocumentActions();
         dirty = true; preview(); feedback("Comparez et corrigez le contenu dans l’éditeur, puis enregistrez et annulez la proposition traitée.");
         byId("wiki-content").focus();
       }));
@@ -326,14 +346,21 @@
       row.appendChild(actions); list.appendChild(row);
     }
   }
-  async function loadGraph() { graph = await api("/graph"); requestDraw(); }
+  async function loadGraph() {
+    graph = await api("/graph");
+    const ids = new Set(graph.nodes.map(node => node.id));
+    for (const id of nodePositions.keys()) if (!ids.has(id)) nodePositions.delete(id);
+    requestDraw();
+  }
   function requestDraw() { if (!frame) frame = requestAnimationFrame(() => { frame = 0; draw(); }); }
   let placed = [];
   function draw() {
     const canvas = byId("wiki-graph"); if (!canvas) return;
     const rect = canvas.getBoundingClientRect(); if (!rect.width) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1); canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
-    const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const width = Math.round(rect.width * dpr), height = Math.round(rect.height * dpr);
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, rect.width, rect.height);
     const textColor = getComputedStyle(canvas).color, filter = byId("wiki-graph-filter").value.toLowerCase();
     let nodes = graph.nodes.filter(n => `${n.id} ${n.title} ${n.category}`.toLowerCase().includes(filter));
     const depth = byId("wiki-depth").value;
@@ -342,27 +369,79 @@
       for (let i = 0; i < Number(depth); i++) { const previous = new Set(allowed); for (const edge of graph.edges) { if (previous.has(edge.source)) allowed.add(edge.target); if (previous.has(edge.target)) allowed.add(edge.source); } }
       nodes = nodes.filter(n => allowed.has(n.id));
     }
-    // Deterministic concentric layout; no continuous force simulation or animation.
     const categories = [...new Set(nodes.map(n => n.category))].sort();
-    const spacing = Math.max(19, Math.min(110, 120 / Math.sqrt(Math.max(1, nodes.length - 1))));
-    placed = nodes.map((node, index) => { const angle = index * 2.399963; const r = Math.sqrt(index) * spacing; return { ...node, x: rect.width / 2 + (Math.cos(angle) * r + pan.x) * scale, y: rect.height / 2 + (Math.sin(angle) * r + pan.y) * scale }; });
+    const spacing = Math.max(27, Math.min(90, 180 / Math.sqrt(Math.max(1, graph.nodes.length))));
+    graph.nodes.forEach((node, index) => {
+      if (nodePositions.has(node.id)) return;
+      const angle = index * 2.399963, radius = Math.sqrt(index) * spacing;
+      nodePositions.set(node.id, { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius });
+    });
+    placed = nodes.map(node => {
+      const position = nodePositions.get(node.id);
+      return { ...node, x: rect.width / 2 + (position.x + pan.x) * scale, y: rect.height / 2 + (position.y + pan.y) * scale };
+    });
     const map = new Map(placed.map(n => [n.id, n]));
-    ctx.strokeStyle = textColor; ctx.globalAlpha = .18; ctx.lineWidth = 1;
-    for (const edge of graph.edges) { const a = map.get(edge.source), b = map.get(edge.target); if (!a || !b) continue; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+    ctx.strokeStyle = textColor; ctx.lineWidth = 1;
+    for (const edge of graph.edges) {
+      const a = map.get(edge.source), b = map.get(edge.target); if (!a || !b) continue;
+      ctx.globalAlpha = hoveredNode && (edge.source === hoveredNode || edge.target === hoveredNode) ? .65 : .18;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
     ctx.globalAlpha = 1;
     for (const node of placed) {
-      ctx.fillStyle = `hsl(${(categories.indexOf(node.category) * 137 + 200) % 360} 65% 60%)`; ctx.beginPath(); ctx.arc(node.x, node.y, node.id === selectedNode ? 8 : 5, 0, Math.PI * 2); ctx.fill();
-      if (placed.length < 90 || scale > 1.5 || node.id === selectedNode) { ctx.font = "11px sans-serif"; ctx.fillStyle = textColor; ctx.fillText(node.title.slice(0, 32), node.x + 9, node.y + 4); }
+      const active = node.id === selectedNode || node.id === hoveredNode;
+      ctx.fillStyle = `hsl(${(categories.indexOf(node.category) * 137 + 200) % 360} 65% 60%)`; ctx.beginPath(); ctx.arc(node.x, node.y, active ? 8 : 6, 0, Math.PI * 2); ctx.fill();
+      if (active) { ctx.strokeStyle = textColor; ctx.lineWidth = 1.5; ctx.stroke(); }
+      if (placed.length < 90 || scale > 1.5 || active) { ctx.font = active ? "600 12px sans-serif" : "11px sans-serif"; ctx.fillStyle = textColor; ctx.fillText(node.title.slice(0, 32), node.x + 12, node.y + 4); }
     }
-    byId("wiki-graph-info").textContent = `${nodes.length} documents affichés (limite ${graph.limit}) · ${categories.join(" · ")} · Molette : zoom. Glisser : déplacer. Clic : ouvrir.`;
+    byId("wiki-graph-info").textContent = `${nodes.length} documents affichés · Glissez un nœud pour le déplacer, le fond pour parcourir. Molette : zoom. Clic : ouvrir.`;
   }
   function setupCanvas() {
     const canvas = byId("wiki-graph"); let start, moved = false;
-    canvas.addEventListener("wheel", event => { event.preventDefault(); scale = Math.max(.2, Math.min(6, scale * (event.deltaY < 0 ? 1.12 : .89))); requestDraw(); }, { passive: false });
-    canvas.addEventListener("pointerdown", event => { start = { x: event.clientX, y: event.clientY }; moved = false; canvas.setPointerCapture(event.pointerId); });
-    canvas.addEventListener("pointermove", event => { if (!start) return; const dx = event.clientX - start.x, dy = event.clientY - start.y; if (Math.abs(dx) + Math.abs(dy) > 2) moved = true; pan.x += dx / scale; pan.y += dy / scale; start = { x: event.clientX, y: event.clientY }; requestDraw(); });
-    canvas.addEventListener("pointerup", event => { start = null; if (moved) return; const rect = canvas.getBoundingClientRect(); const node = placed.find(n => Math.hypot(n.x - event.clientX + rect.left, n.y - event.clientY + rect.top) < 14); if (node) open(node.id).catch(error => feedback(error.message)); });
-    canvas.addEventListener("pointercancel", () => { start = null; });
+    const hit = event => {
+      const rect = canvas.getBoundingClientRect();
+      return [...placed].reverse().find(node => Math.hypot(node.x - (event.clientX - rect.left), node.y - (event.clientY - rect.top)) < 16);
+    };
+    canvas.addEventListener("wheel", event => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect(), oldScale = scale;
+      const x = event.clientX - rect.left - rect.width / 2, y = event.clientY - rect.top - rect.height / 2;
+      scale = Math.max(.2, Math.min(6, scale * (event.deltaY < 0 ? 1.12 : .89)));
+      pan.x += x / scale - x / oldScale; pan.y += y / scale - y / oldScale;
+      requestDraw();
+    }, { passive: false });
+    canvas.addEventListener("pointerdown", event => {
+      if (event.button !== 0) return;
+      const node = hit(event);
+      start = { x: event.clientX, y: event.clientY, node: node?.id || null };
+      moved = false; canvas.setPointerCapture(event.pointerId);
+    });
+    canvas.addEventListener("pointermove", event => {
+      if (!start) {
+        const node = hit(event)?.id || null;
+        canvas.style.cursor = node ? "pointer" : "grab";
+        if (node !== hoveredNode) { hoveredNode = node; requestDraw(); }
+        return;
+      }
+      const dx = event.clientX - start.x, dy = event.clientY - start.y;
+      if (Math.abs(dx) + Math.abs(dy) > 2) moved = true;
+      if (moved) {
+        if (start.node) {
+          const position = nodePositions.get(start.node);
+          if (position) { position.x += dx / scale; position.y += dy / scale; }
+        } else { pan.x += dx / scale; pan.y += dy / scale; }
+        canvas.style.cursor = "grabbing";
+        requestDraw();
+      }
+      start.x = event.clientX; start.y = event.clientY;
+    });
+    canvas.addEventListener("pointerup", event => {
+      const node = start?.node, clicked = start && !moved;
+      start = null; canvas.style.cursor = hit(event) ? "pointer" : "grab";
+      if (clicked && node) open(node).then(() => byId("wiki-path").scrollIntoView({ block: "center" })).catch(error => feedback(error.message));
+    });
+    canvas.addEventListener("pointerleave", () => { if (!start && hoveredNode) { hoveredNode = null; requestDraw(); } });
+    canvas.addEventListener("pointercancel", () => { start = null; canvas.style.cursor = "grab"; });
     graphObserver = new ResizeObserver(requestDraw); graphObserver.observe(canvas);
   }
   function chatEvent(data, message) {

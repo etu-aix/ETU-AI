@@ -1,8 +1,8 @@
 /* Style entry point. Sections are kept in source order to preserve the cascade. */
-@import url("/static/styles/foundation.css?v=chat-edit-profiles-1");
+@import url("/static/styles/foundation.css?v=openai-account-1");
 @import url("/static/styles/app-shell.css?v=provider-logo-color-2");
 @import url("/static/styles/chat-overlays.css");
-@import url("/static/styles/setup-wizard.css");
-@import url("/static/styles/catalog.css?v=chat-edit-hover-3");
-@import url("/static/styles/settings.css?v=hardware-preference-1");
-@import url("/static/styles/wiki.css?v=3");
+@import url("/static/styles/setup-wizard.css?v=setup-layout-6");
+@import url("/static/styles/catalog.css?v=setup-layout-3");
+@import url("/static/styles/settings.css?v=hardware-preference-2");
+@import url("/static/styles/wiki.css?v=7");

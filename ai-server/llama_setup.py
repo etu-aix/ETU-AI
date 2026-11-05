@@ -240,6 +240,7 @@ def download_precompiled_binary(
     backend: str,
     config: dict[str, Any],
     allow_cpu: bool = True,
+    progress_callback=None,
 ) -> tuple[Optional[Path], Optional[str]]:
     """Attempt downloading precompiled binaries for candidate backends in priority order.
 
@@ -286,7 +287,7 @@ def download_precompiled_binary(
         try:
             with tempfile.TemporaryDirectory(dir=target, prefix="binary-", ignore_cleanup_errors=True) as temp:
                 archive = Path(temp) / filename
-                download(url, archive, config["binary_sha256"].get(filename))
+                download(url, archive, config["binary_sha256"].get(filename), progress_callback)
                 staged = Path(temp) / "unpacked"
                 safe_extract(archive, staged)
                 executable = find_llama_server_binary(staged)
@@ -367,6 +368,7 @@ def setup_llama(
     update: bool = False,
     config: Optional[dict[str, Any]] = None,
     exact_variant: Optional[str] = None,
+    progress_callback=None,
 ) -> Path:
     """Set up and validate a llama-server binary appropriate for the detected system hardware.
 
@@ -408,7 +410,7 @@ def setup_llama(
             if actual == "cpu" and backend != "cpu" and not offline:
                 print(f"[+] Hardware recommends {backend}; checking GPU binaries before reusing cached CPU")
                 candidate, promoted_backend = download_precompiled_binary(
-                    (ROOT_DIR / cfg["deps_dir"]).resolve(), backend, cfg, allow_cpu=False
+                    (ROOT_DIR / cfg["deps_dir"]).resolve(), backend, cfg, allow_cpu=False, progress_callback=progress_callback
                 )
                 if candidate is not None:
                     atomic_json(
@@ -427,7 +429,7 @@ def setup_llama(
     if offline:
         raise RuntimeError("No validated binary matches this configuration; run setup online")
     deps = (ROOT_DIR / cfg["deps_dir"]).resolve()
-    exe, actual = (None, None) if force_rebuild else download_precompiled_binary(deps, backend, cfg)
+    exe, actual = (None, None) if force_rebuild else download_precompiled_binary(deps, backend, cfg, progress_callback=progress_callback)
     if exe is None:
         if exact_variant:
             raise RuntimeError(f"La variante {exact_variant} est indisponible ou incompatible avec cet ordinateur")

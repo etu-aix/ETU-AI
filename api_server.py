@@ -6,6 +6,7 @@ du handshake avec etu-aix.alwaysdata.net et sert l'interface web statique.
 
 import json
 import asyncio
+import httpx
 import hashlib
 import struct
 import base64
@@ -25,7 +26,7 @@ from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,7 @@ if str(AI_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(AI_SERVER_DIR))
 
 from chat.sse_handler import ChatStreamHandler
+from chat import chatgpt_auth
 from chat.attachments import prepare_attachments, load_attachments
 from configs import init_file_logger
 from install import scan_hardware
@@ -71,7 +73,7 @@ tool_executor = ToolExecutor()
 downloader = ModelDownloader(storage=storage)
 native_installer = NativeInstaller(downloader)
 _server_reinstall_lock = threading.Lock()
-_server_reinstall: dict[str, str] = {"status": "idle", "message": ""}
+_server_reinstall: dict[str, Any] = {"status": "idle", "message": ""}
 _inference_condition = threading.Condition()
 _inference_reinstall_pending = False
 _active_inference_requests = 0
@@ -443,7 +445,8 @@ async def stop_bridge_cleanup():
 # -----------------------------------------------------------------------------
 class SetupStartRequest(BaseModel):
     selected_models: list[dict[str, Any]]
-    backend: Literal["auto", "npu"] = "auto"
+    backend: Literal["auto", "cpu", "cuda", "vulkan", "metal", "npu"] = "auto"
+    selected_variant: Optional[str] = None
 # -----------------------------------------------------------------------------
 class AttachmentRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -480,12 +483,14 @@ class ProviderSettingsRequest(BaseModel):
     models: list[str] = Field(default_factory=list)
     api_key: Optional[str] = None
     clear_api_key: bool = False
+    auth_method: Literal["account", "api_key"] = "api_key"
 
 
 class ProviderModelsRequest(BaseModel):
     provider: str
     base_url: Optional[str] = None
     api_key: Optional[str] = None
+    auth_method: Literal["account", "api_key"] = "api_key"
 
 
 class HardwarePreferenceRequest(BaseModel):
@@ -495,6 +500,7 @@ class HardwarePreferenceRequest(BaseModel):
 PROVIDER_PRESETS = {
     "openai-compatible": {"label": "Autre API compatible OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
     "openai": {"label": "OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "chatgpt": {"label": "ChatGPT", "type": "chatgpt", "base_url": "https://api.openai.com/v1", "model": ""},
     "openrouter": {"label": "OpenRouter", "type": "openai", "base_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-4o-mini"},
     "groq": {"label": "Groq", "type": "openai", "base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile"},
     "mistral": {"label": "Mistral", "type": "openai", "base_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"},
@@ -770,7 +776,8 @@ def get_configured_api_models() -> list[dict[str, Any]]:
         if not selected_models:
             continue
         try:
-            has_key = bool(get_api_key(provider_id))
+            uses_chatgpt_account = config.get("type") == "chatgpt" or provider_id == "chatgpt"
+            has_key = bool(chatgpt_auth.status()["active"]) if uses_chatgpt_account else bool(get_api_key(provider_id))
         except Exception:
             has_key = False
         if not has_key:
@@ -1303,8 +1310,9 @@ def select_model(req: ModelSelectRequest):
         if not config or req.model not in allowed_models:
             raise HTTPException(status_code=404, detail="Modèle API non configuré")
         try:
-            if not get_api_key(req.provider):
-                raise HTTPException(status_code=400, detail="Clé API manquante pour ce fournisseur")
+            uses_chatgpt_account = config.get("type") == "chatgpt" or req.provider == "chatgpt"
+            if not (chatgpt_auth.status()["active"] if uses_chatgpt_account else get_api_key(req.provider)):
+                raise HTTPException(status_code=400, detail="Connectez le compte ou ajoutez une clé API pour ce fournisseur")
         except HTTPException:
             raise
         except Exception as exc:
@@ -1417,19 +1425,39 @@ def get_provider_settings(provider: Optional[str] = None):
     if not configs and legacy:
         legacy_id = legacy.get("provider", "openai-compatible")
         configs[legacy_id] = legacy
+    legacy_active_provider = state.get("active_provider") or (legacy.get("provider") if legacy.get("enabled") else None)
+    if provider is None and legacy_active_provider in {"openai", "chatgpt"}:
+        try:
+            source_config = configs.get(legacy_active_provider, {})
+            auth_method = source_config.get("auth_method", "account" if legacy_active_provider == "chatgpt" and source_config.get("type") == "chatgpt" else "api_key")
+            if auth_method == "api_key":
+                old_key = get_api_key(legacy_active_provider)
+                if old_key:
+                    set_api_key(old_key, "openai")
+            configs["openai"] = {**configs.get("openai", {}), **source_config, "type": "chatgpt" if auth_method == "account" else "openai", "auth_method": auth_method}
+            configs.pop("chatgpt", None)
+            if legacy_active_provider == "chatgpt" or state.get("active_provider") == "openai":
+                state["active_provider"] = "openai"
+                state["configs"] = configs
+                storage.set_setting("api_providers", state)
+        except Exception:
+            logger.exception("Could not consolidate legacy OpenAI and ChatGPT provider settings")
     provider = provider or state.get("active_provider") or legacy.get("provider") or "openai-compatible"
     if provider not in PROVIDER_PRESETS:
         raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
     config = configs.get(provider, {})
     preset = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["custom"])
+    auth_method = config.get("auth_method", "api_key") if provider == "openai" else (config.get("auth_method", "account") if provider == "chatgpt" else None)
     try:
-        has_key = bool(get_api_key(provider))
+        has_key = (bool(chatgpt_auth.status()["active"]) if auth_method == "account" else bool(get_api_key(provider))) if provider in {"openai", "chatgpt"} else bool(get_api_key(provider))
+        has_openai_api_key = bool(get_api_key("openai")) if provider == "openai" else False
     except Exception:
         has_key = False
+        has_openai_api_key = False
     configured = {}
     for key, value in configs.items():
         try:
-            configured[key] = {"base_url": value.get("base_url"), "model": value.get("model"), "has_api_key": bool(get_api_key(key))}
+            configured[key] = {"base_url": value.get("base_url"), "model": value.get("model"), "has_api_key": (bool(chatgpt_auth.status()["active"]) if value.get("auth_method", "api_key") == "account" else bool(get_api_key(key))) if key == "openai" else (bool(chatgpt_auth.status()["active"]) if value.get("type") == "chatgpt" else bool(get_api_key(key))) if key == "chatgpt" else bool(get_api_key(key))}
         except Exception:
             configured[key] = {"base_url": value.get("base_url"), "model": value.get("model"), "has_api_key": False}
     return {
@@ -1441,12 +1469,79 @@ def get_provider_settings(provider: Optional[str] = None):
         "providers": PROVIDER_PRESETS,
         "configured": configured,
         "has_api_key": has_key,
+        "has_openai_api_key": has_openai_api_key,
+        "auth_method": auth_method,
         "api_key": "",
     }
 
 
+@app.get("/api/settings/provider/chatgpt")
+def chatgpt_connection_status(request: Request):
+    require_local_admin(request)
+    return chatgpt_auth.status()
+
+
+class ChatGPTAccountRequest(BaseModel):
+    client_id: Optional[str] = None
+
+
+@app.post("/api/settings/provider/chatgpt/start")
+def start_chatgpt_connection(req: ChatGPTAccountRequest, request: Request):
+    require_local_admin(request)
+    port = request.scope.get("server", (None, None))[1]
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        raise HTTPException(status_code=503, detail="Port local de connexion indisponible.")
+    try:
+        return {"url": chatgpt_auth.start(storage, port, req.client_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/auth/callback", response_class=HTMLResponse)
+async def chatgpt_connection_callback(request: Request):
+    if request.client.host not in {"127.0.0.1", "::1"}:
+        raise HTTPException(status_code=403, detail="Connexion locale requise.")
+    try:
+        await chatgpt_auth.complete(dict(request.query_params))
+        result = chatgpt_auth.status()["flow"]
+        message = "Connexion terminée. Vous pouvez revenir à ETU-AI." if result["status"] == "success" else "Connexion annulée. Vous pouvez revenir à ETU-AI."
+    except Exception:
+        logger.exception("ChatGPT sign-in failed")
+        chatgpt_auth.fail(request.query_params.get("state", ""), "La connexion ChatGPT a échoué. Réessayez depuis ETU-AI.")
+        message = "La connexion a échoué. Vous pouvez revenir à ETU-AI et réessayer."
+    return HTMLResponse(f"<!doctype html><html lang='fr'><meta charset='utf-8'><title>ETU-AI</title><body><main><h1>ETU-AI</h1><p>{message}</p></main></body></html>")
+
+
+@app.put("/api/settings/provider/chatgpt/select")
+def select_chatgpt_account(req: ChatGPTAccountRequest, request: Request):
+    require_local_admin(request)
+    try:
+        chatgpt_auth.select(req.client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return chatgpt_auth.status()
+
+
+@app.post("/api/settings/provider/chatgpt/disconnect")
+async def disconnect_chatgpt_account(request: Request):
+    require_local_admin(request)
+    try:
+        revoked = await chatgpt_auth.disconnect()
+    except Exception:
+        logger.exception("ChatGPT disconnect failed")
+        raise HTTPException(status_code=503, detail="Impossible de terminer la connexion ChatGPT.")
+    state = storage.get_setting("api_providers", {}) or {}
+    active_provider = state.get("active_provider")
+    active_config = (state.get("configs", {}) or {}).get(active_provider, {})
+    active_auth_method = active_config.get("auth_method", "account" if active_provider == "chatgpt" else "api_key")
+    if active_provider in {"openai", "chatgpt"} and active_auth_method == "account":
+        state["active_provider"] = None
+        storage.set_setting("api_providers", state)
+    return {"revoked": revoked}
+
+
 @app.post("/api/settings/provider/models")
-def list_provider_models(req: ProviderModelsRequest, origin: Optional[str] = Header(default=None, alias="Origin")):
+async def list_provider_models(req: ProviderModelsRequest, origin: Optional[str] = Header(default=None, alias="Origin")):
     if origin:
         try:
             parsed_origin = urlsplit(origin)
@@ -1458,6 +1553,19 @@ def list_provider_models(req: ProviderModelsRequest, origin: Optional[str] = Hea
     preset = PROVIDER_PRESETS.get(req.provider)
     if not preset:
         raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
+    if req.provider in {"openai", "chatgpt"} and req.auth_method == "account":
+        try:
+            token = await chatgpt_auth.access_token()
+            async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+                response = await client.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {token}"})
+                response.raise_for_status()
+                catalog = response.json().get("models", [])
+            models = [item["slug"] for item in catalog if isinstance(item, dict) and item.get("visibility") == "list" and isinstance(item.get("slug"), str)]
+            if not models:
+                raise ValueError("Aucun modèle disponible pour ce compte ChatGPT.")
+            return {"models": list(dict.fromkeys(models))}
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc) if isinstance(exc, ValueError) else "Impossible de charger les modèles ChatGPT.") from exc
     state = storage.get_setting("api_providers", {}) or {}
     saved = (state.get("configs", {}) or {}).get(req.provider, {})
     base_url = (req.base_url or saved.get("base_url") or preset["base_url"]).strip().rstrip("/")
@@ -1491,9 +1599,11 @@ def list_provider_models(req: ProviderModelsRequest, origin: Optional[str] = Hea
         endpoint = f"{base_url}/models"
         headers["Authorization"] = f"Bearer {api_key}"
     try:
-        request = urllib.request.Request(endpoint, headers=headers, method="GET")
-        with urllib.request.urlopen(request, timeout=10) as response:
-            payload = json.loads(response.read(2_000_000).decode("utf-8"))
+        def fetch_models():
+            request = urllib.request.Request(endpoint, headers=headers, method="GET")
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return json.loads(response.read(2_000_000).decode("utf-8"))
+        payload = await asyncio.to_thread(fetch_models)
     except Exception as exc:
         status = getattr(exc, "code", None)
         if status == 401:
@@ -1549,6 +1659,8 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
     if len(model) > 200:
         raise HTTPException(status_code=400, detail="Nom de modèle invalide.")
     key = (req.api_key or "").strip()
+    if req.provider in {"openai", "chatgpt"} and req.auth_method == "account" and (key or req.clear_api_key):
+        raise HTTPException(status_code=400, detail="Une clé API ne peut pas être enregistrée en mode compte ChatGPT.")
     if key and not req.clear_api_key:
         try:
             set_api_key(key, req.provider)
@@ -1564,8 +1676,12 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
         has_key = bool(get_api_key(req.provider))
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Le coffre-fort système n’est pas disponible.") from exc
+    if req.provider in {"openai", "chatgpt"}:
+        has_key = bool(chatgpt_auth.status()["active"]) if req.auth_method == "account" else bool(get_api_key(req.provider))
     if req.enabled and not has_key:
-        raise HTTPException(status_code=400, detail="Ajoutez une clé API avant d’activer le fournisseur.")
+        raise HTTPException(status_code=400, detail="Connectez le compte ou ajoutez une clé API avant d’activer le fournisseur.")
+    if req.provider == "chatgpt" and req.enabled and not model:
+        raise HTTPException(status_code=400, detail="Sélectionnez un modèle ChatGPT avant d'activer le fournisseur.")
     state = storage.get_setting("api_providers", {}) or {}
     configs = state.get("configs", {})
     legacy = storage.get_setting("api_provider", {}) or {}
@@ -1578,7 +1694,9 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
         raise HTTPException(status_code=400, detail="Sélectionnez au maximum 500 modèles.")
     if selected_models and model not in selected_models:
         model = selected_models[0]
-    configs[req.provider] = {"base_url": base_url, "model": model, "models": selected_models, "type": preset["type"]}
+    consolidated_openai = req.provider == "openai"
+    provider_type = "chatgpt" if consolidated_openai and req.auth_method == "account" else ("openai" if req.provider == "chatgpt" or consolidated_openai else preset["type"])
+    configs[req.provider] = {"base_url": base_url, "model": model, "models": selected_models, "type": provider_type, **({"auth_method": req.auth_method} if consolidated_openai or req.provider == "chatgpt" else {})}
     active_provider = req.provider if req.enabled else (None if state.get("active_provider", legacy.get("provider")) == req.provider else state.get("active_provider"))
     storage.set_setting("api_providers", {"active_provider": active_provider, "configs": configs})
     return get_provider_settings(req.provider)
@@ -1652,7 +1770,17 @@ def _reinstall_server_variant(asset: dict[str, str]) -> None:
                     process.kill()
                     process.wait(timeout=5)
         with _server_reinstall_lock:
-            _server_reinstall.update(status="running", message="Installation de la version choisie…")
+            _server_reinstall.update(status="running", phase="preparing", message="Préparation du téléchargement…", downloaded_bytes=0, total_bytes=0, speed_mbps=0.0, percentage=0.0)
+
+        def report_download_progress(downloaded: int, total: int, speed_mbps: float, phase: str) -> None:
+            with _server_reinstall_lock:
+                _server_reinstall.update(
+                    status="running", phase=phase,
+                    message="Téléchargement de l’archive du moteur…" if phase == "downloading" else "Vérification et installation de l’archive…",
+                    downloaded_bytes=downloaded, total_bytes=total,
+                    percentage=round(min(100.0, downloaded / total * 100), 1) if total else 0.0,
+                    speed_mbps=round(speed_mbps, 2),
+                )
         config = load_config()
         backend = backend_for_variant(variant)
         config["backend"] = backend
@@ -1663,7 +1791,7 @@ def _reinstall_server_variant(asset: dict[str, str]) -> None:
         if asset["sha256"]:
             config["binary_sha256"] = {**config["binary_sha256"], asset["name"]: asset["sha256"]}
         with file_lock(AI_SERVER_DIR / "setup.lock"), file_lock((BASE_DIR / config["deps_dir"]) / ".maia.lock"):
-            setup_llama(scan_hardware(), config=config, exact_variant=variant)
+            setup_llama(scan_hardware(), config=config, exact_variant=variant, progress_callback=report_download_progress)
             saved = read_json(CONFIG_FILE)
             saved["backend"] = backend
             saved["device"] = "auto"
@@ -1677,7 +1805,7 @@ def _reinstall_server_variant(asset: dict[str, str]) -> None:
     finally:
         if wizard_manager.is_completed():
             with _server_reinstall_lock:
-                _server_reinstall.update(status="running", message="Redémarrage du moteur d’inférence…")
+                _server_reinstall.update(status="running", phase="restarting", message="Redémarrage du moteur d’inférence…")
             if not wizard_manager.ensure_beacon_running() and failure is None:
                 failure = "Variante installée, mais le moteur local n’a pas pu redémarrer"
             elif failure is None:
@@ -1717,6 +1845,7 @@ def reinstall_server_variant(request: Request, body: ServerReinstallRequest):
         _server_reinstall.update(
             status="running", message="Préparation de la réinstallation…",
             variant=asset["variant"], release_tag=asset["tag"],
+            phase="preparing", downloaded_bytes=0, total_bytes=0, percentage=0.0, speed_mbps=0.0,
         )
     try:
         threading.Thread(target=_reinstall_server_variant, args=(asset,), daemon=True).start()
@@ -1738,13 +1867,40 @@ def update_app_state(updates: dict[str, Any]):
 
 @app.post("/api/setup/start")
 def start_setup_endpoint(req: SetupStartRequest):
-    started = wizard_manager.start_setup(req.selected_models, req.backend)
+    asset = None
+    backend = req.backend
+    if req.selected_variant:
+        try:
+            variants = release_variants(load_config())
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        asset = next((item for item in variants if item["id"] == req.selected_variant and item["compatible"]), None)
+        if asset is None:
+            raise HTTPException(status_code=400, detail="Version du moteur indisponible ou incompatible")
+        backend = backend_for_variant(asset["variant"])
+    started = wizard_manager.start_setup(req.selected_models, backend, selected_asset=asset)
     return {"started": started, "status": wizard_manager.status}
+
+
+@app.post("/api/setup/cancel")
+def cancel_setup_endpoint():
+    cancelled = wizard_manager.cancel_setup()
+    if not cancelled:
+        raise HTTPException(status_code=409, detail="Aucune installation en cours")
+    return {"success": True, "status": "cancelling"}
+
+
+@app.post("/api/setup/defer")
+def defer_setup_endpoint():
+    """Autorise l'accès à l'application avant la préparation du moteur local."""
+    storage.set_setting("setup_deferred", "true")
+    return {"success": True}
 
 
 @app.post("/api/setup/reset")
 def reset_setup_endpoint():
     storage.set_setting("setup_completed", "false")
+    storage.set_setting("setup_deferred", "false")
     state_manager.reset_setup()
     wizard_manager.status = "idle"
     return {"success": True}

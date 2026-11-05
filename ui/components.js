@@ -103,7 +103,7 @@ window.ETUComponents = (() => {
     return { open, close };
   }
 
-  function listMenu(root, { onChange = () => {} } = {}) {
+  function listMenu(root, { onChange = () => {}, placement = "auto" } = {}) {
     const trigger = root.querySelector("[data-menu-trigger]");
     const list = root.querySelector("[data-menu-list]");
     const chosen = root.querySelector("[data-menu-chosen]");
@@ -137,7 +137,9 @@ window.ETUComponents = (() => {
       list.hidden = false;
       trigger.setAttribute("aria-expanded", "true");
       const bounds = root.getBoundingClientRect();
-      root.classList.toggle("etu-list-menu-up", window.innerHeight - bounds.bottom < Math.min(list.scrollHeight + 10, 390) && bounds.top > window.innerHeight - bounds.bottom);
+      const shouldOpenUp = placement === "up"
+        || (placement !== "down" && window.innerHeight - bounds.bottom < Math.min(list.scrollHeight + 10, 390) && bounds.top > window.innerHeight - bounds.bottom);
+      root.classList.toggle("etu-list-menu-up", shouldOpenUp);
       if (focusOption) (list.querySelector('[aria-selected="true"]') || enabledOptions()[0])?.focus();
     };
     const select = (id, notify = true) => {

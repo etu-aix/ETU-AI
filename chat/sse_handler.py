@@ -11,6 +11,7 @@ import httpx
 
 from chat.prompts import build_system_message
 from chat.attachments import save_attachments, load_attachments, message_content, gemini_parts
+from chat import chatgpt_auth
 from storage.db import StorageManager
 from storage.api_credentials import get_api_key
 from tools.executor import ToolExecutor
@@ -169,7 +170,7 @@ class ChatStreamHandler:
         use_remote = bool(provider.get("enabled"))
         wiki_config = self.wiki.settings() if self.wiki else {}
         wiki_enabled = bool(self.wiki and wiki_config["enabled"])
-        wiki_allowed = bool(wiki_enabled and (not use_remote or wiki_config["allow_remote"]))
+        wiki_allowed = bool(wiki_enabled and (not use_remote or wiki_config["allow_remote"]) and provider.get("type") != "chatgpt")
         if wiki_enabled:
             if wiki_allowed:
                 system_message["content"] += (
@@ -253,16 +254,20 @@ class ChatStreamHandler:
         remote_type = provider.get("type", "openai")
         if use_remote:
             try:
-                api_key = get_api_key(provider.get("provider", "openai-compatible"))
+                api_key = await chatgpt_auth.access_token() if remote_type == "chatgpt" else get_api_key(provider.get("provider", "openai-compatible"))
             except Exception:
                 api_key = None
             if not api_key:
-                yield self._sse_event("error", {"message": "La clé API est inaccessible dans le coffre-fort système."})
+                error_message = "Le compte ChatGPT est déconnecté ou doit être renouvelé." if remote_type == "chatgpt" else "La clé API est inaccessible dans le coffre-fort système."
+                yield self._sse_event("error", {"message": error_message})
                 yield self._sse_event("done", {"status": "error"})
                 return
             target_model = provider["model"]
             base_url = provider["base_url"].rstrip("/")
-            if remote_type == "anthropic":
+            if remote_type == "chatgpt":
+                endpoint = "https://api.openai.com/v1/responses"
+                headers["Authorization"] = f"Bearer {api_key}"
+            elif remote_type == "anthropic":
                 endpoint = base_url + "/v1/messages"
                 headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
             elif remote_type == "gemini":
@@ -290,6 +295,69 @@ class ChatStreamHandler:
             files = message.pop("attachments", [])
             message["content"] = message_content(message["content"], files, remote_type if use_remote else "openai", document_budget)
             document_budget = max(0, document_budget - sum(len(item.get("text", "")) for item in files))
+        if use_remote and remote_type == "chatgpt":
+            input_messages = []
+            for message in messages[1:]:
+                content = message["content"]
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if part.get("type") == "text":
+                            parts.append({"type": "input_text", "text": part.get("text", "")})
+                        elif part.get("type") == "image_url":
+                            image = part.get("image_url")
+                            image_url = image.get("url") if isinstance(image, dict) else image
+                            if image_url:
+                                parts.append({"type": "input_image", "image_url": image_url})
+                    content = parts
+                input_messages.append({"role": message["role"], "content": content})
+            response_payload = {"model": target_model, "instructions": system_message["content"],
+                                "input": input_messages, "store": False, "stream": True}
+            yield self._sse_event("status", {"state": "thinking", "message": "Réflexion en cours"})
+            answer = ""
+            completed = False
+            try:
+                async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+                    async with client.stream("POST", endpoint, json=response_payload, headers=headers) as resp:
+                        if resp.is_error:
+                            await resp.aread()
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data: ") or line[6:] == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(line[6:])
+                            except json.JSONDecodeError:
+                                continue
+                            if event.get("type") == "response.output_text.delta":
+                                piece = event.get("delta", "")
+                                answer += piece
+                                yield self._sse_event("token", {"html": piece})
+                            elif event.get("type") == "response.completed":
+                                completed = True
+                            elif event.get("type") in {"response.failed", "response.incomplete"}:
+                                raise ValueError("Le modèle ChatGPT n'a pas terminé sa réponse.")
+                if not completed:
+                    raise ValueError("Le flux ChatGPT s'est terminé avant la réponse complète.")
+            except (httpx.HTTPError, ValueError) as exc:
+                if isinstance(exc, httpx.HTTPStatusError):
+                    message = ("La limite d'utilisation ChatGPT a été atteinte. Consultez les réglages d'utilisation de votre forfait."
+                               if exc.response.status_code == 429 else
+                               f"ChatGPT a refusé la requête (HTTP {exc.response.status_code}). Vérifiez le compte et le modèle sélectionnés.")
+                else:
+                    message = str(exc) if isinstance(exc, ValueError) else "Impossible de joindre ChatGPT. Vérifiez votre connexion."
+                if answer:
+                    self.storage.add_message(conversation_id, "assistant", answer)
+                yield self._sse_event("error", {"message": message})
+                yield self._sse_event("done", {"status": "error"})
+                return
+            if not answer.strip():
+                yield self._sse_event("error", {"message": "ChatGPT n'a renvoyé aucun texte."})
+                yield self._sse_event("done", {"status": "error"})
+                return
+            self.storage.add_message(conversation_id, "assistant", answer)
+            yield self._sse_event("done", {"status": "completed"})
+            return
         payload = {
             "model": target_model,
             "messages": messages,

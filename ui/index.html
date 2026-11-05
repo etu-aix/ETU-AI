@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=chat-search-menu-3">
-  <link rel="stylesheet" href="/static/styles/settings.css?v=download-progress-eta-1">
+  <link rel="stylesheet" href="/static/style.css?v=openai-account-1">
+  <link rel="stylesheet" href="/static/styles/settings.css?v=setup-layout-4">
   <link rel="stylesheet" href="/static/styles/components.css?v=server-icons-3">
   <link rel="stylesheet" href="/static/styles/workshop.css?v=workshop-3">
   <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
@@ -101,21 +101,17 @@
   <!-- ======================================================================= -->
   <!-- WIZARD D'INSTALLATION ET DE CONFIGURATION INITIALE                     -->
   <!-- ======================================================================= -->
-  <div id="wizard-container" class="wizard-screen active">
+  <div id="wizard-container" class="wizard-screen active" role="region" aria-label="Installation ETU-AI">
     <div class="wizard-card">
       <div class="wizard-header">
         <div class="brand">
-          <div class="thinking-orb-mini" id="wizard-header-orb" title="ETU-AI">
-            <div class="orb-glow"></div>
-            <div class="orb-ring ring-1"></div>
-            <div class="orb-ring ring-2"></div>
-            <div class="orb-core"></div>
-          </div>
+          <img class="wizard-brand-logo" src="/static/logo_etu_ai.svg" alt="" width="32" height="32">
           <div class="brand-text">
             <h1>ETU-AI</h1>
             <p class="wizard-subtitle">Votre assistant, sur cet ordinateur</p>
           </div>
         </div>
+        <span class="wizard-step-label" id="wizard-step-label">Votre ordinateur</span>
         <div class="wizard-orb-mood-indicator" id="wizard-orb-mood">
           <span class="mood-dot"></span>
           <span class="mood-text" id="wizard-mood-text">Prêt pour l'initialisation</span>
@@ -129,70 +125,63 @@
             <div class="step-hero-text">
               <h3>Commençons simplement.</h3>
               <p class="etu-text">
-                Nous vérifions votre ordinateur, puis vous choisissez un modèle adapté. Vous pourrez changer de modèle plus tard.
+                Choisissez un modèle local ou connectez un fournisseur IA. Vous pourrez aussi terminer la configuration plus tard.
               </p>
             </div>
-            <!-- Orbe Scanner Diagnostic -->
-            <div class="diag-orb-preview" id="diag-orb-preview">
-              <div class="scanner-rings"></div>
-              <div class="diag-core-orb"></div>
-              <div class="diag-radar-sweep"></div>
-              <span class="diag-status-label" id="diag-scanner-label">Scan Matériel</span>
-            </div>
+
           </div>
 
           <div class="etu-card hw-card hw-card-interactive">
             <div class="etu-card-header">
-              <span class="etu-badge etu-badge-info" id="hw-backend-badge">Détection...</span>
+              <span class="etu-badge etu-badge-info wizard-detection" id="hw-backend-badge" role="status"><span class="etu-spinner" aria-hidden="true"></span><span class="sr-only">Détection en cours</span></span>
               <h4>Votre ordinateur</h4>
             </div>
             <div class="etu-card-body">
               <div class="hw-grid">
                 <div class="hw-item" data-tech="cpu">
-                  <span class="hw-label">Processeur (CPU) :</span>
-                  <strong id="hw-cpu">Détection...</strong>
+                  <span class="hw-label">Processeur</span>
+                  <strong id="hw-cpu" class="wizard-detection" role="status"><span class="etu-spinner" aria-hidden="true"></span><span class="sr-only">Détection en cours</span></strong>
                 </div>
                 <div class="hw-item" data-tech="ram">
-                  <span class="hw-label">Mémoire Vive (RAM) :</span>
-                  <strong id="hw-ram">Détection...</strong>
+                  <span class="hw-label">Mémoire vive</span>
+                  <strong id="hw-ram" class="wizard-detection" role="status"><span class="etu-spinner" aria-hidden="true"></span><span class="sr-only">Détection en cours</span></strong>
                 </div>
                 <div class="hw-item" data-tech="gpu">
-                  <span class="hw-label">Accélération Graphique (GPU) :</span>
-                  <strong id="hw-gpu">Détection...</strong>
+                  <span class="hw-label">Carte graphique</span>
+                  <strong id="hw-gpu" class="wizard-detection" role="status"><span class="etu-spinner" aria-hidden="true"></span><span class="sr-only">Détection en cours</span></strong>
                 </div>
                 <div class="hw-item" id="hw-npu-box" data-tech="npu">
-                  <span class="hw-label">Accélération IA (NPU) :</span>
-                  <strong id="hw-npu">Détection...</strong>
+                  <span class="hw-label">Puce IA (NPU)</span>
+                  <strong id="hw-npu" class="wizard-detection" role="status"><span class="etu-spinner" aria-hidden="true"></span><span class="sr-only">Détection en cours</span></strong>
+                </div>
+                <div id="wizard-npu-hardware-notice" class="npu-banner" role="note" hidden>
+                  <div class="npu-banner-body">
+                    <strong id="npu-hardware-title">Puce NPU détectée</strong>
+                    <p id="npu-hardware-text"></p>
+                  </div>
                 </div>
                 <div class="hw-item" data-tech="backend">
-                  <span class="hw-label">Moteur recommandé :</span>
-                  <strong id="hw-rec-backend">Détection...</strong>
+                  <span class="hw-label" id="wizard-backend-label">Version du moteur</span>
+                  <div id="wizard-backend-menu" class="etu-list-menu">
+                    <button id="wizard-backend-trigger" class="etu-list-menu-trigger" data-menu-trigger type="button" aria-labelledby="wizard-backend-label wizard-backend-chosen" aria-haspopup="listbox" aria-expanded="false" aria-controls="wizard-backend-options" disabled>
+                      <span class="etu-list-menu-icon" data-menu-icon aria-hidden="true"></span>
+                      <span id="wizard-backend-chosen" class="etu-list-menu-chosen" data-menu-chosen>Chargement des versions…</span>
+                      <span class="etu-list-menu-badges" data-menu-badges aria-hidden="true"></span>
+                      <span class="etu-list-menu-chevron" aria-hidden="true">⌄</span>
+                    </button>
+                    <div id="wizard-backend-options" class="etu-list-menu-options" data-menu-list role="listbox" aria-labelledby="wizard-backend-label" hidden></div>
+                  </div>
+                  <span id="wizard-backend-hint" class="wizard-backend-hint wizard-detection" role="status"><span class="etu-spinner" aria-hidden="true"></span><span>Chargement des versions</span></span>
                 </div>
               </div>
             </div>
           </div>
 
-          <div class="wizard-features">
-            <div class="feat-box" data-mood="emerald">
-              <span class="feat-icon">🔒</span>
-              <strong>100% Confidentiel</strong>
-              <p>Vos cours, devoirs et conversations ne quittent jamais votre PC.</p>
-            </div>
-            <div class="feat-box" data-mood="cyan">
-              <span class="feat-icon">⚡</span>
-              <strong>TurboQuant & GGUF</strong>
-              <p>Le moteur choisit le matériel disponible et affiche le backend réellement utilisé.</p>
-            </div>
-            <div class="feat-box" data-mood="purple">
-              <span class="feat-icon">🤝</span>
-              <strong>Etu2 à venir</strong>
-              <p>Une connexion par API découvrable sera testée localement avant son activation.</p>
-            </div>
-          </div>
         </div>
 
         <div class="wizard-actions">
-          <div></div>
+          <button id="btn-wizard-skip-step1" class="etu-btn etu-btn-secondary" type="button">Plus tard</button>
+          <button id="btn-wizard-provider-step1" class="etu-btn etu-btn-secondary" type="button">Configurer un fournisseur</button>
           <button id="btn-wizard-to-step2" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
             Continuer &rarr;
           </button>
@@ -205,7 +194,7 @@
           <div class="step-heading-row">
             <div>
               <h3>Choisissez votre modèle</h3>
-              <p class="etu-text">Nous montrons les modèles adaptés à la mémoire disponible. Un petit modèle préserve les performances du PC.</p>
+              <p class="etu-text">Choisissez un modèle adapté à votre ordinateur. Les fichiers déjà présents seront réutilisés.</p>
             </div>
             <div class="model-selection-counter" id="model-selection-counter">
               <span class="count-badge" id="selected-models-count">1</span> modèle(s) sélectionné(s)
@@ -214,9 +203,12 @@
 
           <!-- Barre d'outils Hugging Face & Auto-Sélection -->
           <div class="wizard-hf-toolbar">
+            <div>
+            <label class="wizard-search-label" for="wizard-hf-search-input">Rechercher un modèle</label>
             <div class="wizard-hf-search-box">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-              <input type="text" id="wizard-hf-search-input" placeholder="Rechercher sur Hugging Face (ex: Qwen, Gemma, Llama, Mistral, Code, DeepSeek)...">
+              <span data-svg-icon="search" aria-hidden="true"></span>
+              <input type="search" id="wizard-hf-search-input" placeholder="Nom du modèle ou du dépôt Hugging Face">
+            </div>
             </div>
             <div class="wizard-hf-actions">
               <label class="hf-compat-toggle" title="Masquer les modèles qui dépassent la mémoire du PC">
@@ -230,28 +222,22 @@
           </div>
 
           <!-- Filtres de Catégories d'IA -->
-          <details class="wizard-advanced"><summary>Filtres avancés</summary>
+          <details class="wizard-advanced"><summary>Filtres et matériel</summary>
           <div class="wizard-category-tabs" id="wizard-category-tabs">
             <button type="button" class="category-pill active" data-cat="all">Toutes les IA (<span id="cat-count-all">0</span>)</button>
-            <button type="button" class="category-pill" data-cat="npu">⚡ Modèles légers (<span id="cat-count-npu">0</span>)</button>
-            <button type="button" class="category-pill" data-cat="code">💻 Code & Dev (<span id="cat-count-code">0</span>)</button>
-            <button type="button" class="category-pill" data-cat="reasoning">🧠 Raisonnement (<span id="cat-count-reasoning">0</span>)</button>
-            <button type="button" class="category-pill" data-cat="7b">🚀 7B-8B (<span id="cat-count-7b">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="npu">Modèles légers (<span id="cat-count-npu">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="code">Code & Dev (<span id="cat-count-code">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="reasoning">Raisonnement (<span id="cat-count-reasoning">0</span>)</button>
+            <button type="button" class="category-pill" data-cat="7b">7B-8B (<span id="cat-count-7b">0</span>)</button>
             <button type="button" class="category-pill" data-cat="installed">✓ Déjà Installés (<span id="cat-count-installed">0</span>)</button>
           </div>
-          </details>
-
-          <div id="wizard-npu-banner" class="npu-banner" style="display: none;">
-            <span class="npu-banner-icon">⚡</span>
+          <div id="wizard-npu-banner" class="npu-banner" role="note" hidden>
             <div class="npu-banner-body">
-              <strong id="npu-banner-title">Puce NPU Détectée</strong>
-              <p id="npu-banner-text">Un NPU a été détecté. Son utilisation dépendra du backend réellement disponible dans Beacon.</p>
-              <label id="wizard-npu-choice" class="wizard-npu-choice" hidden>
-                <input id="wizard-use-npu" type="checkbox">
-                <span>Essayer le moteur OpenVINO sur le NPU Intel (expérimental, modèles texte GGUF)</span>
-              </label>
+              <strong id="npu-banner-title">Puce NPU détectée</strong>
+              <p id="npu-banner-text"></p>
             </div>
           </div>
+          </details>
 
           <div id="wizard-model-selection-list" class="model-selection-grid">
             <!-- Rempli dynamiquement par app.js -->
@@ -262,47 +248,67 @@
           <button id="btn-wizard-back-step1" class="etu-btn etu-btn-secondary">
             &larr; Retour
           </button>
-          <button id="btn-wizard-start-install" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
-            Installer le modèle
-          </button>
+          <div class="wizard-primary-actions">
+            <button id="btn-wizard-provider-step2" class="etu-btn etu-btn-secondary" type="button">Utiliser un fournisseur</button>
+            <button id="btn-wizard-skip-step2" class="etu-btn etu-btn-secondary" type="button">Configurer plus tard</button>
+            <button id="btn-wizard-start-install" class="etu-btn etu-btn-primary btn-large btn-glow-interactive">
+              Préparer ETU-AI
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configuration d'un fournisseur intégrée au parcours d'installation -->
+      <div id="wizard-step-4" class="wizard-step">
+        <div class="wizard-content">
+          <div class="step-heading-row">
+            <div>
+              <h3>Connecter un fournisseur IA</h3>
+              <p class="etu-text">Choisissez votre fournisseur, sélectionnez ses modèles et enregistrez la clé. Vos clés restent stockées localement.</p>
+            </div>
+          </div>
+          <div id="wizard-provider-mount" class="wizard-provider-mount"></div>
+        </div>
+        <div class="wizard-actions">
+          <button id="btn-wizard-provider-back" class="etu-btn etu-btn-secondary" type="button">Retour aux choix</button>
+          <button id="btn-wizard-provider-open-app" class="etu-btn etu-btn-primary" type="button">Ouvrir ETU-AI</button>
         </div>
       </div>
 
       <!-- Étape 3 : Progression de l'installation avec Master Thinking Orb -->
       <div id="wizard-step-3" class="wizard-step">
         <div class="wizard-content">
-          <!-- MASTER THINKING ORB VISUALIZER -->
-          <div class="master-orb-container">
-            <div class="thinking-orb-master" id="wizard-master-orb">
-              <div class="orb-halo-outer"></div>
-              <div class="orb-plasma"></div>
-              <div class="orb-core"></div>
-              <div class="orb-orbit ring-alpha"></div>
-              <div class="orb-orbit ring-beta"></div>
-              <div class="orb-orbit ring-gamma"></div>
-              <div class="orb-ripples" id="orb-ripples-container">
-                <span class="ripple r-1"></span>
-                <span class="ripple r-2"></span>
-                <span class="ripple r-3"></span>
-              </div>
-              <div class="orb-sparkles" id="orb-sparkles"></div>
+          <div class="master-orb-container wizard-install-heading">
+            <div class="wizard-install-visual" data-state="running" aria-hidden="true">
+              <span class="wizard-install-ring"></span>
+              <span class="wizard-install-core">ETU</span>
             </div>
             <div class="master-orb-caption">
-              <h3 id="install-title">Installation de votre IA</h3>
+              <h3 id="install-title">Configuration en cours</h3>
               <p class="etu-text" id="install-subtitle">
                 Cette étape peut prendre quelques minutes selon votre connexion.
               </p>
             </div>
           </div>
 
-          <!-- Stepper visuel réactif -->
-          <div class="stepper-container" id="wizard-stepper">
+          <div class="progress-bar-container neon-progress wizard-progress-track" role="progressbar" aria-label="Progression de l'installation" aria-valuemin="0" aria-valuemax="100" aria-valuenow="5">
+            <div id="wizard-progress-bar" class="progress-bar-fill" style="width: 5%;">
+              <div class="progress-bar-glow"></div>
+            </div>
+          </div>
+          <div class="wizard-progress-summary" aria-live="polite">
+            <span id="wizard-progress-status">Démarrage...</span>
+            <strong id="wizard-progress-percent">5%</strong>
+          </div>
+
+          <div class="stepper-container wizard-status-list" id="wizard-stepper" aria-label="Étapes de configuration">
             <div class="step-item" id="step-item-0">
               <div class="step-circle"><span class="step-icon">1</span></div>
               <div class="step-text">
                 <strong>Moteur d’inférence</strong>
                 <span>Validation du binaire et accélération</span>
               </div>
+              <span class="step-state">À venir</span>
             </div>
             <div class="step-item" id="step-item-1">
               <div class="step-circle"><span class="step-icon">2</span></div>
@@ -310,6 +316,7 @@
                 <strong>Superviseur MAIA-Beacon</strong>
                 <span>Environnement virtuel et dépendances</span>
               </div>
+              <span class="step-state">À venir</span>
             </div>
             <div class="step-item" id="step-item-2">
               <div class="step-circle"><span class="step-icon">3</span></div>
@@ -317,6 +324,7 @@
                 <strong>Modèles sélectionnés</strong>
                 <span>Téléchargement et vérification des GGUF</span>
               </div>
+              <span class="step-state">À venir</span>
             </div>
             <div class="step-item" id="step-item-3">
               <div class="step-circle"><span class="step-icon">4</span></div>
@@ -324,30 +332,22 @@
                 <strong>Démarrage du service (port 11343)</strong>
                 <span>Validation de l'inférence en direct</span>
               </div>
+              <span class="step-state">À venir</span>
             </div>
-          </div>
-
-          <!-- Jauge de progression générale néon -->
-          <div class="progress-bar-container neon-progress">
-            <div id="wizard-progress-bar" class="progress-bar-fill" style="width: 5%;">
-              <div class="progress-bar-glow"></div>
-            </div>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
-            <span id="wizard-progress-status">Démarrage...</span>
-            <strong id="wizard-progress-percent" style="color: var(--accent-hover);">5%</strong>
           </div>
 
           <details class="terminal-log-container">
             <summary class="terminal-header">Afficher les détails techniques</summary>
             <div class="terminal-body" id="wizard-logs-box">
               <div class="terminal-line">[i] Initialisation du Setup Wizard ETU-AI...</div>
-            </div>
           </details>
         </div>
 
         <div class="wizard-actions">
-          <div></div>
+          <div class="wizard-install-actions">
+            <button id="btn-wizard-open-during-install" class="etu-btn etu-btn-secondary" type="button">Continuer dans ETU-AI</button>
+            <button id="btn-wizard-cancel-install" class="etu-btn etu-btn-secondary" type="button">Annuler l'installation</button>
+          </div>
           <button id="btn-wizard-finish" class="etu-btn etu-btn-primary btn-large btn-glow-interactive pulse-finish" style="display: none;">
             Accéder à l'interface de discussion &rarr;
           </button>
@@ -563,6 +563,7 @@
             </section>
             <section class="settings-maintenance-card" aria-labelledby="settings-server-title">
               <div><h3 id="settings-server-title">Moteur d’inférence</h3><p>Choisissez une version adaptée à cet ordinateur. Vos modèles et conversations sont conservés.</p></div>
+              <label class="settings-server-older-toggle"><input id="settings-server-show-older" type="checkbox"><span>Afficher les anciennes versions</span></label>
               <div class="settings-server-actions">
                 <span id="settings-server-label" class="settings-server-label">Version du moteur</span>
                 <div id="settings-server-menu" class="etu-list-menu">
@@ -804,8 +805,9 @@
         <form id="api-settings-form" class="profile-form">
           <select id="api-provider-select" aria-label="Fournisseur">
             <optgroup label="API natives"><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option></optgroup>
+            <optgroup label="OpenAI"><option value="openai">OpenAI</option></optgroup>
             <optgroup label="API compatibles OpenAI">
-              <option value="openai">OpenAI</option><option value="openrouter">OpenRouter</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="groq">Groq</option><option value="mistral">Mistral</option>
               <option value="together">Together AI</option><option value="deepseek">DeepSeek</option>
               <option value="xai">xAI</option><option value="cerebras">Cerebras</option>
@@ -821,6 +823,26 @@
             <span class="api-provider-brand-copy"><strong id="api-provider-brand-name">Mistral</strong><small id="api-provider-brand-detail">API compatible OpenAI · clé stockée localement</small></span>
             <span id="api-provider-brand-state" class="api-provider-brand-state">À configurer</span>
           </div>
+          <div id="chatgpt-auth-method-wrap" hidden>
+            <label for="chatgpt-auth-method">Connexion ChatGPT</label>
+            <select id="chatgpt-auth-method">
+              <option value="account">Compte ChatGPT</option>
+              <option value="api_key">Clé API OpenAI</option>
+            </select>
+            <p id="chatgpt-api-key-note" class="etu-text" hidden>La clé API est facturée séparément par OpenAI et n’utilise pas le forfait ChatGPT.</p>
+          </div>
+          <div id="chatgpt-account-panel" class="chatgpt-account-panel" hidden>
+            <label for="chatgpt-account-select">Compte ChatGPT</label>
+            <select id="chatgpt-account-select" aria-label="Compte ChatGPT"></select>
+            <div class="chatgpt-account-actions">
+              <button id="chatgpt-connect" class="etu-btn etu-btn-secondary" type="button">Continuer avec ChatGPT</button>
+              <button id="chatgpt-add-account" class="etu-btn etu-btn-secondary" type="button">Ajouter un compte</button>
+              <button id="chatgpt-disconnect" class="etu-btn etu-btn-secondary" type="button">Déconnecter</button>
+            </div>
+            <p id="chatgpt-account-status" role="status" aria-live="polite"></p>
+            <p class="etu-text">L'accès aux modèles dépend du compte et de son forfait. Les requêtes sont envoyées à OpenAI ; vos conversations ChatGPT ne sont pas importées.</p>
+            <a href="https://chatgpt.com/settings/usage" target="_blank" rel="noopener noreferrer">Voir l'utilisation de mon forfait</a>
+          </div>
           <div id="api-provider-url-wrap">
             <label for="api-provider-url">URL</label>
             <input id="api-provider-url" type="url" value="https://api.openai.com/v1" placeholder="https://api.exemple.com/v1" autocomplete="url" required>
@@ -832,7 +854,7 @@
           <input id="api-provider-model-search" class="api-provider-model-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off" hidden>
           <div id="api-provider-models" class="api-provider-models" aria-describedby="api-model-hint"><p class="api-model-empty">Les modèles se chargent à la sélection du fournisseur.</p></div>
           <p id="api-model-hint" class="api-model-hint" role="status" aria-live="polite">Sélectionnez un fournisseur pour charger ses modèles.</p>
-          <label for="api-provider-key">Clé API <span id="api-key-status"></span></label>
+          <label id="api-key-label" for="api-provider-key">Clé API <span id="api-key-status"></span></label>
           <input id="api-provider-key" type="password" placeholder="Collez votre clé (laissez vide pour conserver celle de ce fournisseur)" autocomplete="new-password">
           <input id="api-provider-clear-key" type="checkbox" hidden>
           <button id="api-provider-clear-key-button" class="api-clear-key-button" type="button" hidden>Supprimer la clé enregistrée</button>
@@ -1035,12 +1057,12 @@
   <script src="/static/vendor/marked-18.0.14.umd.js"></script>
   <script src="/static/vendor/highlight-11.12.0.min.js"></script>
   <script src="/static/vendor/echarts-6.1.0.min.js?v=6.1.0"></script>
-  <script src="/static/svg-manager.js?v=chat-search-menu-3"></script>
-  <script src="/static/components.js?v=settings-library-1"></script>
-  <script src="/static/app.js?v=ddgs-search-ui-7"></script>
-  <script src="/static/wiki.js?v=7"></script>
+  <script src="/static/svg-manager.js?v=setup-layout-3"></script>
+  <script src="/static/components.js?v=settings-library-2"></script>
+  <script src="/static/app.js?v=openai-account-5"></script>
+  <script src="/static/wiki.js?v=10"></script>
   <script src="/static/etu-bridge.js?v=connection-ui-6"></script>
-  <script src="/static/etu-remote.js?v=connection-ui-5"></script>
+  <script src="/static/etu-remote.js?v=connection-ui-6"></script>
   <script src="/static/workshop.js?v=workshop-3"></script>
 </body>
 </html>

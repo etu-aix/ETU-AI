@@ -1,6 +1,7 @@
 /* Icônes SVG centralisées de l’interface ETU-AI. */
 (() => {
   const paths = {
+    search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/>',
     close: '<path d="m18 6-12 12M6 6l12 12"/>',

@@ -9,7 +9,7 @@ import shutil
 import tarfile
 import tempfile
 import time
-from typing import Any, Generator, Optional, Union
+from typing import Any, Callable, Generator, Optional, Union
 import urllib.request
 import uuid
 import zipfile
@@ -131,7 +131,12 @@ def file_lock(path: Union[str, Path]) -> Generator[None, None, None]:
                 fallback_stream.close()
 
 
-def download(url: str, destination: Union[str, Path], expected_sha256: Optional[str] = None) -> None:
+def download(
+    url: str,
+    destination: Union[str, Path],
+    expected_sha256: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, float, str], None]] = None,
+) -> None:
     """Download a file from a URL to a target destination with optional SHA-256 verification.
 
     Publishes a complete verified transfer atomically; never leaves a partial target.
@@ -151,14 +156,35 @@ def download(url: str, destination: Union[str, Path], expected_sha256: Optional[
         with os.fdopen(fd, "wb") as output:
             request = urllib.request.Request(url, headers={"User-Agent": "ETU-AI-Setup/2"})
             with safe_urlopen(request, timeout=60) as response:
-                expected_length = response.headers.get("Content-Length")
-                shutil.copyfileobj(response, output)
-                length = output.tell()
+                length_header = response.headers.get("Content-Length")
+                expected_length = int(length_header) if length_header and length_header.isdigit() else None
+                transferred = 0
+                sample_bytes = 0
+                sample_at = time.monotonic()
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    transferred += len(chunk)
+                    sample_bytes += len(chunk)
+                    now = time.monotonic()
+                    elapsed = now - sample_at
+                    if progress_callback and (elapsed >= 0.25 or (expected_length and transferred >= expected_length)):
+                        progress_callback(transferred, expected_length or 0, sample_bytes / max(elapsed, 0.001) / (1024 * 1024), "downloading")
+                        sample_bytes = 0
+                        sample_at = now
+                length = transferred
+                if progress_callback and sample_bytes:
+                    elapsed = time.monotonic() - sample_at
+                    progress_callback(transferred, expected_length or 0, sample_bytes / max(elapsed, 0.001) / (1024 * 1024), "downloading")
         if not length or (expected_length is not None and length != int(expected_length)):
             raise RuntimeError(f"Incomplete download: {url}")
         if expected_sha256 and digest(temp_name).lower() != expected_sha256.lower():
             raise RuntimeError(f"SHA256 mismatch: {url}")
         os.replace(temp_name, dest_path)
+        if progress_callback:
+            progress_callback(length, expected_length or 0, 0.0, "installing")
     finally:
         if os.path.exists(temp_name):
             os.unlink(temp_name)

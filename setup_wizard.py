@@ -46,6 +46,58 @@ class SetupWizardManager:
         self.logs: list[str] = []
         self.error_message: Optional[str] = None
         self.beacon_process: Optional[subprocess.Popen] = None
+        self.setup_process: Optional[subprocess.Popen] = None
+        self.cancel_event = threading.Event()
+        self.active_downloader = None
+        self.active_download_id: Optional[str] = None
+
+    def cancel_setup(self) -> bool:
+        """Request cancellation and stop work started by this setup run."""
+        with self.lock:
+            if self.status != "running":
+                return False
+            self.cancel_event.set()
+            setup_process = self.setup_process
+            beacon_process = self.beacon_process
+            downloader = self.active_downloader
+            download_id = self.active_download_id
+        if downloader and download_id:
+            downloader.cancel_download(download_id)
+        seen_pids: set[int] = set()
+        for process in (setup_process, beacon_process):
+            if not process or process.pid in seen_pids:
+                continue
+            seen_pids.add(process.pid)
+            if process and process.poll() is None:
+                try:
+                    if platform.system() == "Windows":
+                        result = subprocess.run(
+                            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        if result.returncode and process.poll() is None:
+                            process.kill()
+                    else:
+                        process.terminate()
+                except (OSError, subprocess.SubprocessError) as exc:
+                    self.add_log(f"[i] Arrêt du processus d'installation en cours : {exc}")
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+        return True
+
+    def _start_tracked_process(self, command: list[str], **kwargs: Any) -> subprocess.Popen:
+        """Start a child process while making it visible to cancellation atomically."""
+        with self.lock:
+            self._check_cancelled()
+            process = subprocess.Popen(command, **kwargs)
+            self.setup_process = process
+        return process
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_event.is_set():
+            raise InterruptedError("Installation annulée")
 
     def is_completed(self) -> bool:
         """Vérifie si l'installation a déjà été effectuée avec succès."""
@@ -57,6 +109,10 @@ class SetupWizardManager:
         if val in ("true", True, "1"):
             return True
         return False
+
+    def is_deferred(self) -> bool:
+        """Indique que l'utilisateur a choisi de configurer le moteur plus tard."""
+        return self.storage.get_setting("setup_deferred", "false") in ("true", True, "1")
 
     def is_beacon_online(self) -> bool:
         """Vérifie si MAIA-Beacon est actif et répond sur le port 11343."""
@@ -267,6 +323,7 @@ class SetupWizardManager:
         with self.lock:
             return {
                 "completed": self.is_completed(),
+                "deferred": self.is_deferred(),
                 "beacon_online": self.is_beacon_online(),
                 "status": self.status,
                 "current_step": self.current_step_index,
@@ -285,34 +342,40 @@ class SetupWizardManager:
             self.logs.append(entry)
             print(entry, flush=True)
 
-    def start_setup(self, selected_models: list[dict[str, Any]], backend: str = "auto") -> bool:
+    def start_setup(self, selected_models: list[dict[str, Any]], backend: str = "auto", selected_asset: Optional[dict[str, Any]] = None) -> bool:
         """Démarre le pipeline d'installation en arrière-plan."""
         with self.lock:
-            if self.status == "running":
+            if self.status in {"running", "finalizing"}:
                 return False
             self.status = "running"
+            self.storage.set_setting("setup_deferred", "false")
             self.current_step_index = 0
             self.progress_percent = 5.0
             self.error_message = None
+            self.cancel_event.clear()
+            self.setup_process = None
+            self.active_downloader = None
+            self.active_download_id = None
             self.logs.clear()
             for s in self.steps:
                 s["status"] = "pending"
 
-        thread = threading.Thread(target=self._run_pipeline, args=(selected_models, backend), daemon=True)
+        thread = threading.Thread(target=self._run_pipeline, args=(selected_models, backend, selected_asset), daemon=True)
         thread.start()
         return True
 
-    def _run_pipeline(self, selected_models: list[dict[str, Any]], backend: str = "auto") -> None:
+    def _run_pipeline(self, selected_models: list[dict[str, Any]], backend: str = "auto", selected_asset: Optional[dict[str, Any]] = None) -> None:
         """Exécute les 4 étapes du setup séquentiellement avec streaming des logs."""
         try:
+            self._check_cancelled()
             if not selected_models:
                 raise ValueError("Choisissez au moins un modèle avant l'installation")
-            if backend not in {"auto", "npu"}:
+            if backend not in {"auto", "cpu", "cuda", "vulkan", "metal", "npu"}:
                 raise ValueError("Backend d'installation invalide")
-            from models_mgr.hf_client import hf_client
             from models_mgr.downloader import ModelDownloader
             validator = ModelDownloader(storage=self.storage)
             for item in selected_models:
+                self._check_cancelled()
                 repo, filename = item.get("repo", ""), item.get("filename", "")
                 if not repo or not filename:
                     raise ValueError("Modèle sélectionné incomplet")
@@ -320,9 +383,6 @@ class SetupWizardManager:
                 if not (AI_SERVER_DIR / "models" / filename).is_file():
                     if repo == "local":
                         raise ValueError(f"Fichier local {filename} absent")
-                    files = hf_client.get_model_files(repo)
-                    if filename not in {entry["filename"] for entry in files}:
-                        raise ValueError(f"Fichier {filename} introuvable ou impossible à vérifier sur Hugging Face")
             primary_model = selected_models[0] if selected_models else {
                 "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
                 "filename": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
@@ -345,6 +405,12 @@ class SetupWizardManager:
             cfg_data["default_model_repo"] = primary_model.get("repo", "mistralai/Ministral-3-3B-Instruct-2512-GGUF")
             cfg_data["default_model_file"] = primary_model.get("filename", "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf")
             cfg_data["backend"] = backend
+            if selected_asset:
+                cfg_data["llama_release_tag"] = selected_asset["tag"]
+                if selected_asset.get("sha256"):
+                    hashes = cfg_data.get("binary_sha256") or {}
+                    hashes[selected_asset["name"]] = selected_asset["sha256"]
+                    cfg_data["binary_sha256"] = hashes
             with open(config_json_path, "w", encoding="utf-8") as f:
                 json.dump(cfg_data, f, indent=2)
 
@@ -354,7 +420,13 @@ class SetupWizardManager:
             env["PYTHONPATH"] = str(AI_SERVER_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
             cmd_setup = [sys.executable, "beacon.py", "--setup-only"]
-            proc = subprocess.Popen(
+            if selected_asset:
+                cmd_setup.extend([
+                    "--server-variant", selected_asset["variant"],
+                    "--server-asset-name", selected_asset["name"],
+                    "--server-asset-url", selected_asset["url"],
+                ])
+            proc = self._start_tracked_process(
                 cmd_setup,
                 cwd=str(AI_SERVER_DIR),
                 env=env,
@@ -365,7 +437,6 @@ class SetupWizardManager:
                 errors="replace",
                 bufsize=1,
             )
-
             if proc.stdout:
                 for line in proc.stdout:
                     clean = line.rstrip()
@@ -377,6 +448,9 @@ class SetupWizardManager:
                             self._set_step_status(1, "running", progress=40.0)
 
             ret = proc.wait()
+            with self.lock:
+                self.setup_process = None
+            self._check_cancelled()
             if ret != 0:
                 raise RuntimeError(f"Échec de la préparation Beacon / llama-server (code {ret})")
 
@@ -397,7 +471,10 @@ class SetupWizardManager:
             from models_mgr.downloader import ModelDownloader
 
             downloader = ModelDownloader(storage=self.storage)
+            with self.lock:
+                self.active_downloader = downloader
             for idx, model_info in enumerate(selected_models):
+                self._check_cancelled()
                 repo = model_info.get("repo")
                 filename = model_info.get("filename")
                 if not repo or not filename:
@@ -423,7 +500,14 @@ class SetupWizardManager:
                 else:
                     self.add_log(f"Téléchargement du modèle {idx + 1}/{len(selected_models)} : {filename} depuis {repo}...")
                     task_id = downloader.start_download(repo, filename)
+                    with self.lock:
+                        self.active_download_id = task_id
+                        cancelled_while_starting = self.cancel_event.is_set()
+                    if cancelled_while_starting:
+                        downloader.cancel_download(task_id)
+                        self._check_cancelled()
                     while True:
+                        self._check_cancelled()
                         time.sleep(1)
                         t = downloader.get_task(task_id)
                         if not t:
@@ -445,6 +529,11 @@ class SetupWizardManager:
                             break
                         elif t["status"] == "error":
                             raise RuntimeError(f"Erreur téléchargement {filename}: {t.get('error_message')}")
+                        elif t["status"] == "cancelled":
+                            self._check_cancelled()
+                            raise RuntimeError(f"Téléchargement annulé : {filename}")
+                    with self.lock:
+                        self.active_download_id = None
 
             self._set_step_status(2, "completed", progress=85.0)
 
@@ -455,7 +544,7 @@ class SetupWizardManager:
             self.add_log("Démarrage du service local MAIA-Beacon sur le port 11343...")
 
             cmd_run = [sys.executable, "beacon.py"]
-            self.beacon_process = subprocess.Popen(
+            self.beacon_process = self._start_tracked_process(
                 cmd_run,
                 cwd=str(AI_SERVER_DIR),
                 env=env,
@@ -466,6 +555,7 @@ class SetupWizardManager:
                 errors="replace",
                 bufsize=1,
             )
+            self._check_cancelled()
 
             # Thread de lecture des logs de Beacon
             def stream_beacon_logs():
@@ -482,6 +572,7 @@ class SetupWizardManager:
             deadline = time.monotonic() + 300
             service_ready = False
             while time.monotonic() < deadline:
+                self._check_cancelled()
                 if self.beacon_process.poll() is not None:
                     raise RuntimeError(f"Le processus Beacon s'est arrêté prématurément (code {self.beacon_process.returncode})")
                 if self.is_model_ready(primary_model["filename"]):
@@ -492,12 +583,14 @@ class SetupWizardManager:
             if not service_ready:
                 raise RuntimeError("Délai d'attente dépassé pour la mise en ligne de MAIA-Beacon.")
 
+            with self.lock:
+                self._check_cancelled()
+                self.status = "finalizing"
             self._set_step_status(3, "completed", progress=100.0)
             self.add_log("[OK] MAIA-Beacon est en ligne sur http://127.0.0.1:11343 !")
             self.add_log("Installation d'ETU-AI terminée avec succès !")
-
-            # Marquer le setup comme complété dans la base SQLite et dans StateManager
             self.storage.set_setting("setup_completed", "true")
+            self.storage.set_setting("setup_deferred", "false")
             self.state_mgr.mark_setup_completed(
                 primary_model=primary_model.get("filename"),
                 installed_models=selected_models,
@@ -505,11 +598,27 @@ class SetupWizardManager:
             with self.lock:
                 self.status = "completed"
 
-        except Exception as e:
+        except InterruptedError:
+            self.storage.set_setting("setup_deferred", "true")
             with self.lock:
+                if 0 <= self.current_step_index < len(self.steps) and self.steps[self.current_step_index]["status"] == "running":
+                    self.steps[self.current_step_index]["status"] = "cancelled"
+                self.status = "cancelled"
+                self.error_message = None
+            self.add_log("[i] Installation annulée. Les modèles déjà présents sont conservés.")
+        except Exception as e:
+            self.storage.set_setting("setup_deferred", "true")
+            with self.lock:
+                if 0 <= self.current_step_index < len(self.steps) and self.steps[self.current_step_index]["status"] == "running":
+                    self.steps[self.current_step_index]["status"] = "error"
                 self.status = "error"
                 self.error_message = str(e)
             self.add_log(f"[ERREUR] Échec de l'installation : {e}")
+        finally:
+            with self.lock:
+                self.setup_process = None
+                self.active_downloader = None
+                self.active_download_id = None
 
     def _set_step_status(self, step_idx: int, status: str, progress: Optional[float] = None) -> None:
         """Met à jour l'état d'une étape et la jauge de progression."""

@@ -624,37 +624,6 @@ body, button, input, textarea { font-family: Inter, -apple-system, BlinkMacSyste
 .authored-preview-error { margin: 10px 0 6px; color: var(--text-muted); font-size: .85rem; }
 .authored-preview-repair { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); color: var(--text-main); cursor: pointer; }
 .authored-preview-source pre { max-height: 350px; overflow: auto; margin: 9px 0 0; padding: 12px; border-radius: 10px; background: var(--bg-secondary); color: var(--text-main); font-size: .75rem; white-space: pre-wrap; }
-#wizard-container { background: var(--bg-primary); overflow-y: auto; }
-
-.wizard-card { width: min(980px, calc(100vw - 30px)); margin: 30px auto; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 22px; box-shadow: 0 18px 60px #00000014; backdrop-filter: none; }
-.wizard-card:hover { box-shadow: 0 18px 60px #00000014; transform: none; }
-.wizard-header { border-bottom-color: var(--border-color); }
-.wizard-header .brand { margin-bottom: 0; }
-.wizard-header .brand h1 { font-size: 1.05rem; }
-.wizard-orb-mood-indicator, .diag-orb-preview, .wizard-features, .ai-chip-badge { display: none !important; }
-.wizard-content h3 { letter-spacing: -.035em; }
-.wizard-hf-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; gap: 12px; }
-.wizard-hf-search-box { width: 100%; min-width: 0; border-radius: 11px; }
-.wizard-hf-actions { justify-content: space-between; }
-.wizard-advanced { margin: 8px 0; color: var(--text-muted); font-size: .82rem; }
-.wizard-advanced summary { cursor: pointer; width: fit-content; padding: 5px 0; }
-.wizard-advanced .wizard-category-tabs { margin-top: 9px; }
-.hw-card, .model-select-card, .hf-model-card { box-shadow: none; backdrop-filter: none; }
-.model-selection-grid { max-height: min(48vh, 430px); }
-.model-select-card { flex: 0 0 auto; overflow: visible; padding: 13px 15px; background: var(--bg-secondary); border-color: var(--border-color); }
-.model-select-card:hover { transform: none; background: var(--bg-tertiary); box-shadow: none; }
-.model-select-card.selected, .model-select-card.is-npu-card.selected { background: var(--bg-tertiary); border-color: var(--accent-color); box-shadow: none; }
-.model-card-title { color: var(--text-main); font-size: .96rem; }
-.model-card-desc { margin: 4px 0 8px; }
-.wizard-hf-search-box input { color: var(--text-main); }
-.category-pill.active { background: var(--bg-tertiary); border-color: var(--accent-color); color: var(--accent-color); box-shadow: none; }
-.btn-glow-interactive, .pulse-finish { box-shadow: none !important; animation: none !important; }
-.master-orb-container { padding: 20px 0; }
-.thinking-orb-master { transform: scale(.7); }
-.terminal-log-container { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; }
-.terminal-header { background: transparent; color: var(--text-muted); }
-.terminal-header summary { cursor: pointer; }
-.terminal-body { max-height: 160px; }
 @media (prefers-reduced-motion: reduce) { .activity-orb { animation: none; } }
 @media (max-width: 700px) { #sidebar { width: 72px; padding: 12px 6px; } #sidebar .brand h1, #sidebar .btn-new-chat, #sidebar .profile-switcher, #sidebar .conv-list, #sidebar .sidebar-footer { display: none; } #chat-main header { padding: 0 14px; } .chat-header-title span { display: none; } #chat-messages { padding: 22px 14px; } .chat-welcome { padding: 12px; } }
 

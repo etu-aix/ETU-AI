@@ -101,8 +101,11 @@ Le nombre de documents, le budget de contexte, la limite de passages vectoriels,
 la RAM libre minimale et la période d'inactivité sont configurables. Le Wiki ne
 fait pas de sondage GPU coûteux et ne charge aucun modèle supplémentaire. Le
 graphe Canvas utilise les `[[liens]]`, sans LLM ni simulation physique continue ;
-il affiche au maximum 1 000 documents, avec zoom, déplacement, filtre, catégories
-et voisinage à un ou deux niveaux. La liste expose au maximum 2 000 documents.
+il affiche au maximum 1 000 documents. On peut glisser un nœud pour changer sa
+position, glisser le fond pour parcourir le graphe, zoomer autour du pointeur,
+filtrer par titre ou catégorie et limiter le voisinage à un ou deux niveaux.
+Le bouton « Recentrer » réinitialise le zoom et la position de la vue. La liste
+expose au maximum 2 000 documents.
 
 Pendant l'extraction, le modèle choisi reçoit une seule consigne supplémentaire :
 repérer, dans la citation exacte de l'utilisateur, au plus cinq notions réutilisables.

@@ -7,20 +7,33 @@
   const status = root.querySelector('[data-status]'), code = root.querySelector('[data-code]');
   const connect = root.querySelector('[data-connect]'), disconnect = root.querySelector('[data-disconnect]');
   const deviceName = root.querySelector('[data-name]');
+  let lastData = null;
   deviceName.addEventListener('input', () => { deviceName.dataset.edited = 'true'; });
   let busy = false;
   async function request(method = 'GET', body) {
-    const response = await fetch('/api/etu/remote' + (method === 'POST' ? '/pair' : ''), {method, cache:'no-store', headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined});
-    if (!response.ok) throw new Error('Connexion à ETU 2 indisponible. Vérifiez la connexion et réessayez.');
+    let response;
+    try {
+      response = await fetch('/api/etu/remote' + (method === 'POST' ? '/pair' : ''), {method, cache:'no-store', headers:body ? {'Content-Type':'application/json'} : {}, body:body ? JSON.stringify(body) : undefined});
+    } catch {
+      throw new Error('Impossible de joindre le service local ETU-AI. Vérifiez qu’il est lancé, puis réessayez.');
+    }
+    if (!response.ok) {
+      const result = await response.json().catch(() => null);
+      const detail = typeof result?.detail === 'string' ? result.detail : null;
+      throw new Error(detail || `ETU-AI a refusé la demande (HTTP ${response.status}).`);
+    }
     return response.json();
   }
   function render(data) {
-    status.textContent = ({disabled:'Affichez le code, puis saisissez-le dans ETU 2. La connexion se fait automatiquement.',connecting:'Connexion à ETU 2…',reconnecting:'Reconnexion à ETU 2…',pairing:'Saisissez le code dans ETU 2 pour terminer la connexion.',connected:'ETU 2 et ETU-AI sont connectés dans les deux sens.',revoked:'Connexion retirée dans ETU 2. Vous pouvez générer un nouveau code.',expired:'Code expiré. Affichez un nouveau code.',rejected:'Association refusée dans ETU 2.'})[data.status] || 'Connexion à vérifier.';
+    lastData = data;
+    status.textContent = ({disabled:'Affichez le code, puis saisissez-le dans ETU 2. La connexion se fait automatiquement.',connecting:'Connexion au relais ETU 2…',reconnecting:'Relais ETU 2 injoignable. Nouvelle tentative automatique…',pairing:'Saisissez le code dans ETU 2 pour terminer la connexion.',connected:'ETU 2 et ETU-AI sont connectés dans les deux sens.',revoked:'Connexion retirée dans ETU 2. Vous pouvez générer un nouveau code.',expired:'Code expiré. Affichez un nouveau code.',rejected:'Association refusée dans ETU 2.'})[data.status] || 'Connexion à vérifier.';
     code.textContent = data.pairing_code || '';
     root.querySelector('[data-pairing]').hidden = !data.pairing_code;
     root.querySelector('[data-device]').hidden = !data.pair_id;
     root.querySelector('[data-device]').textContent = data.device_name || 'Cet appareil';
     if (data.error_code === 'DEPENDENCY_MISSING') status.textContent = 'La connexion distante nécessite les dépendances ETU-AI à jour. Redémarrez avec run_launcher.py après leur installation.';
+    if (data.error_code === 'INVALID_CONFIGURATION') status.textContent = 'L’adresse du relais distant dans ETU-AI est invalide. Vérifiez ETU_AI_REMOTE_WS_URL.';
+    if (data.error_code === 'identity_unavailable') status.textContent = 'Le coffre local ETU-AI est inaccessible. Vérifiez le compte Windows qui a lancé ETU-AI.';
     const pending = !data.pair_id && ['connecting','pairing','reconnecting'].includes(data.status) && data.expires_at * 1000 > Date.now();
     connect.disabled = !!data.pair_id || pending;
     connect.hidden = !!data.pair_id || pending;
@@ -33,7 +46,12 @@
   }
   async function run(action) {
     if (busy) return; busy = true; connect.disabled = disconnect.disabled = true;
-    try {render(await action());} catch (error) {status.textContent = error.message;} finally {busy = false;}
+    try {render(await action());} catch (error) {
+      const message = error.message;
+      if (lastData) render(lastData);
+      else {connect.disabled = false; connect.hidden = false; disconnect.disabled = true; disconnect.hidden = true;}
+      status.textContent = message;
+    } finally {busy = false;}
   }
   window.refreshEtuRemoteConnection = () => run(() => request());
   connect.addEventListener('click', () => run(() => request('POST', deviceName.value.trim() ? {device_name:deviceName.value.trim()} : {})));
