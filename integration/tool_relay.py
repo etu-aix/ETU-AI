@@ -1,4 +1,4 @@
-"""Volatile, read-only tool calls relayed through an approved ETU browser."""
+"""Volatile ETU tool calls relayed through an approved ETU 2 connection."""
 import asyncio
 import json
 import threading
@@ -8,7 +8,10 @@ from fastapi import HTTPException
 
 TOOLS = {
     "profile.group": ("etu.profile.group", "etu_profile_group", "Lire le groupe du compte ETU connecté.", {}),
-    "schedule.read": ("etu.schedule.read", "etu_schedule_read", "Lire les cours sur 1 à 31 jours. Dates YYYY-MM-DD, fin exclusive, fuseau Europe/Paris.", {"from": {"type": "string", "format": "date"}, "to": {"type": "string", "format": "date"}}),
+    "schedule.read": ("etu.schedule.read", "etu_schedule_read", "Lire les cours et événements personnels sur 1 à 31 jours. Les événements personnels appartenant à l’utilisateur fournissent event_id, nécessaire pour les partager. Dates YYYY-MM-DD, fin exclusive, fuseau Europe/Paris.", {"from": {"type": "string", "format": "date"}, "to": {"type": "string", "format": "date"}}),
+    "schedule.create": ("etu.schedule.write", "etu_schedule_create", "Ajouter un événement personnel à l’EDT. Dates/heures ISO 8601 avec fuseau. Mettre confirm à true quand l’utilisateur demande une validation préalable ou si des détails sont incertains.", {"title": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"}, "location": {"type": "string"}, "description": {"type": "string"}, "confirm": {"type": "boolean"}}),
+    "friends.list": ("etu.schedule.write", "etu_friends_list", "Lister les amis du compte ETU pour choisir les destinataires d’un événement.", {}),
+    "schedule.share": ("etu.schedule.write", "etu_schedule_share", "Partager un événement personnel appartenant à l’utilisateur avec un ami. Prendre event_id dans personal_event_series d’etu_schedule_read et friend_id dans etu_friends_list. Si l’utilisateur a explicitement demandé le partage et que l’événement et les destinataires sont clairs, partager directement avec confirm=false. Mettre confirm=true seulement si l’utilisateur demande une validation ou si un choix/détail reste incertain.", {"event_id": {"type": "integer"}, "friend_id": {"type": "integer"}, "confirm": {"type": "boolean"}}),
 }
 
 

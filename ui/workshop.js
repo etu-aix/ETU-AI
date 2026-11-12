@@ -69,7 +69,7 @@
         const model = {type:'api', provider:item.provider, model_id:item.model || item.name || item.id};
         const key = modelKey(model);
         if (!model.provider || !model.model_id || modelByKey.has(key)) continue;
-        addChoice(`${item.name || model.model_id} · ${item.provider_label || 'API'}`, key, model, item);
+        addChoice(`${item.name || model.model_id} · ${item.provider_label || 'API'} :cloud`, key, model, item);
         continue;
       }
       if (!item.filename || !item.filename.toLowerCase().endsWith('.gguf')) continue;

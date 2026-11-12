@@ -188,7 +188,7 @@
       options.push([value, `${model.name || value} · local`]);
     }
     for (const model of status.remote_models || []) {
-      if (model.id) options.push([model.id, `${model.name || model.model} · ${model.provider_label || model.provider}`]);
+      if (model.id) options.push([model.id, `${model.name || model.model} · ${model.provider_label || model.provider} :cloud`]);
     }
     if (saved && !options.some(([value]) => value === saved)) options.push([saved, `${saved} · indisponible`]);
     select.replaceChildren();

@@ -12,6 +12,7 @@ from urllib.parse import quote
 from fastapi import HTTPException
 import httpx
 from storage.api_credentials import get_api_key
+from chat import chatgpt_auth
 
 
 def selected_model(storage):
@@ -25,7 +26,8 @@ def selected_model(storage):
         config = storage.get_setting("api_provider", {}) or {}
         provider_id = config.get("provider", "openai-compatible") if config.get("enabled") else None
     if provider_id:
-        if not config.get("model") or not config.get("base_url") or config.get("type", "openai") not in {"openai", "anthropic", "gemini"}:
+        # ChatGPT account models use the Responses API transport in this bridge.
+        if not config.get("model") or not config.get("base_url") or config.get("type", "openai") not in {"openai", "anthropic", "gemini", "chatgpt"}:
             raise HTTPException(503, "Configuration du modèle sélectionné invalide")
         return {"model": config["model"], "source": "cloud", "provider": provider_id, "type": config.get("type", "openai"), "base_url": config["base_url"].rstrip("/")}
     return {"model": storage.get_setting("selected_model") or "local", "source": "local", "provider": "", "type": "openai", "base_url": "http://127.0.0.1:11343/v1"}
@@ -168,6 +170,57 @@ def upstream(target, payload):
     return target["base_url"] + "/chat/completions", headers, body
 
 
+def _responses_input(messages):
+    instructions = "\n\n".join(message["content"] for message in messages if message["role"] == "system")
+    inputs = []
+    for message in messages:
+        if message["role"] == "system":
+            continue
+        content = message["content"]
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get("type") == "text":
+                    parts.append({"type": "input_text", "text": part.get("text", "")})
+                elif part.get("type") == "image_url":
+                    image = part.get("image_url")
+                    image_url = image.get("url") if isinstance(image, dict) else image
+                    if image_url:
+                        parts.append({"type": "input_image", "image_url": image_url})
+            content = parts
+        inputs.append({"role": message["role"], "content": content})
+    return instructions, inputs
+
+
+def chatgpt_payload(payload):
+    instructions, inputs = _responses_input(payload["messages"])
+    # Match the existing account-backed chat path. Do not inject an API-style
+    # output token limit into account-backed model requests.
+    result = {"model": payload["model"], "instructions": instructions, "input": inputs,
+              "store": False, "stream": payload.get("stream", False)}
+    response_format = payload.get("response_format")
+    if isinstance(response_format, dict):
+        if response_format.get("type") == "json_schema":
+            schema = response_format.get("json_schema", {})
+            result["text"] = {"format": {"type": "json_schema", "name": schema.get("name", "response"),
+                                           "strict": schema.get("strict", True), "schema": schema.get("schema", {})}}
+        elif response_format.get("type") == "json_object":
+            result["text"] = {"format": {"type": "json_object"}}
+    return result
+
+
+async def selected_upstream(target, payload):
+    if target["type"] == "chatgpt":
+        try:
+            token = await chatgpt_auth.access_token()
+        except Exception as exc:
+            raise HTTPException(503, "Le compte ChatGPT est déconnecté ou doit être renouvelé.") from exc
+        headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json", "Accept": "text/event-stream"}
+        # ETU 2 sends the sentinel `selected`; ChatGPT needs the resolved slug.
+        return target["base_url"] + "/responses", headers, chatgpt_payload({**payload, "model": target["model"]})
+    return upstream(target, payload)
+
+
 def normalized(value, target, streaming=False):
     if value.get("error"):
         raise HTTPException(503, "La génération du modèle sélectionné a échoué")
@@ -176,6 +229,11 @@ def normalized(value, target, streaming=False):
         # Providers may resolve a selected alias to a specific model revision.
         # Local engines may report a filesystem path: keep only the model name.
         target["model"] = (actual.replace("\\", "/").rsplit("/", 1)[-1] if target["source"] == "local" else actual)[:200]
+    if target["type"] == "chatgpt":
+        content = "".join(part.get("text", "") for item in value.get("output", []) if item.get("type") == "message"
+                          for part in item.get("content", []) if part.get("type") == "output_text")
+        return {"model": target["model"], "etu_ai": metadata(target),
+                "choices": [{"message": {"content": content}, "finish_reason": "stop", "index": 0}]}
     if target["type"] == "openai":
         result = dict(value)
         result.update({"model": target["model"], "etu_ai": metadata(target)})
@@ -213,7 +271,19 @@ def stream_event(line, target):
     if data == "[DONE]":
         return "data: [DONE]\n\n"
     try:
-        value = normalized(json.loads(data), target, True)
+        raw = json.loads(data)
+        if target["type"] == "chatgpt":
+            kind = raw.get("type")
+            if kind == "response.output_text.delta":
+                value = {"model": target["model"], "etu_ai": metadata(target), "choices": [{"delta": {"content": raw.get("delta", "")}, "finish_reason": None, "index": 0}]}
+            elif kind == "response.completed":
+                value = {"model": target["model"], "etu_ai": metadata(target), "choices": [{"delta": {}, "finish_reason": "stop", "index": 0}]}
+            elif kind in {"response.failed", "response.incomplete", "error"}:
+                raise HTTPException(503, "Le modèle ChatGPT n’a pas terminé sa réponse.")
+            else:
+                return None
+        else:
+            value = normalized(raw, target, True)
     except (ValueError, TypeError, AttributeError) as exc:
         raise HTTPException(503, "Flux du modèle sélectionné invalide") from exc
     return "data: " + (value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)) + "\n\n"

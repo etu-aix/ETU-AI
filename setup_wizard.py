@@ -114,6 +114,10 @@ class SetupWizardManager:
         """Indique que l'utilisateur a choisi de configurer le moteur plus tard."""
         return self.storage.get_setting("setup_deferred", "false") in ("true", True, "1")
 
+    def is_beacon_enabled(self) -> bool:
+        """Return the persisted user preference; existing installations stay enabled by default."""
+        return self.storage.get_setting("beacon_enabled", True) is not False
+
     def is_beacon_online(self) -> bool:
         """Vérifie si MAIA-Beacon est actif et répond sur le port 11343."""
         try:
@@ -134,6 +138,8 @@ class SetupWizardManager:
 
     def ensure_beacon_running(self) -> bool:
         """Démarre le service MAIA-Beacon en arrière-plan s'il n'est pas déjà actif."""
+        if not self.is_beacon_enabled():
+            return False
         if self.is_beacon_online():
             return True
 
@@ -145,6 +151,8 @@ class SetupWizardManager:
             # then wait for the owner to expose the API instead of starting a
             # second Beacon that will fail on .venv.maia.lock.
             with file_lock(launch_lock):
+                if not self.is_beacon_enabled():
+                    return False
                 if self.is_beacon_online():
                     return True
                 with self.lock:
@@ -276,9 +284,15 @@ class SetupWizardManager:
 
         if platform.system() == "Windows":
             try:
-                result = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=10, check=True)
+                result = subprocess.run(
+                    ["netstat", "-ano", "-p", "tcp"], capture_output=True,
+                    timeout=10, check=True,
+                )
                 pids = set()
-                for line in result.stdout.splitlines():
+                output = result.stdout or b""
+                if isinstance(output, bytes):
+                    output = output.decode(sys.getfilesystemencoding(), errors="replace")
+                for line in output.splitlines():
                     fields = line.split()
                     if len(fields) >= 5 and fields[0].upper() == "TCP" and fields[3].upper() == "LISTENING":
                         if fields[1].rsplit(":", 1)[-1] == "11343" and fields[4].isdigit():

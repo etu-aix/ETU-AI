@@ -41,7 +41,7 @@ from chat import chatgpt_auth
 from chat.attachments import prepare_attachments, load_attachments
 from configs import init_file_logger
 from install import scan_hardware
-from configs import CONFIG_FILE, STATE_FILE, load_config
+from configs import CONFIG_FILE, DEFAULT_CONFIG, STATE_FILE, load_config
 from llama_setup import setup_llama
 from release_catalog import backend_for_variant, release_variants
 from setup_utils import atomic_json, file_lock, read_json
@@ -61,6 +61,7 @@ from wiki.api import router_for as wiki_router
 from tools.executor import ToolExecutor
 from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
 from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
+from integration.updates import latest_app_release
 
 from setup_wizard import wizard_manager
 
@@ -158,6 +159,7 @@ async def reject_requests_while_sleeping(request: Request, call_next):
             state = _power_state
         if state != "awake" and request.url.path not in {
             "/api/power/state", "/api/power/wake", "/api/power/restart", "/api/power/shutdown",
+            "/api/settings/beacon", "/api/settings/beacon/context",
         }:
             return JSONResponse(status_code=503, content={"detail": "Désolé je suis en veille"})
     return await call_next(request)
@@ -212,7 +214,7 @@ def maintain_beacon():
         try:
             with _power_condition:
                 app_is_awake = _power_state == "awake"
-            if app_is_awake and wizard_manager.is_completed() and not wizard_manager.is_beacon_online():
+            if app_is_awake and wizard_manager.is_beacon_enabled() and wizard_manager.is_completed() and not wizard_manager.is_beacon_online():
                 wizard_manager.ensure_beacon_running()
         except Exception:
             logger.exception("MAIA-Beacon supervision failed")
@@ -275,6 +277,15 @@ def get_launch_mode():
     }
 
 
+@app.get("/api/updates/app")
+def get_app_release(request: Request):
+    require_local_admin(request)
+    try:
+        return latest_app_release()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @app.get("/api/power/state")
 def get_power_state(request: Request):
     require_local_admin(request)
@@ -328,7 +339,7 @@ def wake_app(request: Request):
             raise HTTPException(status_code=409, detail="Une transition d’alimentation est déjà en cours")
         _power_state = "waking"
     try:
-        if wizard_manager.is_completed():
+        if wizard_manager.is_completed() and wizard_manager.is_beacon_enabled():
             if not wizard_manager.ensure_beacon_running():
                 raise RuntimeError("Impossible de démarrer le moteur d’inférence")
             deadline = time.monotonic() + 45
@@ -462,6 +473,7 @@ class ChatRequest(BaseModel):
     request_id: Optional[UUID] = None
     edit_message_id: Optional[str] = None
     web_search: bool = False
+    reasoning_effort: Optional[str] = Field(default=None, min_length=1, max_length=32, pattern=r"^[a-z][a-z0-9_-]*$")
 
 
 class EditMessageRequest(BaseModel):
@@ -481,6 +493,7 @@ class ProviderSettingsRequest(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     model: str = "gpt-4o-mini"
     models: list[str] = Field(default_factory=list)
+    reasoning_efforts: dict[str, list[str]] = Field(default_factory=dict)
     api_key: Optional[str] = None
     clear_api_key: bool = False
     auth_method: Literal["account", "api_key"] = "api_key"
@@ -495,6 +508,14 @@ class ProviderModelsRequest(BaseModel):
 
 class HardwarePreferenceRequest(BaseModel):
     preference: Literal["cpu", "gpu", "npu", "auto"]
+
+
+class BeaconEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class BeaconContextRequest(BaseModel):
+    context_size: int = Field(ge=512, le=262144, multiple_of=512)
 
 
 PROVIDER_PRESETS = {
@@ -632,6 +653,7 @@ async def chat_stream_endpoint(req: ChatRequest):
             attachments=attachments, request_id=request_id,
             existing_user_message_id=req.edit_message_id,
             web_search=req.web_search,
+            reasoning_effort=req.reasoning_effort,
         )
         try:
             async for event in stream:
@@ -667,6 +689,14 @@ async def stop_chat(request_id: UUID):
 @app.get("/api/conversations")
 def list_conversations():
     return {"conversations": storage.list_conversations()}
+
+
+@app.post("/api/conversations/{conv_id}/etu-confirmations/{token}")
+async def confirm_etu_action(conv_id: str, token: str, body: dict[str, Any]):
+    from chat.confirmations import decide
+    if not storage.get_conversation(conv_id) or not decide(token, conv_id, body.get("approved") is True, body.get("friend_id")):
+        raise HTTPException(404, "Confirmation expirée")
+    return {"ok": True}
 
 
 @app.post("/api/conversations")
@@ -784,15 +814,43 @@ def get_configured_api_models() -> list[dict[str, Any]]:
             continue
         preset = PROVIDER_PRESETS.get(provider_id, {})
         for model_name in selected_models:
-            models.append({
+            model_entry = {
                 "id": f"api:{provider_id}:{model_name}",
                 "model": model_name,
                 "name": model_name,
                 "provider": provider_id,
                 "provider_label": preset.get("label", provider_id),
+                "provider_type": config.get("type", preset.get("type", "openai")),
                 "source": "api",
-            })
+            }
+            effort_map = config.get("reasoning_efforts", {})
+            efforts = effort_map.get(model_name) if isinstance(effort_map, dict) else effort_map
+            if isinstance(efforts, list):
+                clean_efforts = _clean_reasoning_efforts(efforts)
+                if clean_efforts:
+                    model_entry["reasoning_efforts"] = clean_efforts
+            models.append(model_entry)
     return models
+
+
+def _clean_reasoning_efforts(values):
+    if not isinstance(values, list):
+        return []
+    return list(dict.fromkeys(value for value in values if isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", value)))[:12]
+
+
+def _model_reasoning_efforts(item):
+    if not isinstance(item, dict):
+        return []
+    capabilities = item.get("capabilities") if isinstance(item.get("capabilities"), dict) else {}
+    reasoning = item.get("reasoning") if isinstance(item.get("reasoning"), dict) else {}
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    capability_reasoning = capabilities.get("reasoning") if isinstance(capabilities.get("reasoning"), dict) else {}
+    for value in (item.get("reasoning_efforts"), item.get("supported_reasoning_efforts"), capabilities.get("reasoning_efforts"), capability_reasoning.get("efforts"), reasoning.get("efforts"), reasoning.get("supported_efforts"), metadata.get("reasoning_efforts")):
+        efforts = _clean_reasoning_efforts(value)
+        if efforts:
+            return efforts
+    return []
 
 
 @app.get("/api/models/catalog")
@@ -1231,14 +1289,32 @@ async def import_model_projector(request: Request, model: str, filename: str):
         temporary.unlink(missing_ok=True)
 
 
-def activate_local_model_for_chat(model_name: str) -> dict[str, Any]:
+def _beacon_has_model(status: dict[str, Any], model_name: str) -> bool:
+    available = status.get("available_models")
+    if not isinstance(available, list):
+        return True  # Older Beacon versions do not expose their model inventory here.
+    names = {
+        Path(item).stem.casefold()
+        for item in available
+        if isinstance(item, str) and item.strip()
+    }
+    return model_name.casefold() in names
+
+
+def activate_local_model_for_chat(model_name: str, needs_vision: bool = False) -> dict[str, Any]:
     """Load the queued local model when a chat request first needs it."""
     clean_model = model_name[:-5] if model_name.lower().endswith(".gguf") else model_name
     if f"{clean_model}.gguf" not in downloader.list_installed_models():
         raise RuntimeError("Le modèle sélectionné n'est plus installé")
     with _model_activation_lock:
         try:
-            mmproj = ProjectorManager(storage, downloader, hf_client).selected(f"{clean_model}.gguf")
+            # Vision projectors are only needed when the current request contains
+            # images. Loading one for ordinary text can consume substantial VRAM.
+            mmproj = ProjectorManager(storage, downloader, hf_client).selected(f"{clean_model}.gguf") if needs_vision else None
+            inference_config = load_config()
+            context_size = int(inference_config.get("context_size", 4096))
+            if inference_config.get("backend") == "npu":
+                context_size = min(context_size, 1024)
             if not wizard_manager.is_beacon_online():
                 if not wizard_manager.ensure_beacon_running():
                     raise RuntimeError("Impossible de démarrer MAIA-Beacon")
@@ -1254,14 +1330,36 @@ def activate_local_model_for_chat(model_name: str) -> dict[str, Any]:
             status_url = "http://127.0.0.1:11343/api/status"
             with urllib.request.urlopen(status_url, timeout=3) as response:
                 current = json.loads(response.read().decode("utf-8"))
-            if current.get("status") == "running" and current.get("active_model") == clean_model and current.get("active_mmproj") == mmproj:
+            if not _beacon_has_model(current, clean_model):
+                raise RuntimeError(
+                    f"Le Beacon connecté ne connaît pas {clean_model}.gguf. "
+                    "Il utilise probablement un autre dossier de modèles."
+                )
+            same_model = current.get("status") == "running" and current.get("active_model") == clean_model
+            is_npu_engine = str(current.get("active_engine", "")).casefold() == "npu"
+            same_thinking = is_npu_engine or (
+                current.get("active_thinking") is True
+                and current.get("active_thinking_effort") == "medium"
+            )
+            try:
+                same_context = is_npu_engine or int(current.get("active_context") or 0) == context_size
+            except (TypeError, ValueError):
+                same_context = False
+            same_mmproj = current.get("active_mmproj") == mmproj
+            if same_model and same_mmproj and same_context and same_thinking:
                 return current
-            if current.get("status") == "running" and current.get("active_model") == clean_model and current.get("active_mmproj") != mmproj:
+            if same_model and (not same_mmproj or not same_context or not same_thinking):
                 stop_request = urllib.request.Request(status_url.replace("/api/status", "/api/stop"), data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
                 with urllib.request.urlopen(stop_request, timeout=10):
                     pass
 
-            selection = {"model": clean_model, "mmproj": mmproj or "__etu_no_mmproj__.gguf"}
+            selection = {
+                "model": clean_model,
+                "context_size": context_size,
+                "thinking": True,
+                "thinking_effort": "medium",
+                "mmproj": mmproj or "__etu_no_mmproj__.gguf",
+            }
             req = urllib.request.Request(
                 "http://127.0.0.1:11343/api/select", data=json.dumps(selection).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST",
@@ -1380,7 +1478,87 @@ def get_hardware_preference():
     if preference not in {"cpu", "auto", "gpu", "npu"}:
         preference = "auto"
     hw = get_hardware_info()
-    return {"preference": preference, "has_npu": bool(hw.get("npus")), "has_gpu": bool(hw.get("gpus"))}
+    return {"preference": preference, "has_npu": bool(hw.get("npus")), "has_gpu": bool(hw.get("gpus")), "beacon_enabled": wizard_manager.is_beacon_enabled()}
+
+
+def get_beacon_settings() -> dict[str, Any]:
+    enabled = wizard_manager.is_beacon_enabled()
+    online = wizard_manager.is_beacon_online()
+    launch_mode = get_launch_mode()["mode"]
+    config = read_json(AI_SERVER_DIR / "config.json")
+    beacon_status: dict[str, Any] = {}
+    if online:
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=2) as response:
+                beacon_status = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            beacon_status = {}
+    process = wizard_manager.beacon_process
+    with _power_condition:
+        power_state = _power_state
+    return {
+        "enabled": enabled,
+        "online": online,
+        "setup_completed": wizard_manager.is_completed(),
+        "status": beacon_status.get("status", "offline" if not online else "unknown"),
+        "active_model": beacon_status.get("active_model"),
+        "active_engine": beacon_status.get("active_engine"),
+        "active_context": beacon_status.get("active_context"),
+        "context_size": int(config.get("context_size", 4096)),
+        "host": "0.0.0.0" if launch_mode == "server" else "127.0.0.1",
+        "port": int(config.get("beacon_port", 11343)),
+        "mode": launch_mode,
+        "power_state": power_state,
+        "backend": config.get("backend", "auto"),
+        "pid": process.pid if process and process.poll() is None else None,
+    }
+
+
+@app.get("/api/settings/beacon")
+def get_beacon_settings_endpoint(request: Request):
+    require_local_admin(request)
+    return get_beacon_settings()
+
+
+@app.put("/api/settings/beacon")
+def update_beacon_enabled(request: Request, req: BeaconEnabledRequest):
+    require_local_admin(request)
+    storage.set_setting("beacon_enabled", req.enabled)
+    if req.enabled:
+        if wizard_manager.is_completed() and not wizard_manager.ensure_beacon_running():
+            raise HTTPException(status_code=503, detail="MAIA-Beacon n’a pas pu démarrer")
+    elif not wizard_manager.stop_beacon_listener():
+        raise HTTPException(status_code=500, detail="MAIA-Beacon n’a pas pu s’arrêter")
+    return get_beacon_settings()
+
+
+@app.put("/api/settings/beacon/context")
+def update_beacon_context(request: Request, req: BeaconContextRequest):
+    require_local_admin(request)
+    config_path = AI_SERVER_DIR / "config.json"
+    config = {**DEFAULT_CONFIG, **read_json(config_path)}
+    config["context_size"] = req.context_size
+    try:
+        atomic_json(config_path, config)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Impossible d’enregistrer la taille du contexte.") from exc
+    return get_beacon_settings()
+
+
+@app.post("/api/settings/beacon/restart")
+def restart_beacon(request: Request):
+    require_local_admin(request)
+    if not wizard_manager.is_beacon_enabled():
+        raise HTTPException(status_code=409, detail="MAIA-Beacon est désactivé. Réactivez-le pour le redémarrer.")
+    if not wizard_manager.is_completed() and not wizard_manager.is_beacon_online():
+        raise HTTPException(status_code=409, detail="MAIA-Beacon n’est pas encore configuré")
+    try:
+        wizard_manager.stop_beacon_listener()
+        if not wizard_manager.ensure_beacon_running():
+            raise RuntimeError("MAIA-Beacon n’a pas ouvert son API")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Impossible de redémarrer MAIA-Beacon : {exc}") from exc
+    return get_beacon_settings()
 
 
 @app.put("/api/settings/hardware")
@@ -1403,7 +1581,7 @@ def update_hardware_preference(req: HardwarePreferenceRequest):
         storage.set_setting("hardware_preference", req.preference)
         if wizard_manager.is_beacon_online():
             wizard_manager.stop_beacon_listener()
-        if wizard_manager.is_completed() and not wizard_manager.ensure_beacon_running():
+        if wizard_manager.is_completed() and wizard_manager.is_beacon_enabled() and not wizard_manager.ensure_beacon_running():
             raise RuntimeError("Impossible de redémarrer MAIA-Beacon")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Préférence enregistrée, mais redémarrage de Beacon impossible : {exc}") from exc
@@ -1563,7 +1741,8 @@ async def list_provider_models(req: ProviderModelsRequest, origin: Optional[str]
             models = [item["slug"] for item in catalog if isinstance(item, dict) and item.get("visibility") == "list" and isinstance(item.get("slug"), str)]
             if not models:
                 raise ValueError("Aucun modèle disponible pour ce compte ChatGPT.")
-            return {"models": list(dict.fromkeys(models))}
+            efforts = {item["slug"]: levels for item in catalog if isinstance(item, dict) and isinstance(item.get("slug"), str) and (levels := _model_reasoning_efforts(item))}
+            return {"models": list(dict.fromkeys(models)), "reasoning_efforts": efforts}
         except (httpx.HTTPError, ValueError, KeyError) as exc:
             raise HTTPException(status_code=502, detail=str(exc) if isinstance(exc, ValueError) else "Impossible de charger les modèles ChatGPT.") from exc
     state = storage.get_setting("api_providers", {}) or {}
@@ -1617,6 +1796,7 @@ async def list_provider_models(req: ProviderModelsRequest, origin: Optional[str]
     if preset["type"] == "gemini":
         raw_models = [item for item in payload.get("models", []) if "generateContent" in item.get("supportedGenerationMethods", [])]
     models = []
+    reasoning_efforts = {}
     for item in raw_models:
         model_id = item.get("id") or item.get("name") if isinstance(item, dict) else None
         capabilities = item.get("capabilities") if isinstance(item, dict) else None
@@ -1626,10 +1806,33 @@ async def list_provider_models(req: ProviderModelsRequest, origin: Optional[str]
             model_id = model_id.removeprefix("models/").strip()
             if model_id and len(model_id) <= 200:
                 models.append(model_id)
+                levels = _model_reasoning_efforts(item)
+                if levels:
+                    reasoning_efforts[model_id] = levels
     models = sorted(set(models), key=str.casefold)
     if not models:
         raise HTTPException(status_code=502, detail="La réponse du fournisseur ne contient aucun modèle utilisable.")
-    return {"models": models}
+    return {"models": models, "reasoning_efforts": reasoning_efforts}
+
+
+@app.get("/api/models/reasoning-capabilities")
+async def get_reasoning_capabilities(model_id: str, origin: Optional[str] = Header(default=None, alias="Origin")):
+    model = next((item for item in get_configured_api_models() if item["id"] == model_id), None)
+    if not model:
+        raise HTTPException(status_code=404, detail="Modèle non configuré.")
+    if model.get("reasoning_efforts"):
+        return {"model_id": model_id, "reasoning_efforts": model["reasoning_efforts"]}
+    state = storage.get_setting("api_providers", {}) or {}
+    config = state.get("configs", {}).get(model["provider"], {})
+    auth_method = config.get("auth_method", "account" if config.get("type") == "chatgpt" else "api_key")
+    catalog = await list_provider_models(ProviderModelsRequest(provider=model["provider"], base_url=config.get("base_url"), auth_method=auth_method), origin)
+    efforts = catalog.get("reasoning_efforts", {}).get(model["model"], [])
+    if efforts:
+        if not isinstance(config.get("reasoning_efforts"), dict):
+            config["reasoning_efforts"] = {}
+        config.setdefault("reasoning_efforts", {})[model["model"]] = efforts
+        storage.set_setting("api_providers", state)
+    return {"model_id": model_id, "reasoning_efforts": efforts}
 
 
 @app.put("/api/settings/provider")
@@ -1696,7 +1899,12 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
         model = selected_models[0]
     consolidated_openai = req.provider == "openai"
     provider_type = "chatgpt" if consolidated_openai and req.auth_method == "account" else ("openai" if req.provider == "chatgpt" or consolidated_openai else preset["type"])
-    configs[req.provider] = {"base_url": base_url, "model": model, "models": selected_models, "type": provider_type, **({"auth_method": req.auth_method} if consolidated_openai or req.provider == "chatgpt" else {})}
+    previous_efforts = configs.get(req.provider, {}).get("reasoning_efforts", {})
+    supplied_efforts = req.reasoning_efforts or previous_efforts
+    if not isinstance(supplied_efforts, dict):
+        supplied_efforts = {}
+    clean_efforts = {name: levels for name in selected_models if (levels := _clean_reasoning_efforts(supplied_efforts.get(name))) }
+    configs[req.provider] = {"base_url": base_url, "model": model, "models": selected_models, "type": provider_type, "reasoning_efforts": clean_efforts, **({"auth_method": req.auth_method} if consolidated_openai or req.provider == "chatgpt" else {})}
     active_provider = req.provider if req.enabled else (None if state.get("active_provider", legacy.get("provider")) == req.provider else state.get("active_provider"))
     storage.set_setting("api_providers", {"active_provider": active_provider, "configs": configs})
     return get_provider_settings(req.provider)
@@ -1803,7 +2011,7 @@ def _reinstall_server_variant(asset: dict[str, str]) -> None:
         logger.exception("Server variant reinstall failed")
         failure = str(exc)
     finally:
-        if wizard_manager.is_completed():
+        if wizard_manager.is_completed() and wizard_manager.is_beacon_enabled():
             with _server_reinstall_lock:
                 _server_reinstall.update(status="running", phase="restarting", message="Redémarrage du moteur d’inférence…")
             if not wizard_manager.ensure_beacon_running() and failure is None:

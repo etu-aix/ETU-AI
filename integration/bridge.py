@@ -27,6 +27,7 @@ LOCALHOST_ORIGIN_REGEX = r"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1
 PERMISSIONS = {
     "etu.profile.group",
     "etu.schedule.read",
+    "etu.schedule.write",
     "etu.workspace.read",
     "etu.ai.models.read",
     "etu.ai.model.select",

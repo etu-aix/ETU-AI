@@ -456,7 +456,8 @@ body, button, input, textarea { font-family: Inter, -apple-system, BlinkMacSyste
 .header-actions { gap: 4px; }
 #chat-messages { gap: 28px; padding: 30px 32px; }
 .message { max-width: 760px; gap: 15px; position: relative; }
-.message.assistant { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; }
+.message.assistant { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; column-gap: 10px; }
+.message.assistant > .assistant-meta { grid-column: 2; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 32px; margin: 0 0 6px; }
 .message.assistant > .message-bubble { grid-column: 2; width: 100%; max-width: none; min-width: 0; }
 .assistant-message-actions { grid-column: 2; display: flex; align-items: center; gap: 7px; margin-top: 3px; }
 .message.streaming .assistant-message-actions { display: none; }
@@ -530,7 +531,7 @@ body, button, input, textarea { font-family: Inter, -apple-system, BlinkMacSyste
 .message-edit-controls button:disabled { opacity: .6; cursor: wait; }
 .message-edit-error { flex: 1 1 0; min-width: 0; color: var(--danger-color, #e77); font-size: .75rem; text-align: right; }
 .message-edit-error:empty { display: none; }
-.message-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 0; margin: 0 0 6px; padding-left: 43px; }
+.message-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 0; margin: 0; padding-left: 0; }
 .message-tool-badge { position: relative; display: grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; padding: 0; border: 1px solid color-mix(in srgb, var(--accent-color) 32%, var(--border-color)); border-radius: 50%; background: color-mix(in srgb, var(--accent-color) 9%, transparent); color: var(--accent-color); cursor: help; }
 .message-tool-badge > svg { display: block; width: 15px; height: 15px; }
 .message-tool-badge::after { position: absolute; z-index: 100; left: 50%; bottom: calc(100% + 7px); width: max-content; max-width: min(260px, 70vw); padding: 6px 9px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); color: var(--text-main); box-shadow: 0 6px 18px #0003; content: attr(data-tooltip); font-size: .72rem; font-weight: 500; line-height: 1.35; opacity: 0; pointer-events: none; transform: translate(-50%, 3px); transition: opacity .12s ease, transform .12s ease; }
@@ -539,6 +540,38 @@ body, button, input, textarea { font-family: Inter, -apple-system, BlinkMacSyste
 .message-bubble p { margin-bottom: .7em; }
 .message-bubble p:last-child { margin-bottom: 0; }
 .message-bubble .etu-card { background: var(--bg-secondary); box-shadow: none; backdrop-filter: none; }
+.schedule-course-widgets { display: grid; gap: 10px; margin-top: 18px; }
+.conv-item.etu-confirmation-pending::after { content: ""; width: 8px; height: 8px; flex: 0 0 8px; margin: auto 8px; border-radius: 50%; background: #3b82f6; box-shadow: 0 0 0 3px color-mix(in srgb, #3b82f6 18%, transparent); }
+.etu-confirmation-card { grid-column: 2; display: grid; gap: 8px; max-width: 440px; margin: 10px 0; padding: 14px; border: 1px solid color-mix(in srgb, #3b82f6 35%, var(--border-color)); border-radius: 12px; background: var(--bg-secondary); }
+.etu-confirmation-card p { margin: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.etu-confirmation-card > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.etu-confirmation-card select { min-height: 36px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-main); }
+.etu-confirmation-card button { min-height: 36px; padding: 7px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-main); cursor: pointer; }
+.etu-confirmation-card button:first-child { border-color: var(--accent-color); background: var(--accent-color); color: var(--bg-primary); }
+.etu-confirmation-card button:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+.etu-confirmation-card button:disabled { opacity: .6; cursor: wait; }
+.schedule-course-widgets > h4 { margin: 0; color: var(--text-muted); font-size: .76rem; font-weight: 600; }
+.schedule-course-widget { display: grid; justify-items: start; gap: 8px; min-width: 0; padding: 14px 16px; border: 1px solid var(--border-color); border-inline-start: 3px solid var(--schedule-course-color, var(--border-color)); border-radius: var(--radius-md, 12px); background: var(--schedule-course-color, var(--bg-secondary)); color: var(--schedule-course-text, var(--text-main)); transition: border-color .16s ease, background .16s ease; }
+.schedule-course-widget:has([style]) { border-color: color-mix(in srgb, var(--schedule-course-text) 22%, var(--schedule-course-color)); }
+.schedule-course-widget:has([style]) strong, .schedule-course-widget:has([style]) p, .schedule-course-widget:has([style]) .schedule-course-widget-time, .schedule-course-widget:has([style]) .schedule-course-widget-toggle { color: var(--schedule-course-text); }
+.schedule-course-widget:has([style]) .schedule-course-widget-time, .schedule-course-widget:has([style]) .schedule-course-widget-details, .schedule-course-widget:has([style]) a { border-color: color-mix(in srgb, var(--schedule-course-text) 24%, transparent); background: color-mix(in srgb, var(--schedule-course-text) 10%, var(--schedule-course-color)); color: var(--schedule-course-text); }
+.schedule-course-widget:has([style]) .schedule-course-widget-icon { background: color-mix(in srgb, var(--schedule-course-text) 15%, transparent); color: var(--schedule-course-text); }
+.schedule-course-widget:hover, .schedule-course-widget:focus-within { border-color: color-mix(in srgb, var(--accent-color) 42%, var(--border-color)); background: var(--bg-tertiary, var(--bg-secondary)); }
+.schedule-course-widget-header { display: flex; min-width: 0; align-items: center; gap: 9px; }
+.schedule-course-widget-icon { display: grid; width: 29px; height: 29px; flex: 0 0 29px; place-items: center; border-radius: 9px; background: color-mix(in srgb, var(--accent-color) 15%, transparent); color: var(--accent-color); }
+.schedule-course-widget-icon svg { width: 17px; height: 17px; }
+.schedule-course-widget strong { overflow-wrap: anywhere; color: var(--text-main); font-size: .92rem; }
+.schedule-course-widget-time { padding: 4px 9px; border-radius: var(--radius-sm, 7px); background: var(--bg-tertiary, var(--bg-primary)); color: var(--text-main); font-size: .77rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.schedule-course-widget p { margin: 0; color: var(--text-muted); font-size: .78rem; }
+.schedule-course-widget .schedule-course-widget-meta { overflow-wrap: anywhere; }
+.schedule-course-widget-toggle { min-height: 32px; padding: 4px 0; border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font: inherit; font-size: .78rem; text-decoration: underline; text-underline-offset: 3px; }
+.schedule-course-widget-details { display: grid; gap: 5px; width: 100%; padding: 9px 10px; border-radius: var(--radius-sm, 7px); background: var(--bg-primary); overflow-wrap: anywhere; }
+.schedule-course-widget-details[hidden] { display: none; }
+.schedule-course-widget a { display: inline-flex; min-height: 36px; align-items: center; gap: 8px; margin-top: 1px; padding: 0 11px; border: 1px solid var(--border-color); border-radius: var(--radius-sm, 7px); background: var(--bg-tertiary, var(--bg-primary)); color: var(--text-main); font-size: .81rem; font-weight: 650; text-decoration: none; transition: background .16s ease, border-color .16s ease; }
+.schedule-course-widget a svg { width: 15px; height: 15px; }
+.schedule-course-widget a:hover { border-color: var(--accent-color); background: var(--bg-primary); }
+.schedule-course-widget a:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .schedule-course-widget, .schedule-course-widget a { transition: none; } }
 .chat-welcome { margin: auto; text-align: center; max-width: 640px; padding: 24px; }
 .welcome-orb { width: 58px; height: 58px; margin: 0 auto 24px; display: grid; place-items: center; color: var(--accent-color); font-size: 32px; border-radius: 18px; background: var(--bg-secondary); }
 .chat-welcome h2 { font-size: clamp(1.5rem, 3vw, 2.05rem); letter-spacing: -.04em; font-weight: 600; margin-bottom: 9px; }
@@ -593,6 +626,10 @@ body, button, input, textarea { font-family: Inter, -apple-system, BlinkMacSyste
 }
 @keyframes orb-breathe { 50% { transform: scale(.7); opacity: .55; } }
 .stream-live-text { white-space: normal; overflow-wrap: anywhere; }
+.assistant-reasoning { margin: 0; color: var(--text-muted); font-size: .9rem; }
+.assistant-reasoning summary { display: flex; align-items: center; width: fit-content; min-height: 28px; cursor: pointer; user-select: none; line-height: 1.4; }
+.assistant-reasoning summary:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 3px; border-radius: 3px; }
+.assistant-reasoning-content { max-height: 16rem; overflow: auto; margin-top: 6px; padding: 8px 10px; border-inline-start: 2px solid var(--border-color); white-space: pre-wrap; overflow-wrap: anywhere; }
 :root { --code-keyword: #c9a9ff; --code-string: #a4d69d; --code-number: #ffbc8b; --code-function: #93c8ff; --code-tag: #f39dae; --code-comment: #97a3b3; }
 :root[data-theme="light"] { --code-keyword: #6f2bba; --code-string: #1e6b37; --code-number: #954700; --code-function: #0059a6; --code-tag: #a21b51; --code-comment: #586376; }
 .message-bubble pre { max-width: 100%; overflow: auto; padding: 14px 16px; margin: 12px 0; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-secondary); white-space: pre; font: .85rem/1.65 ui-monospace, Consolas, monospace; }

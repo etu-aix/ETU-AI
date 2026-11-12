@@ -18,7 +18,7 @@ from integration.bridge import bridge, digest, ALLOW_LOCALHOST_ORIGINS
 
 logger = logging.getLogger(__name__)
 
-SCOPES = {"ai.chat": None, "group.read": "etu.profile.group", "timetable.read": "etu.schedule.read",
+SCOPES = {"ai.chat": None, "group.read": "etu.profile.group", "timetable.read": "etu.schedule.read", "timetable.write": "etu.schedule.write",
           "workspace.read": "etu.workspace.read", "ai.models.read": "etu.ai.models.read", "ai.models.select": "etu.ai.model.select", "workshop.profiles": "etu.workshop.profiles"}
 ROUTES = {("GET", "/v1/status"): [], ("GET", "/v1/identity"): [],
           ("GET", "/v1/profile"): ["workspace.read"], ("GET", "/v1/models"): ["ai.models.read"],
@@ -43,7 +43,15 @@ def validate_url(url, allow_loopback=False):
 class RemoteClient:
     def __init__(self, identity=bridge, url=None, allow_loopback=False):
         self.identity = identity
-        self.url = validate_url(url or os.environ.get("ETU_AI_REMOTE_WS_URL", "wss://etu-aix.alwaysdata.net/wss"), allow_loopback)
+        # The explicit local launch mode is a development override: keep the
+        # browser relay on the matching local ETU 2 even when the deployment
+        # environment has ETU_AI_REMOTE_WS_URL set to production.
+        configured_url = url
+        if not configured_url and allow_loopback:
+            configured_url = "ws://127.0.0.1:8889"
+        if not configured_url:
+            configured_url = os.environ.get("ETU_AI_REMOTE_WS_URL") or "wss://etu-aix.alwaysdata.net/wss"
+        self.url = validate_url(configured_url, allow_loopback)
         self.app = None
         self.task = None
         self.ws = None
@@ -200,7 +208,7 @@ class RemoteClient:
 
     async def heartbeat(self):
         while True:
-            await asyncio.sleep(25)
+            await asyncio.sleep(10)
             if time.monotonic() - self.last_seen > 75:
                 await self.ws.close()
                 return
@@ -222,7 +230,8 @@ class RemoteClient:
                 self.state = "expired"; self.pairing = None; self.code = None; return
             self.state = "connecting" if retry == 0 else "reconnecting"
             try:
-                async with connect(self.url, compression=None, ping_interval=25, ping_timeout=75, open_timeout=10,
+                async with connect(self.url, compression=None, ping_interval=10, ping_timeout=75, open_timeout=10,
+                                   happy_eyeballs_delay=0.25, interleave=1,
                                    close_timeout=3, max_size=26 * 1024 * 1024, max_queue=4, logger=_quiet_logger()) as ws:
                     self.ws = ws
                     self.last_seen = time.monotonic()
@@ -290,7 +299,7 @@ class RemoteClient:
             permissions = [SCOPES[s] for s in pair["scopes"] if SCOPES[s]]
             session = {"pair_id": pair["pair_id"], "origin": "https://etu-aix.alwaysdata.net", "permissions": permissions, "expires_at": self.identity.clock() + 130, "context": {}}
             self.identity.sessions[self.tool_key] = session
-            catalog = [{"name": name} for name, permission in [("profile.group", "etu.profile.group"), ("schedule.read", "etu.schedule.read")] if permission in permissions]
+            catalog = [{"name": name} for name, permission in [("profile.group", "etu.profile.group"), ("schedule.read", "etu.schedule.read"), ("schedule.create", "etu.schedule.write"), ("friends.list", "etu.schedule.write"), ("schedule.share", "etu.schedule.write")] if permission in permissions]
             if catalog:
                 tool_relay.register(self.identity, self.tool_key, session, catalog)
             else:
@@ -334,7 +343,9 @@ class RemoteClient:
     async def execute(self, request_id, payload):
         token = secrets.token_urlsafe(32)
         try:
-            async with asyncio.timeout(120):
+            # Local model activation can take up to five minutes on a cold
+            # start; leave room for generation and the browser relay as well.
+            async with asyncio.timeout(420):
                 pair = self.stored()
                 if not isinstance(payload, dict) or set(payload) - {"path", "method", "body", "context"}: raise HTTPException(422, "INVALID_MESSAGE")
                 key = (payload.get("method", "GET"), payload.get("path"))
@@ -445,7 +456,7 @@ router = APIRouter()
 class PairBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # One code associates the complete ETU integration. Scope checks remain enforced on every route.
-    scopes: list[str] = Field(default_factory=lambda: sorted(SCOPES), min_length=1, max_length=7)
+    scopes: list[str] = Field(default_factory=lambda: sorted(SCOPES), min_length=1, max_length=8)
     device_name: str = Field(default=socket.gethostname()[:100], min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]+$")
 
 

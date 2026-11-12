@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=openai-account-1">
-  <link rel="stylesheet" href="/static/styles/settings.css?v=setup-layout-4">
+  <link rel="stylesheet" href="/static/style.css?v=thinking-light-3">
+  <link rel="stylesheet" href="/static/styles/settings.css?v=beacon-settings-11">
   <link rel="stylesheet" href="/static/styles/components.css?v=server-icons-3">
   <link rel="stylesheet" href="/static/styles/workshop.css?v=workshop-3">
   <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
@@ -481,11 +481,40 @@
               <p>Choisissez comment ETU-AI redémarre et partage son moteur sur cet ordinateur.</p>
               <div class="settings-mode-controls" aria-label="Redémarrer ETU-AI">
                 <button class="settings-mode-button" type="button" data-restart-mode="normal" aria-label="Redémarrer en mode normal"><span data-svg-icon="restart"></span><strong>Normal</strong><small>Usage personnel</small></button>
-                <button class="settings-mode-button" type="button" data-restart-mode="local" aria-label="Redémarrer en mode local"><span data-svg-icon="restart"></span><strong>Local</strong><small>Connexions depuis localhost</small></button>
+                <button class="settings-mode-button" type="button" data-restart-mode="local" aria-label="Redémarrer en mode local"><span data-svg-icon="restart"></span><strong>Local</strong><small>Connexion avec les applications locales</small></button>
                 <button class="settings-mode-button" type="button" data-restart-mode="server" aria-label="Redémarrer en mode serveur"><span data-svg-icon="restart"></span><strong>Serveur</strong><small>Partage sur le réseau local</small></button>
               </div>
               <p id="settings-launch-mode-status" class="settings-mode-status" role="status" aria-live="polite"></p>
             </div>
+            <section class="settings-maintenance-card settings-beacon-card" aria-labelledby="settings-beacon-status-title">
+              <div class="settings-beacon-heading">
+                <h3 id="settings-beacon-status-title">MAIA-Beacon</h3>
+              </div>
+              <dl class="settings-beacon-details">
+                <div class="settings-beacon-kpi"><dt>État</dt><dd class="settings-beacon-state-value"><span id="settings-beacon-logo" class="settings-beacon-logo" aria-hidden="true"></span><span id="settings-beacon-summary" data-state="loading" role="status" aria-live="polite">Vérification…</span></dd></div>
+                <div><dt>Adresse d’écoute <button class="settings-tooltip-trigger" type="button" aria-label="À propos de l’adresse d’écoute" aria-describedby="beacon-tip-address"><span data-svg-icon="help" aria-hidden="true"></span></button><span class="settings-tooltip" id="beacon-tip-address" role="tooltip">Adresse et port utilisés par MAIA-Beacon. En mode Serveur, l’adresse est accessible sur le réseau local.</span></dt><dd id="settings-beacon-address">—</dd></div>
+                <div><dt>Modèle chargé <button class="settings-tooltip-trigger" type="button" aria-label="À propos du modèle chargé" aria-describedby="beacon-tip-model"><span data-svg-icon="help" aria-hidden="true"></span></button><span class="settings-tooltip" id="beacon-tip-model" role="tooltip">Modèle actuellement chargé en mémoire. « Aucun » signifie qu’aucun modèle n’est chargé pour le moment.</span></dt><dd id="settings-beacon-model">—</dd></div>
+                <div><dt>Moteur actif <button class="settings-tooltip-trigger" type="button" aria-label="À propos du moteur actif" aria-describedby="beacon-tip-engine"><span data-svg-icon="help" aria-hidden="true"></span></button><span class="settings-tooltip" id="beacon-tip-engine" role="tooltip">Moteur utilisé par le modèle chargé. Il reste vide tant qu’aucun modèle n’est chargé.</span></dt><dd id="settings-beacon-engine">—</dd></div>
+                <div><dt>Backend configuré <button class="settings-tooltip-trigger" type="button" aria-label="À propos du backend configuré" aria-describedby="beacon-tip-backend"><span data-svg-icon="help" aria-hidden="true"></span></button><span class="settings-tooltip" id="beacon-tip-backend" role="tooltip">Backend choisi dans la configuration. AUTO laisse le choix au moteur selon le matériel disponible.</span></dt><dd class="settings-beacon-backend-value"><span id="settings-beacon-backend-icon" aria-hidden="true"></span><span id="settings-beacon-backend">—</span></dd></div>
+                <div class="settings-beacon-kpi settings-beacon-context-kpi"><dt><span id="settings-beacon-context-label">Contexte des modèles locaux</span><button class="settings-tooltip-trigger" type="button" aria-label="Exemple de contenu pour ce contexte" aria-describedby="settings-beacon-context-tooltip"><span data-svg-icon="help" aria-hidden="true"></span></button><span id="settings-beacon-context-tooltip" class="settings-tooltip" role="tooltip">Choisissez une taille pour voir un exemple de ce qu’elle peut garder.</span></dt><dd class="settings-beacon-context-value">
+                  <div class="settings-beacon-context-input">
+                    <div id="settings-beacon-context-menu" class="etu-list-menu settings-context-menu">
+                      <button id="settings-beacon-context-trigger" class="etu-list-menu-trigger" data-menu-trigger type="button" aria-labelledby="settings-beacon-context-label settings-beacon-context-chosen" aria-haspopup="listbox" aria-expanded="false" aria-controls="settings-beacon-context-options">
+                        <span class="etu-list-menu-icon" data-menu-icon aria-hidden="true"></span><span id="settings-beacon-context-chosen" class="etu-list-menu-chosen" data-menu-chosen>Choisir un contexte</span><span class="etu-list-menu-chevron" aria-hidden="true">⌄</span>
+                      </button>
+                      <div id="settings-beacon-context-options" class="etu-list-menu-options" data-menu-list role="listbox" aria-labelledby="settings-beacon-context-label" hidden></div>
+                    </div>
+                  </div>
+                  <span id="settings-beacon-context-status" class="sr-only" role="status" aria-live="polite"></span>
+                </dd></div>
+              </dl>
+              <div class="settings-beacon-controls" role="group" aria-label="Actions MAIA-Beacon">
+                <button id="btn-settings-beacon-toggle" class="etu-btn etu-btn-secondary" type="button"><span data-svg-icon="power" aria-hidden="true"></span><span>Éteindre</span></button>
+                <button id="btn-settings-beacon-sleep" class="etu-btn etu-btn-secondary" type="button"><span data-svg-icon="clock" aria-hidden="true"></span><span>Mettre en veille</span></button>
+                <button id="btn-settings-beacon-restart" class="etu-btn etu-btn-secondary" type="button"><span data-svg-icon="restart" aria-hidden="true"></span><span>Redémarrer</span></button>
+              </div>
+              <p id="settings-beacon-action-status" class="settings-uninstall-hint" role="status" aria-live="polite"></p>
+            </section>
           </section>
           <section class="settings-panel" data-settings-panel="models" hidden>
             <div class="settings-panel-intro"><h3>Modèles</h3><p>Choisissez le modèle actif, installez un modèle ou gérez les fichiers téléchargés.</p></div>
@@ -525,8 +554,8 @@
             </section>
             <section class="settings-consent-card" aria-labelledby="settings-etu-consent-title">
               <div class="settings-panel-intro"><h3 id="settings-etu-consent-title">Fournisseurs IA</h3><p>Autorisez les fournisseurs tiers à recevoir les informations ETU nécessaires aux fonctions qu’ils prennent en charge.</p></div>
-              <label class="etu-connection-checkbox"><input id="etu-remote-tools-consent" type="checkbox"><span>Accepter le partage de mes informations ETU avec les fournisseurs tiers</span></label>
-              <p class="settings-data-note"><sup>*</sup> Si cette option est activée, seuls votre groupe et votre emploi du temps sont transmis au fournisseur IA actif, en lecture seule, pour répondre à vos demandes.</p>
+              <label class="etu-connection-checkbox"><input id="etu-remote-tools-consent" type="checkbox"><span>Autoriser les outils ETU avec les fournisseurs tiers</span></label>
+              <p class="settings-data-note"><sup>*</sup> Le groupe, l’emploi du temps et les contacts utiles sont transmis au fournisseur IA actif pour répondre à vos demandes. Les outils peuvent aussi créer ou partager un événement selon les autorisations accordées à ETU-AI.</p>
               <div class="etu-connection-details-body"><p id="etu-remote-tools-status" role="status" aria-live="polite"></p></div>
             </section>
             <section class="settings-danger-card" aria-labelledby="settings-history-title">
@@ -542,6 +571,10 @@
             <div id="wiki-mount"></div>
           </section>
           <section class="settings-panel" data-settings-panel="installation" hidden>
+            <section class="settings-maintenance-card" aria-labelledby="settings-app-update-title">
+              <div><h3 id="settings-app-update-title">Mises à jour d’ETU-AI</h3><p id="settings-app-update-status" role="status" aria-live="polite">Consultez la dernière version publiée sur GitHub.</p></div>
+              <div class="settings-maintenance-actions"><button id="btn-settings-app-update" class="etu-btn etu-btn-secondary" type="button">Rechercher une version</button><a id="settings-app-release-link" class="etu-btn etu-btn-secondary" href="https://github.com/etu-aix/ETU-AI/releases/latest" target="_blank" rel="noopener noreferrer" hidden>Voir la release</a></div>
+            </section>
             <section class="settings-update-card" aria-label="Mises à jour">
               <div class="settings-update-banner" role="status" aria-live="polite">
                 <span class="settings-update-symbol" aria-hidden="true">
@@ -650,22 +683,31 @@
             <button type="button" id="btn-attach" class="attach-btn" title="Ajouter" aria-label="Ajouter" aria-haspopup="menu" aria-expanded="false" aria-controls="attach-dropdown-menu"><span data-svg-icon="plus" aria-hidden="true"></span></button>
             <div id="attach-dropdown-menu" class="attach-dropdown-menu" role="menu" aria-label="Ajouter au message" hidden>
               <button type="button" role="menuitem" id="btn-attach-file"><span data-svg-icon="upload" aria-hidden="true"></span><span>Importer un fichier</span></button>
+              <button type="button" role="menuitemcheckbox" id="btn-thinking-mode" aria-checked="true" hidden><span data-svg-icon="thinking" aria-hidden="true"></span><span class="attach-menu-copy"><span>Mode thinking</span><small id="thinking-mode-status">Activé</small></span><span class="attach-menu-check" aria-hidden="true"></span></button>
               <button type="button" role="menuitemcheckbox" id="btn-web-search" aria-checked="false" disabled title="Activez la recherche Web dans Paramètres · Mes données"><span data-svg-icon="globe" aria-hidden="true"></span><span class="attach-menu-copy"><span>Recherche web</span><small id="web-search-status">Désactivée dans Mes données</small></span><span class="attach-menu-check" aria-hidden="true"></span></button>
             </div>
           </div>
           <div id="web-search-chip" class="web-search-chip" hidden aria-live="polite"><span data-svg-icon="globe" aria-hidden="true"></span><span>Recherche</span><button type="button" class="web-search-chip-remove" aria-label="Désactiver la recherche Web" title="Désactiver la recherche Web"><span data-svg-icon="close" aria-hidden="true"></span></button></div>
           <div class="model-selector-wrapper model-selector-toolbar" id="model-selector-wrapper">
-            <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d’IA" type="button" aria-label="Changer de modèle d’IA" aria-haspopup="listbox" aria-expanded="false" aria-controls="model-dropdown-menu">
+            <button id="btn-model-selector" class="model-selector-btn" title="Changer de modèle d’IA" type="button" aria-label="Changer de modèle d’IA" aria-haspopup="dialog" aria-expanded="false" aria-controls="model-dropdown-menu">
               <span class="model-badge-icon" id="model-badge-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="M12 9.5c-1.1-2.4-3.8-3.3-5.7-1.8-2 .2-3.2 2.4-2.3 4.4-1.3 1.7-.4 4.2 1.7 4.7.5 2.1 3.2 2.8 4.6 1.1.5.9 1.2 1.2 1.7 1.2"/><path d="M12 9.5c1.1-2.4 3.8-3.3 5.7-1.8 2 .2 3.2 2.4 2.3 4.4 1.3 1.7.4 4.2-1.7 4.7-.5 2.1-3.2 2.8-4.6 1.1-.5.9-1.2 1.2-1.7 1.2"/><path d="M7.2 10.2c1.4-.1 2.4.7 2.7 1.8m7-1.8c-1.4-.1-2.4.7-2.7 1.8"/></svg></span>
               <span class="model-selector-info"><span id="active-model-name" class="model-selector-name">Chargement...</span></span>
               <span class="model-status-indicator" id="model-status-indicator" title="Prêt"></span>
             </button>
-            <div class="model-dropdown-menu" id="model-dropdown-menu" role="listbox" aria-label="Modèles disponibles">
+            <div class="model-dropdown-menu" id="model-dropdown-menu" role="dialog" aria-label="Sélection du modèle">
               <label class="model-dropdown-search">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
                 <input id="model-dropdown-search" type="search" placeholder="Rechercher un modèle…" aria-label="Rechercher un modèle" autocomplete="off">
               </label>
-              <div class="model-dropdown-list" id="model-dropdown-list"></div>
+              <p id="model-profile-hint" class="model-profile-hint" hidden>Ce profil fixe le modèle. Modifiez le profil pour en changer.</p>
+              <div class="model-dropdown-list" id="model-dropdown-list" role="listbox" aria-label="Modèles disponibles"></div>
+              <section class="model-effort-control" id="model-effort-control" aria-labelledby="model-effort-label" hidden>
+                <div class="model-effort-heading"><strong id="model-effort-label">Effort de réflexion</strong><span id="model-effort-model"></span></div>
+                <p id="model-effort-hint" class="model-effort-hint" hidden></p>
+                <div id="model-effort-options" class="model-effort-options" role="group" aria-labelledby="model-effort-label"></div>
+                <label class="model-thinking-toggle" id="model-thinking-toggle-wrap" hidden><input id="model-thinking-enabled" type="checkbox" checked><span>Activer le thinking</span></label>
+              </section>
+              <p id="model-dropdown-status" class="model-dropdown-status" role="status" aria-live="polite"></p>
               <div class="model-dropdown-footer">
                 <button type="button" id="btn-dropdown-open-models" class="dropdown-manage-btn">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
@@ -1057,9 +1099,9 @@
   <script src="/static/vendor/marked-18.0.14.umd.js"></script>
   <script src="/static/vendor/highlight-11.12.0.min.js"></script>
   <script src="/static/vendor/echarts-6.1.0.min.js?v=6.1.0"></script>
-  <script src="/static/svg-manager.js?v=setup-layout-3"></script>
+  <script src="/static/svg-manager.js?v=thinking-icon-1"></script>
   <script src="/static/components.js?v=settings-library-2"></script>
-  <script src="/static/app.js?v=openai-account-5"></script>
+  <script src="/static/app.js?v=schedule-widgets-event-ids-1"></script>
   <script src="/static/wiki.js?v=10"></script>
   <script src="/static/etu-bridge.js?v=connection-ui-6"></script>
   <script src="/static/etu-remote.js?v=connection-ui-6"></script>

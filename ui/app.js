@@ -11,6 +11,8 @@ let currentActiveModel = null;
 let availableInstalledModels = [];
 let remoteApiModels = [];
 let installedNativeModels = [];
+let modelCatalogLoaded = false;
+let modelCatalogLoading = false;
 let assistantProfiles = [];
 let activeProfileId = "default";
 let preferredProfileId = "default";
@@ -24,6 +26,8 @@ let currentHardwareSnapshot = null;
 const streamMarkup = new WeakMap();
 const streamFrames = new WeakMap();
 const appliedStreamTemplates = new WeakMap();
+const assistantScheduleEvents = new WeakMap();
+const assistantFriendLists = new WeakMap();
 let activeChatStream = null;
 let chatViewVersion = 0;
 let appPowerState = "awake";
@@ -87,6 +91,10 @@ function restoreAppRoute() {
       closeDownloadsView({ fromRoute: true });
       showSettingsView(section, { fromRoute: true });
       if (section === "models") showModelsTab(modelRouteTabs[route[2]] || "tab-catalog", { fromRoute: true });
+      if (route[1] === "server") {
+        window.history.replaceState({}, "", "#/settings/general");
+        lastAppliedAppRoute = "#/settings/general";
+      }
     } else if (route[0] === "chat" && route[1]) {
       closeSettingsView({ fromRoute: true });
       closeDownloadsView({ fromRoute: true });
@@ -168,6 +176,15 @@ function cancelChatStream() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  document.addEventListener("click", event => {
+    document.querySelectorAll(".assistant-telemetry[open]").forEach(details => {
+      if (!details.contains(event.target)) details.open = false;
+    });
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    document.querySelectorAll(".assistant-telemetry[open]").forEach(details => { details.open = false; });
+  });
   document.documentElement.dataset.theme = localStorage.getItem("etu-theme") || "light";
   const themeButton = document.getElementById("btn-theme");
   const updateThemeButton = () => {
@@ -270,6 +287,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-settings-uninstall")?.addEventListener("click", () => showToast("La désinstallation sera disponible avec le programme d’installation de bureau.", "info"));
   document.getElementById("btn-settings-dependencies")?.addEventListener("click", () => showToast("La désinstallation des dépendances sera disponible avec le programme d’installation de bureau.", "info"));
   document.getElementById("btn-settings-reinstall-server")?.addEventListener("click", reinstallServerVariant);
+  document.getElementById("btn-settings-beacon-toggle")?.addEventListener("click", toggleBeaconPower);
+  document.getElementById("btn-settings-beacon-sleep")?.addEventListener("click", sleepBeacon);
+  document.getElementById("btn-settings-beacon-restart")?.addEventListener("click", restartBeacon);
   document.getElementById("btn-settings-delete-chats")?.addEventListener("click", async (event) => {
     if (!conversationHistory.length) {
       showToast("Aucun chat à supprimer.", "info");
@@ -295,6 +315,25 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("btn-settings-update")?.addEventListener("click", checkEngineUpdates);
+  document.getElementById("btn-settings-app-update")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const status = document.getElementById("settings-app-update-status");
+    const link = document.getElementById("settings-app-release-link");
+    button.disabled = true;
+    link.hidden = true;
+    status.textContent = "Recherche sur GitHub…";
+    try {
+      const response = await fetch("/api/updates/app", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Recherche impossible.");
+      status.textContent = data.status === "available" ? `Dernière release publiée : ${data.version}. La version installée n’est pas encore vérifiée automatiquement.` : "Aucune release stable publiée n’a été trouvée.";
+      link.hidden = false;
+    } catch (error) {
+      status.textContent = error.message || "Recherche impossible. Réessayez plus tard.";
+    } finally {
+      button.disabled = false;
+    }
+  });
   document.querySelectorAll(".settings-nav-item").forEach((button) => {
     button.addEventListener("click", () => showSettingsView(button.dataset.settingsSection));
   });
@@ -370,7 +409,9 @@ async function initHardwarePreference() {
       if (!response.ok) throw new Error(data.detail || "Impossible d’appliquer ce réglage");
       setSelectedPreference(data.preference || preference);
       setAvailableHardware(data);
-      status.textContent = "Préférence appliquée. MAIA-Beacon redémarre avec le matériel choisi.";
+      status.textContent = data.beacon_enabled
+        ? "Préférence appliquée. MAIA-Beacon redémarre avec le matériel choisi."
+        : "Préférence enregistrée. MAIA-Beacon reste désactivé.";
     } catch (error) {
       status.textContent = error.message;
       try {
@@ -383,6 +424,230 @@ async function initHardwarePreference() {
       } catch (_) {}
     } finally { setAvailableHardware(hardwareCapabilities); }
   }));
+}
+
+let beaconSettingsBusy = false;
+let beaconConfiguredContextSize = null;
+let beaconContextMenu = null;
+const beaconContextOptions = [
+  { id: "512", label: "512 tokens", description: "Une consigne simple et une réponse courte.", example: "Exemple : une question courte avec sa réponse directe." },
+  { id: "1024", label: "1 024 tokens", description: "Une question détaillée et sa réponse.", example: "Exemple : une consigne, quelques précisions et une réponse structurée." },
+  { id: "2048", label: "2 048 tokens", description: "Un échange suivi avec plusieurs précisions.", example: "Exemple : une question de cours, une explication et deux relances." },
+  { id: "4096", label: "4 096 tokens", description: "Plusieurs échanges autour d’un même sujet.", example: "Exemple : une notion de cours, son explication et une série de questions." },
+  { id: "8192", label: "8 192 tokens", description: "Un échange long avec des notes de cours.", example: "Exemple : plusieurs pages de notes, un résumé et des questions de révision." },
+  { id: "16384", label: "16 384 tokens · recommandé", description: "Recommandé pour la plupart des échanges. Un chapitre de cours et une longue discussion.", example: "Exemple : un chapitre, ses exemples et plusieurs échanges pour le comprendre." },
+  { id: "32768", label: "32 768 tokens", description: "Plusieurs chapitres ou documents de travail.", example: "Exemple : plusieurs sections de cours, des consignes et un long échange." },
+  { id: "65536", label: "65 536 tokens", description: "Un grand dossier avec de nombreuses notes.", example: "Exemple : un long document de projet avec ses annexes et son historique de discussion." },
+  { id: "131072", label: "131 072 tokens", description: "Un très grand corpus de documents.", example: "Exemple : plusieurs documents complets et un historique de travail étendu." },
+  { id: "262144", label: "262 144 tokens", description: "Contexte maximal proposé, selon les limites du modèle et la mémoire.", example: "Exemple : un dossier volumineux avec plusieurs documents complets et leur historique." },
+];
+function getBeaconContextMenu() {
+  if (!beaconContextMenu) {
+    beaconContextMenu = window.ETUComponents?.listMenu(document.getElementById("settings-beacon-context-menu"), {
+      onChange: () => { renderBeaconContextTooltip(); updateBeaconContext(); },
+    }) || null;
+  }
+  return beaconContextMenu;
+}
+function renderBeaconContextTooltip() {
+  const tooltip = document.getElementById("settings-beacon-context-tooltip");
+  const selected = beaconContextOptions.find((option) => option.id === getBeaconContextMenu()?.value);
+  if (tooltip) tooltip.textContent = selected
+    ? `${selected.label}. ${selected.example} La taille effective dépend du modèle ; un contexte plus grand utilise davantage de mémoire.`
+    : "Choisissez une taille pour voir un exemple de ce qu’elle peut garder.";
+}
+function beaconStatusLabel(data) {
+  if (!data.enabled) return "Désactivé";
+  if (["entering_sleep", "waking"].includes(data.power_state)) return data.power_state === "waking" ? "Réveil…" : "Mise en veille…";
+  if (data.power_state === "sleeping") return "En veille";
+  if (!data.online) return data.setup_completed ? "Arrêté" : "Non configuré";
+  const labels = { running: "Actif", sleeping: "En veille", loading: "Chargement", starting: "Démarrage…", pending: "En attente", stopping: "Arrêt…", idle: "En attente" };
+  if (labels[data.status]) return labels[data.status];
+  return "Actif";
+}
+
+function renderBeaconSettings(data) {
+  const summary = document.getElementById("settings-beacon-summary");
+  const toggle = document.getElementById("btn-settings-beacon-toggle");
+  const sleep = document.getElementById("btn-settings-beacon-sleep");
+  const restart = document.getElementById("btn-settings-beacon-restart");
+  const online = Boolean(data.online);
+  const wakingOrSleeping = ["entering_sleep", "waking"].includes(data.power_state);
+  const isAsleep = data.power_state === "sleeping";
+  const powerStateKnown = Boolean(data.power_state);
+  const status = beaconStatusLabel(data);
+  if (summary) {
+    summary.textContent = status;
+    summary.dataset.state = !data.enabled ? "disabled" : (isAsleep || data.status === "sleeping") ? "sleeping" : online ? "online" : "offline";
+    const logo = document.getElementById("settings-beacon-logo");
+    if (logo) {
+      logo.innerHTML = avatarMarkup(getActiveProfile().avatar);
+      logo.dataset.state = summary.dataset.state;
+    }
+  }
+  if (toggle) {
+    const label = toggle.querySelector("span:last-child");
+    if (label) label.textContent = !data.enabled ? "Allumer" : isAsleep ? "Réveiller" : !online ? "Allumer" : "Éteindre";
+    toggle.disabled = beaconSettingsBusy || wakingOrSleeping || (!online && !data.enabled && !data.setup_completed);
+  }
+  if (sleep) sleep.disabled = beaconSettingsBusy || !data.enabled || !online || (powerStateKnown && data.power_state !== "awake");
+  if (restart) restart.disabled = beaconSettingsBusy || !data.enabled || !online || (powerStateKnown && data.power_state !== "awake");
+  const contextMenu = getBeaconContextMenu();
+  const contextTrigger = document.getElementById("settings-beacon-context-trigger");
+  const contextStatus = document.getElementById("settings-beacon-context-status");
+  const hasContextSetting = Number.isInteger(Number(data.context_size)) && Number(data.context_size) >= 512;
+  if (contextMenu) {
+    if (hasContextSetting) {
+      beaconConfiguredContextSize = Number(data.context_size);
+      contextMenu.setItems(beaconContextOptions.map((option) => ({ ...option, platform: "memory" })), String(beaconConfiguredContextSize));
+      if (contextStatus) contextStatus.textContent = "";
+      renderBeaconContextTooltip();
+    } else {
+      beaconConfiguredContextSize = null;
+      contextMenu.setItems([]);
+      if (contextStatus) contextStatus.textContent = "Redémarrez ETU-AI pour activer ce réglage.";
+    }
+    if (contextTrigger) contextTrigger.disabled = beaconSettingsBusy || !hasContextSetting;
+  }
+  document.getElementById("settings-beacon-address").textContent = `${data.host || "127.0.0.1"}:${data.port || 11343}`;
+  document.getElementById("settings-beacon-model").textContent = data.active_model || "Aucun";
+  document.getElementById("settings-beacon-engine").textContent = data.active_engine || (data.active_model ? "Non communiqué" : "Aucun modèle chargé");
+  const backend = String(data.backend || "auto").toLowerCase().replaceAll("_", " ");
+  const backendLabel = backend.toUpperCase();
+  const backendIcon = backend === "vulkan" ? "vulkan"
+    : backend.startsWith("cuda") || backend.includes("nvidia") ? "nvidia"
+      : backend === "metal" ? "macos"
+        : backend === "cpu" ? "cpu"
+          : backend === "npu" || backend.includes("openvino") ? "npu" : backend === "auto" ? "" : "gpu";
+  document.getElementById("settings-beacon-backend").textContent = backendLabel;
+  const icon = document.getElementById("settings-beacon-backend-icon");
+  if (icon) icon.innerHTML = window.ETUSVG?.icon(backendIcon, "settings-beacon-backend-logo") || "";
+}
+
+function setBeaconControlsDisabled(disabled) {
+  ["btn-settings-beacon-toggle", "btn-settings-beacon-sleep", "settings-beacon-context-trigger", "btn-settings-beacon-restart"]
+    .forEach((id) => { const control = document.getElementById(id); if (control) control.disabled = disabled; });
+}
+
+async function loadBeaconSettings() {
+  const summary = document.getElementById("settings-beacon-summary");
+  if (summary) summary.textContent = "Chargement du statut…";
+  try {
+    const response = await fetch("/api/settings/beacon", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Statut indisponible");
+    renderBeaconSettings(data);
+  } catch (error) {
+    if (summary) {
+      summary.textContent = "Indisponible";
+      summary.dataset.state = "offline";
+    }
+  }
+}
+
+async function toggleBeaconPower() {
+  const status = document.getElementById("settings-beacon-action-status");
+  beaconSettingsBusy = true;
+  setBeaconControlsDisabled(true);
+  status.textContent = "Mise à jour de MAIA-Beacon…";
+  try {
+    const stateResponse = await fetch("/api/settings/beacon", { cache: "no-store" });
+    const current = await stateResponse.json();
+    if (!stateResponse.ok) throw new Error(current.detail || "État de MAIA-Beacon indisponible");
+    const wakeApp = current.power_state === "sleeping" || (!current.online && current.enabled);
+    const requested = !current.enabled || !current.online;
+    status.textContent = wakeApp ? "Réveil de MAIA-Beacon…" : requested ? "Démarrage de MAIA-Beacon…" : "Arrêt de MAIA-Beacon…";
+    let response = await fetch(wakeApp ? "/api/power/wake" : "/api/settings/beacon", wakeApp
+      ? { method: "POST" }
+      : { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: requested }) });
+    let data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Modification impossible");
+    if (wakeApp && requested) {
+      const refreshed = await fetch("/api/settings/beacon", { cache: "no-store" });
+      const latest = await refreshed.json();
+      if (!refreshed.ok) throw new Error(latest.detail || "État de MAIA-Beacon indisponible");
+      if (!latest.enabled || !latest.online) {
+        status.textContent = "Démarrage de MAIA-Beacon…";
+        response = await fetch("/api/settings/beacon", {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }),
+        });
+        data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Démarrage impossible");
+      }
+    }
+    status.textContent = wakeApp ? "MAIA-Beacon est réveillé." : requested ? "MAIA-Beacon est allumé." : "MAIA-Beacon est éteint. Ce réglage sera conservé.";
+  } catch (error) {
+    status.textContent = error.message || "Modification impossible.";
+  } finally {
+    beaconSettingsBusy = false;
+    await loadBeaconSettings();
+  }
+}
+
+async function sleepBeacon() {
+  const status = document.getElementById("settings-beacon-action-status");
+  beaconSettingsBusy = true;
+  setBeaconControlsDisabled(true);
+  status.textContent = "Mise en veille de MAIA-Beacon…";
+  try {
+    const response = await fetch("/api/power/sleep", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Mise en veille impossible");
+    status.textContent = "MAIA-Beacon est en veille. Utilisez Allumer pour le réveiller.";
+  } catch (error) {
+    status.textContent = error.message || "Mise en veille impossible.";
+  } finally {
+    beaconSettingsBusy = false;
+    await loadBeaconSettings();
+  }
+}
+
+async function updateBeaconContext() {
+  const status = document.getElementById("settings-beacon-context-status");
+  const contextSize = Number(getBeaconContextMenu()?.value);
+  if (!Number.isInteger(contextSize) || contextSize === beaconConfiguredContextSize) return;
+  beaconSettingsBusy = true;
+  setBeaconControlsDisabled(true);
+  if (status) status.textContent = "Enregistrement du contexte sélectionné…";
+  try {
+    const response = await fetch("/api/settings/beacon/context", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ context_size: contextSize }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Impossible d’enregistrer le contexte");
+    renderBeaconSettings(data);
+    if (status) status.textContent = "Contexte enregistré. Il sera appliqué au prochain chargement d’un modèle local.";
+    showToast("Contexte des modèles locaux enregistré.", "success");
+  } catch (error) {
+    if (status) status.textContent = error.message || "Impossible d’enregistrer le contexte.";
+    showToast(error.message || "Impossible d’enregistrer le contexte.", "warning");
+    await loadBeaconSettings();
+  } finally {
+    beaconSettingsBusy = false;
+    await loadBeaconSettings();
+  }
+}
+
+async function restartBeacon() {
+  const button = document.getElementById("btn-settings-beacon-restart");
+  const status = document.getElementById("settings-beacon-action-status");
+  beaconSettingsBusy = true;
+  setBeaconControlsDisabled(true);
+  status.textContent = "Redémarrage de MAIA-Beacon…";
+  try {
+    const response = await fetch("/api/settings/beacon/restart", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "Redémarrage impossible");
+    renderBeaconSettings(data);
+    status.textContent = "MAIA-Beacon a redémarré.";
+  } catch (error) {
+    status.textContent = error.message || "Redémarrage impossible.";
+    await loadBeaconSettings();
+  } finally {
+    beaconSettingsBusy = false;
+    await loadBeaconSettings();
+  }
 }
 
 async function initApiSettings() {
@@ -399,6 +664,7 @@ async function initApiSettings() {
   let chatgptAuthMethod = "api_key";
   let presets = {};
   let currentConfig = {};
+  let discoveredEfforts = {};
   const settingsMessage = document.getElementById("api-settings-message");
   const setSettingsMessage = (text, state = "info") => {
     settingsMessage.textContent = text;
@@ -491,6 +757,7 @@ async function initApiSettings() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Impossible de charger les modèles.");
       if (sequence !== loadSequence) return;
+      discoveredEfforts = { ...(currentConfig.reasoning_efforts || {}), ...(result.reasoning_efforts || {}) };
       modelsContainer.replaceChildren();
       modelSearch.hidden = false;
       modelSearch.value = "";
@@ -711,6 +978,7 @@ async function initApiSettings() {
       if (!response.ok) throw new Error("Impossible de charger les réglages de ce fournisseur.");
       const config = await response.json();
       currentConfig = { ...currentConfig, ...config };
+      discoveredEfforts = config.reasoning_efforts || {};
       chatgptAuthMethod = providerSelect.value === "openai" ? (config.auth_method || "api_key") : "account";
       applyProviderPreset(providerSelect.value, true);
       savedModelSelection = config.model || presets[providerSelect.value]?.model || "";
@@ -805,6 +1073,7 @@ async function initApiSettings() {
       base_url: document.getElementById("api-provider-url").value,
       model: checkedModels()[0] || savedModelSelection,
       models: checkedModels(),
+      reasoning_efforts: discoveredEfforts,
       api_key: document.getElementById("api-provider-key").value,
       clear_api_key: Boolean(clearKeyInput?.checked),
       provider: providerSelect.value,
@@ -1460,7 +1729,6 @@ async function loadWizardModelSelection(searchQuery = "") {
             wizardSelectedModels.set(chosen.filename, { repo: chosen.repo, filename: chosen.filename, npu_compatible: isModelNpuCandidate(chosen) });
             renderWizardModelCards(allLoadedWizardModels, activeWizardCategory);
             const primaryName = data.primary_model?.name || recs[0].name;
-            showToast(`IA optimale sélectionnée pour ce PC : <strong>${escapeHtml(primaryName)}</strong>`, "success", 4000);
             if (moodText) moodText.textContent = `Recommandation automatique : ${primaryName}`;
           }
         } catch (e) {
@@ -1992,7 +2260,6 @@ function initModals() {
         const data = await resp.json();
         const primary = data.primary_model;
         if (primary) {
-          showToast(`⚡ Modèle optimal détecté : <strong>${escapeHtml(primary.name)}</strong>`, "info", 3500);
           if (primary.is_installed) {
             await switchActiveModel(primary.filename, primary.name);
             closeModal("modal-models");
@@ -2443,6 +2710,7 @@ function showSettingsView(section = "general", { fromRoute = false } = {}) {
   if (selected === "etu") window.refreshEtuRemoteConnection?.();
   if (selected === "wiki") window.ETUWiki?.refresh();
   if (selected === "installation") loadServerVariants();
+  if (selected === "general") loadBeaconSettings();
   if (selected === "providers") requestAnimationFrame(updateProviderSidebarHeight);
   if (!fromRoute) {
     if (selected === "models") syncModelsRoute();
@@ -3337,7 +3605,7 @@ async function refreshPowerState() {
   if (appPowerState === "shutting_down") return;
   try {
     const response = await fetch("/api/power/state");
-    if (!response.ok) return;
+    if (!response.ok) throw new Error("Découverte des niveaux indisponible.");
     const state = await response.json();
     appPowerState = state.state;
     const text = document.getElementById("settings-power-status");
@@ -3471,7 +3739,7 @@ function initAppUtilities() {
       }
     } catch (error) { showToast(escapeHtml(error.message), "warning"); refreshPowerState(); }
   }));
-  document.querySelectorAll("[data-restart-mode]").forEach(button => button.addEventListener("click", async () => {
+  document.querySelectorAll('[data-restart-mode="normal"], [data-restart-mode="local"], [data-restart-mode="server"]').forEach(button => button.addEventListener("click", async () => {
     try { await restartInMode(button.dataset.restartMode); }
     catch (error) { document.getElementById("settings-launch-mode-status").textContent = error.message; }
   }));
@@ -3567,10 +3835,58 @@ function showToast(message, type = "info", duration = 4500, title = "", conversa
 /* -------------------------------------------------------------------------- */
 /* Sélecteur de Modèle & Menu Déroulant (Chat Header & Toolbar)               */
 /* -------------------------------------------------------------------------- */
+function ensureModelCatalogLoaded() {
+  if (modelCatalogLoaded || modelCatalogLoading) return;
+  modelCatalogLoading = true;
+  const list = document.getElementById("model-dropdown-list");
+  if (list) list.innerHTML = '<div class="model-dropdown-empty">Chargement des modèles…</div>';
+  loadModelCatalog({ throwOnError: true }).catch((error) => {
+    if (!list) return;
+    list.replaceChildren();
+    const message = document.createElement("div");
+    message.className = "model-dropdown-empty";
+    message.textContent = `Impossible de charger les modèles. ${error.message || "Réessayez en rouvrant le sélecteur."}`;
+    list.appendChild(message);
+  }).finally(() => { modelCatalogLoading = false; });
+}
+
 function initModelSelector() {
   const btnHeaderSelector = document.getElementById("btn-model-selector");
   const menu = document.getElementById("model-dropdown-menu");
   const btnOpenCatalog = document.getElementById("btn-dropdown-open-models");
+  const thinkingToggle = document.getElementById("model-thinking-enabled");
+  const saveReasoning = () => {
+    const panel = document.getElementById("model-effort-control");
+    const selected = panel?.querySelector(".model-effort-option[aria-pressed='true']");
+    const modelId = panel?.dataset.modelId;
+    if (!modelId) return;
+    try {
+      const key = `etu-model-reasoning:${modelId}`;
+      const previous = JSON.parse(localStorage.getItem(key) || "{}");
+      localStorage.setItem(key, JSON.stringify({ ...previous, enabled: thinkingToggle?.checked !== false, ...(selected ? { effort: selected.dataset.effort } : {}) }));
+    } catch {}
+  };
+  document.getElementById("model-effort-options")?.addEventListener("click", event => {
+    const button = event.target.closest(".model-effort-option");
+    if (!button) return;
+    button.parentElement.querySelectorAll(".model-effort-option").forEach(option => option.setAttribute("aria-pressed", String(option === button)));
+    saveReasoning();
+  });
+  thinkingToggle?.addEventListener("change", () => {
+    document.getElementById("model-effort-options")?.querySelectorAll("button").forEach(button => { button.disabled = !thinkingToggle.checked; });
+    const trigger = document.getElementById("btn-thinking-mode");
+    if (trigger) {
+      trigger.setAttribute("aria-checked", String(thinkingToggle.checked));
+      document.getElementById("thinking-mode-status").textContent = thinkingToggle.checked ? "Activé" : "Désactivé";
+      document.body.classList.toggle("thinking-mode-on", thinkingToggle.checked);
+    }
+    saveReasoning();
+  });
+  document.getElementById("btn-thinking-mode")?.addEventListener("click", () => {
+    if (!thinkingToggle) return;
+    thinkingToggle.checked = !thinkingToggle.checked;
+    thinkingToggle.dispatchEvent(new Event("change", { bubbles: true }));
+  });
 
   function toggleDropdown(e) {
     if (e) e.stopPropagation();
@@ -3579,22 +3895,21 @@ function initModelSelector() {
     if (isOpen) {
       menu.classList.remove("active");
       hideModelStatsPopover();
-      if (btnHeaderSelector) {
-        btnHeaderSelector.classList.remove("open");
-        btnHeaderSelector.setAttribute("aria-expanded", "false");
-      }
+      btnHeaderSelector?.classList.remove("open");
+      btnHeaderSelector?.setAttribute("aria-expanded", "false");
     } else {
       menu.classList.add("active");
-      if (btnHeaderSelector) {
-        btnHeaderSelector.classList.add("open");
-        btnHeaderSelector.setAttribute("aria-expanded", "true");
-      }
+      btnHeaderSelector?.classList.add("open");
+      btnHeaderSelector?.setAttribute("aria-expanded", "true");
     }
   }
-
-  if (btnHeaderSelector) {
-    btnHeaderSelector.addEventListener("click", toggleDropdown);
-  }
+  btnHeaderSelector?.addEventListener("click", (event) => {
+    toggleDropdown(event);
+    ensureModelCatalogLoaded();
+    const active = getActiveProfile().model || currentActiveModel;
+    const remote = remoteApiModels.find(model => model.id === active || model.model === active);
+    if (remote && !remote.reasoning_efforts) void refreshReasoningCapabilities(remote);
+  });
 
   if (btnOpenCatalog) {
     btnOpenCatalog.addEventListener("click", (e) => {
@@ -3676,6 +3991,76 @@ function scheduleHideModelStatsPopover() {
   modelStatsHideTimer = setTimeout(hideModelStatsPopover, 140);
 }
 
+const reasoningCapabilitiesRequested = new Set();
+async function refreshReasoningCapabilities(model) {
+  if (!model?.id || model.reasoning_efforts || reasoningCapabilitiesRequested.has(model.id)) return;
+  reasoningCapabilitiesRequested.add(model.id);
+  try {
+    const response = await fetch(`/api/models/reasoning-capabilities?model_id=${encodeURIComponent(model.id)}`, { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    model.reasoning_efforts = Array.isArray(data.reasoning_efforts) ? data.reasoning_efforts : [];
+  } catch {
+    model.reasoningError = true;
+    reasoningCapabilitiesRequested.delete(model.id);
+  }
+  finally {
+    if (document.getElementById("model-effort-control")?.dataset.modelId === model.id) renderReasoningControls(model);
+  }
+}
+
+function renderReasoningControls(model) {
+  const panel = document.getElementById("model-effort-control");
+  const options = document.getElementById("model-effort-options");
+  const toggle = document.getElementById("model-thinking-enabled");
+  const hint = document.getElementById("model-effort-hint");
+  if (!panel || !options || !toggle) return;
+  const modelId = model?.id || model?.model;
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(`etu-model-reasoning:${modelId}`) || "{}"); } catch {}
+  document.body.classList.toggle("thinking-mode-on", Boolean(modelId) && saved.enabled !== false);
+  const efforts = Array.isArray(model?.reasoning_efforts) ? model.reasoning_efforts : [];
+  const levels = efforts.filter(value => value !== "none");
+  panel.hidden = !["openai", "chatgpt"].includes(model?.provider_type);
+  if (panel.hidden) { panel.dataset.modelId = ""; return; }
+  panel.dataset.modelId = modelId;
+  document.getElementById("model-effort-model").textContent = model.name || model.model;
+  hint.hidden = levels.length > 0;
+  hint.textContent = model.reasoningError ? "Niveaux indisponibles. Rouvrez le menu pour réessayer." : reasoningCapabilitiesRequested.has(modelId) ? "Ce modèle ne communique pas ses niveaux d’effort." : "Recherche des niveaux disponibles…";
+  options.hidden = levels.length === 0;
+  if (!levels.length) { document.getElementById("model-thinking-toggle-wrap").hidden = true; options.replaceChildren(); return; }
+  const selected = levels.includes(saved.effort) ? saved.effort : (levels.includes("medium") ? "medium" : levels[0]);
+  const canDisable = efforts.includes("none");
+  document.getElementById("model-thinking-toggle-wrap").hidden = !canDisable;
+  const thinkingMenuItem = document.getElementById("btn-thinking-mode");
+  if (thinkingMenuItem) {
+    thinkingMenuItem.hidden = !canDisable;
+    thinkingMenuItem.setAttribute("aria-checked", String(!canDisable || saved.enabled !== false));
+    document.getElementById("thinking-mode-status").textContent = !canDisable || saved.enabled !== false ? "Activé" : "Désactivé";
+  }
+  toggle.checked = !canDisable || saved.enabled !== false;
+  document.body.classList.toggle("thinking-mode-on", toggle.checked);
+  options.replaceChildren(...levels.map(value => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "model-effort-option";
+    button.dataset.effort = value;
+    button.textContent = ({ minimal: "Minimal", low: "Faible", medium: "Moyen", high: "Élevé", xhigh: "Très élevé" })[value] || value;
+    button.setAttribute("aria-pressed", String(value === selected));
+    button.disabled = !toggle.checked;
+    return button;
+  }));
+}
+
+function getActiveReasoningEffort() {
+  const panel = document.getElementById("model-effort-control");
+  if (!panel || panel.hidden) return null;
+  const selected = panel.querySelector(".model-effort-option[aria-pressed='true']")?.dataset.effort;
+  if (!selected) return null;
+  if (document.getElementById("model-thinking-enabled")?.checked === false) return "none";
+  return selected;
+}
+
 function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   if (activeModelName) {
     currentActiveModel = activeModelName;
@@ -3686,7 +4071,10 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   if (remoteModels && Array.isArray(remoteModels)) remoteApiModels = remoteModels;
   const selectableModels = [...availableInstalledModels, ...remoteApiModels];
   const providerLogoIds = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models"]);
-  const displayedModel = getActiveProfile().model || currentActiveModel;
+  const profileModel = getActiveProfile().model;
+  const displayedModel = profileModel || currentActiveModel;
+  const profileHint = document.getElementById("model-profile-hint");
+  if (profileHint) profileHint.hidden = !profileModel;
 
   const activeNameEl = document.getElementById("active-model-name");
   const listEl = document.getElementById("model-dropdown-list");
@@ -3701,8 +4089,11 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
       (m.name && m.name.toLowerCase().includes((displayedModel || "").toLowerCase()))
   );
 
+  renderReasoningControls(matched);
+  if (matched?.source === "api" && ["openai", "chatgpt"].includes(matched.provider_type)) void refreshReasoningCapabilities(matched);
+
   if (matched) {
-    currentDisplay = matched.source === "api" ? `${matched.name} · ${matched.provider_label}` : (matched.name || matched.filename.replace(".gguf", ""));
+    currentDisplay = matched.source === "api" ? `${matched.name} · ${matched.provider_label} :cloud` : (matched.name || matched.filename.replace(".gguf", ""));
   } else if (displayedModel) {
     currentDisplay = displayedModel.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
   }
@@ -3725,6 +4116,8 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
         const itemEl = document.createElement("button");
         itemEl.type = "button";
         itemEl.className = `model-dropdown-item ${isActive ? "active" : ""}`;
+        itemEl.disabled = Boolean(profileModel);
+        if (profileModel) itemEl.title = "Ce profil fixe le modèle. Modifiez le profil pour en changer.";
         itemEl.setAttribute("role", "option");
         itemEl.setAttribute("aria-selected", String(Boolean(isActive)));
         itemEl.tabIndex = 0;
@@ -3773,14 +4166,7 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
 
         itemEl.addEventListener("click", () => {
           hideModelStatsPopover();
-          const menu = document.getElementById("model-dropdown-menu");
-          const btnHeaderSelector = document.getElementById("btn-model-selector");
-          if (menu) menu.classList.remove("active");
-          if (btnHeaderSelector) {
-            btnHeaderSelector.classList.remove("open");
-            btnHeaderSelector.setAttribute("aria-expanded", "false");
-          }
-          const displayName = item.source === "api" ? `${item.name} · ${item.provider_label}` : (item.name || itemStem);
+          const displayName = item.source === "api" ? `${item.name} · ${item.provider_label} :cloud` : (item.name || itemStem);
           switchActiveModel(item.source === "api" ? item.model : (item.filename || itemStem), displayName, item.source || "local", item.provider);
         });
         itemEl.addEventListener("contextmenu", (event) => {
@@ -3992,12 +4378,10 @@ function filterModelDropdownList() {
 
 async function switchActiveModel(modelFilename, displayName = null, source = "local", provider = null) {
   const cleanStem = source === "api" ? modelFilename : modelFilename.replace(/\.gguf$/i, "");
-  const friendlyName = displayName || cleanStem;
-
   const indicator = document.getElementById("model-status-indicator");
+  const status = document.getElementById("model-dropdown-status");
+  if (status) status.textContent = "";
   if (indicator) indicator.classList.add("loading");
-
-  showToast(`Sélection de <strong>${escapeHtml(friendlyName)}</strong>…`, "info", 2000);
 
   try {
     const resp = await fetch("/api/models/select", {
@@ -4015,16 +4399,17 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
       if (source === "local") {
         currentModelReady = false;
         currentModelState = "selected";
-        showToast(`<strong>${escapeHtml(friendlyName)}</strong> sélectionné. Il sera chargé à votre prochain message.`, "success", 4000);
       } else {
         loadServerStatus();
-        showToast(`<strong>${escapeHtml(friendlyName)}</strong> sélectionné pour la prochaine demande.`, "success", 3500);
       }
     } else {
-      showToast(`⚠️ Avertissement : ${data.error || "Impossible de basculer"}`, "warning", 4000);
+      throw new Error(data.error || "Impossible de changer de modèle.");
     }
   } catch (err) {
-    showToast(`❌ Erreur de basculement : ${err}`, "warning", 4000);
+    if (status) status.textContent = err.message || "Impossible de changer de modèle.";
+    document.getElementById("model-dropdown-menu")?.classList.add("active");
+    document.getElementById("btn-model-selector")?.classList.add("open");
+    document.getElementById("btn-model-selector")?.setAttribute("aria-expanded", "true");
   } finally {
     if (indicator) indicator.classList.remove("loading");
   }
@@ -4099,6 +4484,7 @@ async function loadServerStatus() {
 /* Gestion des Conversations                                                  */
 /* -------------------------------------------------------------------------- */
 let conversationHistory = [];
+const pendingEtuConfirmations = new Map();
 
 function renderConversationHistory() {
   const listEl = document.getElementById("conv-list");
@@ -4130,6 +4516,10 @@ function renderConversationHistory() {
     }
     const item = document.createElement("div");
     item.className = "conv-item" + (conv.id === currentConversationId ? " active" : "");
+    if ([...pendingEtuConfirmations.values()].some(entry => entry.conversationId === conv.id)) {
+      item.classList.add("etu-confirmation-pending");
+      item.title = "Confirmation ETU en attente";
+    }
     const title = document.createElement("button");
     title.type = "button";
     title.className = "conv-title";
@@ -4183,7 +4573,7 @@ async function selectConversation(convId) {
     container.innerHTML = "";
 
     data.messages.forEach((msg) => {
-      renderMessage(msg.role, msg.content, msg.attachments || [], msg.id, msg.tool_calls || []);
+      renderMessage(msg.role, msg.content, msg.attachments || [], msg.id, msg.tool_calls || [], msg.reasoning_content || "");
     });
     window.ETUWiki?.restoreEvents(convId, container);
     dismissViewedResponseNotifications();
@@ -4468,6 +4858,7 @@ function initChatForm() {
           profile_id: activeProfileId,
           attachments: encodedAttachments,
           web_search: webSearchEnabled,
+          reasoning_effort: getActiveReasoningEffort(),
           request_id: requestId,
           edit_message_id: editContext?.messageId || null,
         }),
@@ -4659,12 +5050,18 @@ function handleStreamEvent(data, bubbleEl) {
     }
   } else if (data.event === "wiki") {
     window.ETUWiki?.chatEvent(data, bubbleEl.closest(".message"));
+  } else if (data.event === "reasoning" && data.text) {
+    appendAssistantReasoning(bubbleEl, data.text);
   } else if (data.event === "token" && data.html) {
     if (!bubbleEl.dataset.firstTokenMs) bubbleEl.dataset.firstTokenMs = String(Math.round(performance.now() - Number(bubbleEl.dataset.generationStarted)));
     if (!String(currentActiveModel || "").startsWith("api:")) localModelHasResponded = true;
     const html = (streamMarkup.get(bubbleEl) || "") + data.html;
     streamMarkup.set(bubbleEl, html);
-    setAssistantActivity(bubbleEl.closest(".message"), "writing", "Rédaction en cours");
+    if (splitThinkMarkup(html).answer.trim()) {
+      const message = bubbleEl.closest(".message");
+      setAssistantActivity(message, "writing", "Rédaction en cours");
+      message?.querySelectorAll(".assistant-reasoning").forEach(panel => { panel.open = false; });
+    }
     if (!streamFrames.has(bubbleEl)) {
       streamFrames.set(bubbleEl, setTimeout(() => {
         streamFrames.delete(bubbleEl);
@@ -4674,8 +5071,71 @@ function handleStreamEvent(data, bubbleEl) {
   } else if (data.event === "tool_start" && data.html) {
     if (data.tool) addMessageToolBadges(bubbleEl.closest(".message"), [data.tool]);
     setAssistantActivity(bubbleEl.closest(".message"), "tool", "Consultation en cours");
+  } else if (data.event === "etu_confirmation") {
+    const message = bubbleEl.closest(".message");
+    const panel = document.createElement("div");
+    panel.className = "etu-confirmation-card";
+    const label = document.createElement("strong");
+    label.textContent = data.tool === "etu_schedule_share" ? "Partager cet événement ?" : "Ajouter cet événement à l’EDT ?";
+    const detail = document.createElement("p");
+    const args = data.arguments || {};
+    detail.textContent = data.tool === "etu_schedule_share"
+      ? `Événement ${args.event_id} · ami ${args.friend_id}`
+      : [args.title, args.start, args.end, args.location].filter(Boolean).join(" · ");
+    const actions = document.createElement("div");
+    let friendSelect = null;
+    if (data.tool === "etu_schedule_share") {
+      const friends = assistantFriendLists.get(bubbleEl) || [];
+      friendSelect = document.createElement("select");
+      friendSelect.setAttribute("aria-label", "Ami destinataire");
+      for (const friend of friends) {
+        const option = document.createElement("option");
+        option.value = String(friend.id);
+        option.textContent = friend.name || `Ami ${friend.id}`;
+        option.selected = Number(friend.id) === Number(args.friend_id);
+        friendSelect.append(option);
+      }
+      if (friends.length) panel.append(friendSelect);
+    }
+    for (const [caption, approved] of [["Confirmer", true], ["Refuser", false]]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = caption;
+      button.addEventListener("click", async () => {
+        actions.querySelectorAll("button").forEach(control => { control.disabled = true; });
+        try {
+          const response = await fetch(`/api/conversations/${encodeURIComponent(data.conversation_id)}/etu-confirmations/${encodeURIComponent(data.token)}`, {
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({approved, friend_id: friendSelect ? Number(friendSelect.value) || Number(args.friend_id) : undefined}),
+          });
+          if (!response.ok) throw new Error("Cette confirmation a expiré.");
+          detail.textContent = approved ? "Création en cours…" : "Action refusée.";
+          pendingEtuConfirmations.delete(data.token);
+          renderConversationHistory();
+        } catch (error) {
+          detail.textContent = error.message;
+          actions.querySelectorAll("button").forEach(control => { control.disabled = false; });
+        }
+      });
+      actions.append(button);
+    }
+    panel.append(label, detail, actions);
+    message.append(panel);
+    pendingEtuConfirmations.set(data.token, {conversationId: data.conversation_id, panel});
+    renderConversationHistory();
+  } else if (data.event === "etu_confirmation_done") {
+    pendingEtuConfirmations.get(data.token)?.panel.remove();
+    pendingEtuConfirmations.delete(data.token);
+    renderConversationHistory();
   } else if (data.event === "tool_result") {
     setAssistantActivity(bubbleEl.closest(".message"), "thinking", "Analyse du résultat");
+    if (data.tool === "etu_friends_list" && data.result?.success && Array.isArray(data.result.data?.friends)) {
+      assistantFriendLists.set(bubbleEl, data.result.data.friends);
+    }
+    if (data.tool === "etu_schedule_read" && data.result?.success && Array.isArray(data.result.data?.events)) {
+      const events = assistantScheduleEvents.get(bubbleEl) || [];
+      events.push(...data.result.data.events.map(event => ({ ...event, group: data.result.data.label || "" })));
+      assistantScheduleEvents.set(bubbleEl, events);
+    }
   } else if (data.event === "metrics") {
     if (data.prompt_tokens !== null && data.prompt_tokens !== undefined && Number.isFinite(Number(data.prompt_tokens))) bubbleEl.dataset.promptTokens = String(data.prompt_tokens);
     if (data.completion_tokens !== null && data.completion_tokens !== undefined && Number.isFinite(Number(data.completion_tokens))) bubbleEl.dataset.completionTokens = String(data.completion_tokens);
@@ -4732,7 +5192,9 @@ function setAssistantActivity(message, state, label) {
 
 function renderStreamMarkup(bubble) {
   const raw = streamMarkup.get(bubble) || "";
-  if (renderAuthoredPreview(bubble, raw, false)) {
+  const parsed = splitThinkMarkup(raw);
+  if (parsed.reasoning) appendAssistantReasoning(bubble, parsed.reasoning, "tag");
+  if (renderAuthoredPreview(bubble, parsed.answer, false)) {
     // The iframe receives the model's actual markup as it arrives.
   } else {
     let live = bubble.querySelector(".stream-live-text");
@@ -4741,9 +5203,59 @@ function renderStreamMarkup(bubble) {
       live.className = "stream-live-text";
       bubble.appendChild(live);
     }
-    live.replaceChildren(renderAssistantFragment(raw));
+    live.replaceChildren(renderAssistantFragment(parsed.answer));
   }
   scrollToBottom();
+}
+
+function appendAssistantReasoning(bubble, text, source = "event") {
+  const message = bubble.closest(".message");
+  let panel = message?.querySelector(".assistant-reasoning");
+  if (!panel) {
+    panel = document.createElement("details");
+    panel.className = "assistant-reasoning";
+    panel.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = "Réflexion";
+    const content = document.createElement("div");
+    content.className = "assistant-reasoning-content";
+    panel.append(summary, content);
+    if (message) ensureAssistantMeta(message).append(panel);
+    else bubble.before(panel);
+  }
+  const content = panel.querySelector(".assistant-reasoning-content");
+  const key = source === "tag" ? "taggedReasoning" : "eventReasoning";
+  panel.dataset[key] = source === "tag" ? text : (panel.dataset[key] || "") + text;
+  const combined = [panel.dataset.taggedReasoning, panel.dataset.eventReasoning].filter(Boolean).join("\n");
+  content.replaceChildren(renderAssistantFragment(combined));
+  if (splitThinkMarkup(streamMarkup.get(bubble) || "").answer.trim()) panel.open = false;
+}
+
+function ensureAssistantMeta(message) {
+  if (!message) return null;
+  let meta = message.querySelector(":scope > .assistant-meta");
+  if (!meta) {
+    meta = document.createElement("div");
+    meta.className = "assistant-meta";
+    message.insertBefore(meta, message.querySelector(":scope > .message-bubble"));
+  }
+  return meta;
+}
+
+function splitThinkMarkup(raw) {
+  let answer = "";
+  let reasoning = "";
+  let cursor = 0;
+  const pattern = /<think\b[^>]*>([\s\S]*?)(?:<\/think\s*>|$)/gi;
+  let match;
+  while ((match = pattern.exec(raw))) {
+    answer += raw.slice(cursor, match.index);
+    reasoning += match[1];
+    cursor = pattern.lastIndex;
+    if (!/<\/think\s*>$/i.test(match[0])) break;
+  }
+  answer += raw.slice(cursor);
+  return { answer: answer.replace(/<\/?think\b[^>]*>/gi, ""), reasoning };
 }
 
 function applyCompletedStreamTemplates(bubble, raw) {
@@ -4936,14 +5448,115 @@ function finishStreamRender(bubble) {
 function finalizeAssistantBubble(bubble) {
   if (bubble.dataset.streamError === "true" || bubble.dataset.renderFinalized === "true") return;
   const raw = streamMarkup.get(bubble) || "";
-  if (!renderAuthoredPreview(bubble, raw, true)) {
+  const answer = splitThinkMarkup(raw).answer;
+  if (!renderAuthoredPreview(bubble, answer, true)) {
     ETUChatUI.showConversation();
-    bubble.replaceChildren(renderAssistantFragment(raw));
+    bubble.replaceChildren(renderAssistantFragment(answer));
     applyPartialUpdates(bubble);
   }
+  appendScheduleCourseWidgets(bubble);
   streamMarkup.delete(bubble);
   bubble.dataset.copyText = raw;
   bubble.dataset.renderFinalized = "true";
+}
+
+function appendScheduleCourseWidgets(bubble) {
+  const events = assistantScheduleEvents.get(bubble);
+  assistantScheduleEvents.delete(bubble);
+  if (!events?.length || bubble.querySelector(":scope > .schedule-course-widgets")) return;
+  const unique = new Map();
+  for (const event of events) {
+    if (!event || typeof event.title !== "string" || typeof event.start !== "string" || typeof event.end !== "string") continue;
+    const start = new Date(event.start), end = new Date(event.end);
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || end <= start) continue;
+    const key = `${event.title}\n${start.toISOString()}`;
+    if (!unique.has(key)) unique.set(key, { ...event, start, end });
+  }
+  const normalize = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const answer = normalize(bubble.textContent);
+  const matches = [...unique.values()].filter(event => {
+    const title = normalize(event.title);
+    return title.length >= 3 && answer.includes(title);
+  });
+  const courses = matches.slice(0, 4);
+  if (!courses.length) return;
+  const region = document.createElement("section");
+  region.className = "schedule-course-widgets";
+  region.setAttribute("aria-label", "Cours de l’emploi du temps");
+  const heading = document.createElement("h4");
+  heading.textContent = "Cours de l’emploi du temps";
+  region.append(heading);
+  for (const course of courses) {
+    const article = document.createElement("article");
+    article.className = "schedule-course-widget";
+    const courseColor = String(course.color || course.backgroundColor || "");
+    if (/^#[0-9a-f]{6}$/i.test(courseColor)) {
+      const channels = courseColor.slice(1).match(/.{2}/g).map(channel => parseInt(channel, 16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+      const luminance = channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
+      article.style.setProperty("--schedule-course-color", courseColor);
+      article.style.setProperty("--schedule-course-text", luminance > .48 ? "#171717" : "#ffffff");
+    }
+    const header = document.createElement("div");
+    header.className = "schedule-course-widget-header";
+    const badge = document.createElement("span");
+    badge.className = "schedule-course-widget-icon";
+    badge.setAttribute("aria-hidden", "true");
+    badge.innerHTML = window.ETUSVG?.icon("book") || "";
+    const title = document.createElement("strong");
+    title.textContent = course.title;
+    header.append(badge, title);
+    const details = document.createElement("p");
+    details.className = "schedule-course-widget-meta";
+    const dateLabel = new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeZone: "Europe/Paris" }).format(course.start);
+    const timeLabel = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
+    const metadata = [dateLabel, course.location, course.teacher].filter(Boolean);
+    details.textContent = metadata.join(" · ");
+    const time = document.createElement("span");
+    time.className = "schedule-course-widget-time";
+    time.textContent = `${timeLabel.format(course.start)}–${timeLabel.format(course.end)}`;
+    const payload = {
+      title: course.title.slice(0, 300), start: course.start.toISOString(), end: course.end.toISOString(),
+      teacher: String(course.teacher || "").slice(0, 200), room: String(course.location || "").slice(0, 200),
+      group: String(course.group || "").slice(0, 100),
+    };
+    const link = document.createElement("a");
+    link.href = `https://etu-aix.alwaysdata.net/schedule?shared_course=${encodeURIComponent(JSON.stringify(payload))}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.innerHTML = `<span>Ouvrir le cours dans ETU 2</span>${window.ETUSVG?.icon("externalLink") || ""}`;
+    const extra = [course.group && `Groupe : ${course.group}`, course.description].filter(Boolean);
+    const detailsId = `schedule-course-details-${crypto.randomUUID()}`;
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "schedule-course-widget-toggle";
+    toggle.textContent = "Plus de détails";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", detailsId);
+    const detailsPanel = document.createElement("div");
+    detailsPanel.id = detailsId;
+    detailsPanel.className = "schedule-course-widget-details";
+    detailsPanel.hidden = true;
+    if (extra.length) {
+      for (const value of extra) {
+        const item = document.createElement("p");
+        item.textContent = value;
+        detailsPanel.append(item);
+      }
+    } else {
+      const item = document.createElement("p");
+      item.textContent = course.location ? `Salle : ${course.location}` : "Aucun détail supplémentaire.";
+      detailsPanel.append(item);
+    }
+    toggle.addEventListener("click", () => {
+      const expanded = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!expanded));
+      detailsPanel.hidden = expanded;
+      toggle.textContent = expanded ? "Plus de détails" : "Moins de détails";
+    });
+    article.append(header, time, details, toggle, detailsPanel, link);
+    region.append(article);
+  }
+  bubble.append(region);
 }
 
 function updateAssistantTelemetry(bubble, completed = false) {
@@ -5136,7 +5749,7 @@ function attachInteractiveButtons(container) {
   });
 }
 
-function renderMessage(role, contentHtml, attachments = [], messageId = "", toolCalls = []) {
+function renderMessage(role, contentHtml, attachments = [], messageId = "", toolCalls = [], reasoningContent = "") {
   const container = document.getElementById("chat-messages");
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${role}`;
@@ -5157,9 +5770,14 @@ function renderMessage(role, contentHtml, attachments = [], messageId = "", tool
     bubble.appendChild(content);
   }
   else {
-    if (!renderAuthoredPreview(bubble, contentHtml, true)) {
-      if (contentHtml.trim()) ETUChatUI.showConversation();
-      bubble.appendChild(renderAssistantFragment(contentHtml));
+    const parsed = splitThinkMarkup(contentHtml);
+    if (reasoningContent.trim()) appendAssistantReasoning(bubble, reasoningContent);
+    if (parsed.reasoning) appendAssistantReasoning(bubble, parsed.reasoning, "tag");
+    const reasoningPanel = bubble.closest(".message")?.querySelector(".assistant-reasoning");
+    if (reasoningPanel) reasoningPanel.open = false;
+    if (!renderAuthoredPreview(bubble, parsed.answer, true)) {
+      if (parsed.answer.trim()) ETUChatUI.showConversation();
+      bubble.appendChild(renderAssistantFragment(parsed.answer));
     }
   }
   if (attachments.length) {
@@ -5182,12 +5800,13 @@ function renderMessage(role, contentHtml, attachments = [], messageId = "", tool
 
 function addMessageToolBadge(message, key, label, icon = "hub") {
   if (!message || !key || !label) return;
-  let strip = message.querySelector(":scope > .message-tools");
+  const meta = ensureAssistantMeta(message);
+  let strip = meta.querySelector(":scope > .message-tools");
   if (!strip) {
     strip = document.createElement("div");
     strip.className = "message-tools";
     strip.setAttribute("aria-label", "Outils utilisés pour cette réponse");
-    message.insertBefore(strip, message.querySelector(":scope > .message-bubble"));
+    meta.append(strip);
   }
   let badge = [...strip.children].find((item) => item.dataset.toolKey === key);
   if (!badge) {
@@ -5203,9 +5822,11 @@ function addMessageToolBadge(message, key, label, icon = "hub") {
 }
 
 function removeMessageToolBadge(message, key) {
-  const strip = message?.querySelector(":scope > .message-tools");
+  const meta = message?.querySelector(":scope > .assistant-meta");
+  const strip = meta?.querySelector(":scope > .message-tools");
   strip?.querySelector(`[data-tool-key="${CSS.escape(key)}"]`)?.remove();
   if (strip && !strip.children.length) strip.remove();
+  if (meta && !meta.children.length) meta.remove();
 }
 
 function addMessageToolBadges(message, toolNames = []) {
@@ -5603,7 +6224,7 @@ function populateProfileModels(selectedModel = "") {
     const value = item.source === "api" ? item.id : (item.filename || item.id);
     if (!value || seen.has(value)) continue;
     seen.add(value);
-    const label = item.source === "api" ? `${item.name || value} · ${item.provider_label || "API"}` : (item.name || value);
+    const label = item.source === "api" ? `${item.name || value} · ${item.provider_label || "API"} :cloud` : (item.name || value);
     select.add(new Option(label, value));
   }
   if (selectedModel && !seen.has(selectedModel)) select.add(new Option(`${selectedModel} (indisponible)`, selectedModel));
@@ -5643,8 +6264,8 @@ function setDisplayedProfile(profileId) {
   });
   const modelButton = document.getElementById("btn-model-selector");
   if (modelButton) {
-    modelButton.disabled = Boolean(activeProfile.model);
-    modelButton.title = activeProfile.model ? "Modèle défini dans ce profil. Modifiez le profil pour en changer." : "Choisir un modèle";
+    modelButton.disabled = false;
+    modelButton.title = activeProfile.model ? "Modèle du profil et effort de réflexion" : "Choisir un modèle";
   }
   updateModelUI(null, availableInstalledModels, remoteApiModels);
   renderProfileManager();
@@ -5959,6 +6580,7 @@ async function loadModelCatalog({ throwOnError = false } = {}) {
     if (!resp.ok) throw new Error(data.detail || "La bibliothèque locale ne peut pas être actualisée.");
     const localList = document.getElementById("catalog-local-list");
     if (!localList) return;
+    modelCatalogLoaded = true;
     modelRuntimeHardware = data.hardware || {};
     installedNativeModels = Array.isArray(data.native_models) ? data.native_models : [];
     localList.replaceChildren();

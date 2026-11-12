@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="fr" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Aperçu des widgets ETU-AI</title>
+  <link rel="stylesheet" href="/static/style.css?v=schedule-widgets-event-ids-1">
+  <style>
+    html, body { min-height: 100%; height: auto; overflow-y: auto !important; }
+    :root { --dark-font-color: #202020; --light-font-color: #202020; }
+    :root[data-theme="dark"] { --dark-font-color: #efefef; --light-font-color: #efefef; }
+    .autonomie { --ressource-color: #7f7fff; --font-ressource-color: var(--dark-font-color); }
+    .resource-R1-02 { --ressource-color: #0099ff; --font-ressource-color: var(--dark-font-color); }
+    body { min-height: 100vh; overflow-x: hidden; background: radial-gradient(ellipse at 10% 0%, color-mix(in srgb, var(--accent-color) 10%, transparent), transparent 42%), var(--bg-primary); color: var(--text-main); }
+    .widget-preview { width: min(1040px, calc(100% - 40px)); margin: 0 auto; padding: clamp(22px, 5vw, 56px) 0 72px; }
+    .preview-topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 34px; }
+    .preview-brand { display: flex; align-items: center; gap: 11px; font-weight: 650; }
+    .preview-brand-mark { display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent-color) 28%, var(--border-color)); border-radius: 50%; background: color-mix(in srgb, var(--accent-color) 11%, var(--bg-secondary)); color: var(--accent-color); }
+    .preview-theme-toggle { min-height: 38px; padding: 7px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-secondary); color: var(--text-main); font: inherit; cursor: pointer; }
+    .preview-theme-toggle:hover { border-color: var(--accent-color); }
+    .preview-theme-toggle:focus-visible, .widget-preview button:focus-visible, .widget-preview a:focus-visible, .widget-preview input:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 3px; }
+    .preview-heading { max-width: 690px; margin-bottom: 30px; }
+    .preview-eyebrow { margin: 0 0 9px; color: var(--accent-color); font-size: .76rem; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; }
+    .preview-heading h1 { margin: 0; font-size: clamp(1.65rem, 4vw, 2.45rem); font-weight: 620; letter-spacing: -.04em; }
+    .preview-heading > p:last-child { margin: 12px 0 0; color: var(--text-muted); line-height: 1.6; }
+    .preview-demo-note { display: flex; align-items: flex-start; gap: 9px; margin: 0 0 26px; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-secondary) 78%, transparent); color: var(--text-muted); font-size: .82rem; line-height: 1.5; }
+    .preview-demo-note strong { color: var(--text-main); }
+    .preview-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(280px, .9fr); align-items: start; gap: 26px; }
+    .preview-section { min-width: 0; }
+    .preview-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+    .preview-section-heading h2 { margin: 0; font-size: 1rem; font-weight: 620; }
+    .preview-section-heading span { color: var(--text-muted); font-size: .75rem; }
+    .preview-chat { padding: clamp(16px, 3vw, 24px); border: 1px solid var(--border-color); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--bg-secondary) 60%, transparent); }
+    .preview-chat .message.assistant { max-width: none; grid-template-columns: 30px minmax(0, 1fr); column-gap: 11px; }
+    .preview-chat .avatar.ai-avatar { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent-color) 25%, var(--border-color)); border-radius: 50%; background: color-mix(in srgb, var(--accent-color) 12%, var(--bg-secondary)); color: var(--accent-color); font-weight: 700; }
+    .preview-chat .assistant-meta { display: flex; grid-column: 2; align-items: center; gap: 8px; min-height: 30px; margin-bottom: 5px; color: var(--text-muted); font-size: .76rem; }
+    .preview-chat .assistant-meta strong { color: var(--text-main); font-weight: 600; }
+    .preview-chat .message-bubble { grid-column: 2; width: 100%; max-width: none; padding: 0; line-height: 1.6; }
+    .preview-chat .message-bubble > p { margin: 0; }
+    .preview-chat .schedule-course-widgets { margin-top: 16px; }
+    .preview-chat .schedule-course-widgets > h4 { font-size: .74rem; font-weight: 600; }
+    .preview-chat .schedule-course-widget { display: grid; gap: 8px; padding: 0; border: 0; background: transparent; }
+    .schedule-course-event { display: flex; min-height: 174px; flex-direction: column; justify-content: space-between; box-sizing: border-box; overflow: hidden; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--ressource-color, #0099ff); color: var(--schedule-event-text-color, var(--font-ressource-color, #fff)); text-decoration: none; }
+    .preview-chat .schedule-course-widget a.schedule-course-event { width: 100%; min-height: 174px; margin: 0; padding: 4px 6px; border: 1px solid var(--border-color); background: var(--ressource-color, #0099ff); color: var(--schedule-event-text-color, var(--font-ressource-color, #fff)); text-decoration: none; }
+    .schedule-course-event-title { font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+    .schedule-course-event-footer { display: grid; gap: 2px; line-height: 1.15; }
+    .schedule-course-event-location, .schedule-course-event-time { font-size: .83rem; }
+    .schedule-course-event-time { font-variant-numeric: tabular-nums; }
+    .preview-chat .schedule-course-event:hover, .preview-chat .schedule-course-event:focus-visible { filter: brightness(1.06); outline: 2px solid var(--accent-color); outline-offset: 2px; }
+    .preview-confirmation { margin-top: 25px; }
+    .preview-confirmation .etu-confirmation-card { width: 100%; max-width: none; box-sizing: border-box; margin: 0; }
+    .preview-friends-label { display: block; margin-bottom: 9px; }
+    .preview-friend-search { width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); font: inherit; font-size: .85rem; }
+    .preview-friend-search::placeholder { color: var(--text-muted); }
+    .preview-friend-list { display: grid; gap: 5px; margin: 0 0 14px; padding: 5px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-primary) 45%, transparent); }
+    .preview-friend { display: flex; width: 100%; box-sizing: border-box; align-items: center; gap: 10px; min-height: 53px; padding: 7px 9px; border: 1px solid transparent; border-radius: calc(var(--radius-md) - 3px); cursor: pointer; transition: background-color .16s ease, border-color .16s ease; }
+    .preview-friend:hover { background: color-mix(in srgb, var(--accent-color) 6%, var(--bg-secondary)); }
+    .preview-friend:has(input:checked) { border-color: color-mix(in srgb, var(--accent-color) 42%, var(--border-color)); background: color-mix(in srgb, var(--accent-color) 10%, var(--bg-secondary)); }
+    .preview-friend input { appearance: none; display: grid; flex: 0 0 19px; width: 19px; height: 19px; margin: 0; place-content: center; border: 1.5px solid var(--text-muted); border-radius: 5px; background: var(--bg-primary); cursor: pointer; transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease; }
+    .preview-friend input::before { width: 9px; height: 5px; transform: rotate(-45deg) scale(0); border: solid var(--text-on-accent, #fff); border-width: 0 0 2px 2px; content: ""; transition: transform .12s ease; }
+    .preview-friend input:checked { border-color: var(--accent-color); background: var(--accent-color); }
+    .preview-friend input:checked::before { transform: rotate(-45deg) scale(1); }
+    .preview-friend input:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+    .preview-friend-avatar { display: grid; flex: 0 0 34px; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border-color); border-radius: 50%; background: color-mix(in srgb, var(--friend-color, var(--accent-color)) 16%, var(--bg-secondary)); color: var(--friend-color, var(--accent-color)); font-size: .78rem; font-weight: 700; overflow: hidden; }
+    .preview-friend-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .preview-friend-copy { display: grid; min-width: 0; gap: 2px; }
+    .preview-friend-copy strong { font-size: .86rem; font-weight: 600; }
+    .preview-friend-copy small { color: var(--text-muted); font-size: .72rem; }
+    .preview-selected-count { min-height: 1.25em; margin: -7px 0 13px; color: var(--text-muted); font-size: .74rem; }
+    .preview-chat .schedule-course-widget-details { padding: 8px; border-radius: 6px; background: var(--bg-primary); }
+    .preview-confirmation .etu-confirmation-card .preview-share-result { min-height: 1.3em; color: var(--text-muted); font-size: .76rem; }
+    .preview-share-caption { margin: 9px 0 0; color: var(--text-muted); font-size: .74rem; line-height: 1.5; }
+    @media (max-width: 760px) { .preview-grid { grid-template-columns: minmax(0, 1fr); } .preview-topbar { margin-bottom: 26px; } }
+    @media (max-width: 420px) { .widget-preview { width: min(100% - 24px, 1040px); } .preview-chat { padding: 15px 12px; } .preview-section-heading { align-items: flex-start; flex-direction: column; gap: 4px; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="widget-preview">
+    <header class="preview-topbar">
+      <div class="preview-brand"><span class="preview-brand-mark" aria-hidden="true">✦</span><span>ETU-AI</span></div>
+      <button class="preview-theme-toggle" id="preview-theme-toggle" type="button" aria-pressed="false">Passer en thème sombre</button>
+    </header>
+
+    <div class="preview-heading">
+      <p class="preview-eyebrow">Aperçu d’interface</p>
+      <h1>Les widgets de l’emploi du temps</h1>
+      <p>Une réponse garde son rythme naturel ; les cours cités deviennent des cartes compactes, ouvrables et détaillables.</p>
+    </div>
+    <p class="preview-demo-note"><span aria-hidden="true">●</span><span><strong>Démonstration locale.</strong> Les cours et les contacts sont fictifs. Les boutons sont interactifs, mais aucune donnée n’est envoyée et aucun événement n’est partagé.</span></p>
+
+    <div class="preview-grid">
+      <section class="preview-section" aria-labelledby="courses-title">
+        <div class="preview-section-heading"><h2 id="courses-title">Réponse avec cours cités</h2><span>Widget de cours</span></div>
+        <div class="preview-chat">
+          <article class="message assistant">
+            <div class="avatar ai-avatar" aria-hidden="true">✦</div>
+            <div class="assistant-meta"><strong>MAIA</strong><span>·</span><span>À propos de ton EDT</span></div>
+            <div class="message-bubble">
+              <p>Tu as deux cours à venir : <strong>Maths discrètes</strong> mercredi matin, puis <strong>Atelier projet web</strong> jeudi après-midi. Ouvre une carte pour les détails ou l’emploi du temps dans ETU 2.</p>
+              <section class="schedule-course-widgets" aria-label="Cours de l’emploi du temps">
+                <h4>Cours de l’emploi du temps</h4>
+                <article class="schedule-course-widget" data-course="maths">
+                  <a class="schedule-course-event autonomie" href="http://localhost:8888/schedule?shared_course=%7B%22title%22%3A%22S5.A%26B.01%20Autonomie%20libre%20GA1%2A%22%2C%22start%22%3A%222026-11-18T08%3A15%3A00%2B01%3A00%22%2C%22end%22%3A%222026-11-18T12%3A15%3A00%2B01%3A00%22%2C%22room%22%3A%22Lieu%20de%20votre%20choix%22%2C%22group%22%3A%22GA1%22%7D" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir Autonomie libre dans ETU 2"><strong class="schedule-course-event-title">S5.A&amp;B.01 Autonomie libre GA1*</strong><span class="schedule-course-event-footer"><span class="schedule-course-event-location">Lieu de votre choix</span><span class="schedule-course-event-time">08h15 - 12h15</span></span></a>
+                </article>
+                <article class="schedule-course-widget" data-course="web">
+                  <a class="schedule-course-event resource-R1-02" href="http://localhost:8888/schedule?shared_course=%7B%22title%22%3A%22R1.02%20Math%C3%A9matiques%20discr%C3%A8tes%22%2C%22start%22%3A%222026-11-18T10%3A15%3A00%2B01%3A00%22%2C%22end%22%3A%222026-11-18T12%3A15%3A00%2B01%3A00%22%2C%22room%22%3A%22A-204%22%2C%22group%22%3A%223A1-1%22%7D" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir Mathématiques discrètes dans ETU 2"><strong class="schedule-course-event-title">R1.02 Mathématiques discrètes</strong><span class="schedule-course-event-footer"><span class="schedule-course-event-location">A-204 · Mme Salma B.</span><span class="schedule-course-event-time">10h15 - 12h15</span></span></a>
+                </article>
+              </section>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="preview-section preview-confirmation" aria-labelledby="share-title">
+        <div class="preview-section-heading"><h2 id="share-title">Partage d’un événement</h2><span>Widget de confirmation</span></div>
+        <div class="etu-confirmation-card">
+          <span class="preview-friends-label"><strong>Partager avec</strong></span>
+          <input class="preview-friend-search" type="search" aria-label="Rechercher un ami" placeholder="Rechercher un ami…">
+          <div class="preview-friend-list" role="group" aria-label="Amis destinataires">
+            <label class="preview-friend" style="--friend-color: #6d83cf"><input type="checkbox" name="preview-friend" value="Erreur406"><span class="preview-friend-avatar" aria-hidden="true">E</span><span class="preview-friend-copy"><strong>Erreur406</strong><small>3A1</small></span></label>
+            <label class="preview-friend" style="--friend-color: #b66a9d"><input type="checkbox" name="preview-friend" value="Alexis"><span class="preview-friend-avatar" aria-hidden="true">A</span><span class="preview-friend-copy"><strong>Alexis</strong><small>3A1</small></span></label>
+            <label class="preview-friend" style="--friend-color: #4e9c83"><input type="checkbox" name="preview-friend" value="Eloïse"><span class="preview-friend-avatar" aria-hidden="true">É</span><span class="preview-friend-copy"><strong>Eloïse</strong><small>3A2</small></span></label>
+          </div>
+          <p class="preview-selected-count" role="status" aria-live="polite"></p>
+          <strong>Partager cet événement ?</strong>
+          <p>Démo relais ETU-AI · jeudi 12 novembre, 12:00–12:30</p>
+          <div>
+            <button type="button" data-preview-share>Confirmer</button>
+            <button type="button" data-preview-decline>Refuser</button>
+          </div>
+          <p class="preview-share-result" role="status" aria-live="polite"></p>
+        </div>
+        <p class="preview-share-caption">La sélection du contact et l’étape de confirmation restent explicites. Ici, les actions ne quittent pas cette page.</p>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/svg-manager.js?v=thinking-icon-1"></script>
+  <script>
+    const themeToggle = document.getElementById("preview-theme-toggle");
+    themeToggle.addEventListener("click", () => {
+      const dark = document.documentElement.dataset.theme !== "dark";
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+      themeToggle.setAttribute("aria-pressed", String(dark));
+      themeToggle.textContent = dark ? "Passer en thème clair" : "Passer en thème sombre";
+    });
+    const friendInputs = [...document.querySelectorAll('input[name="preview-friend"]')];
+    const friendSearch = document.querySelector(".preview-friend-search");
+    friendSearch.addEventListener("input", () => {
+      const query = friendSearch.value.trim().toLocaleLowerCase("fr");
+      document.querySelectorAll(".preview-friend").forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase("fr").includes(query); });
+    });
+    const selectedCount = document.querySelector(".preview-selected-count");
+    const updateFriendSelection = () => {
+      const selected = friendInputs.filter(input => input.checked);
+      selectedCount.textContent = selected.length ? `${selected.length} ami${selected.length > 1 ? "s" : ""} sélectionné${selected.length > 1 ? "s" : ""}` : "Sélectionne au moins un ami pour continuer.";
+    };
+    friendInputs.forEach(input => input.addEventListener("change", updateFriendSelection));
+    updateFriendSelection();
+    document.querySelector("[data-preview-share]").addEventListener("click", event => { event.preventDefault(); });
+    document.querySelector("[data-preview-decline]").addEventListener("click", event => { event.preventDefault(); });
+  </script>
+</body>
+</html>

@@ -145,8 +145,8 @@ def load_config() -> dict[str, Any]:
         or not 0 < max_vram <= 1
     ):
         raise ValueError("max_vram_ratio must be in (0, 1]")
-    if config["context_size"] > 131072:
-        raise ValueError("context_size exceeds the supported maximum of 131072")
+    if config["context_size"] > 262144:
+        raise ValueError("context_size exceeds the supported maximum of 262144")
     for name in ("deps_dir", "models_dir", "venv_dir", "beacon_host", "device"):
         val = config[name]
         if not isinstance(val, str) or not val.strip() or "\n" in val or "\r" in val:

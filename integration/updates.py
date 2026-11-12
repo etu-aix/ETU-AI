@@ -9,9 +9,34 @@ import json
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+RELEASES_URL = "https://github.com/etu-aix/ETU-AI/releases/latest"
+GITHUB_LATEST_API = "https://api.github.com/repos/etu-aix/ETU-AI/releases/latest"
+
+
+def latest_app_release() -> dict:
+    """Read the latest published stable release without executing its assets."""
+    request = Request(GITHUB_LATEST_API, headers={"Accept": "application/vnd.github+json", "User-Agent": "ETU-AI"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read(1024 * 1024 + 1)
+            if len(body) > 1024 * 1024:
+                raise ValueError("Réponse trop volumineuse")
+            data = json.loads(body)
+    except HTTPError as exc:
+        if exc.code == 404:
+            return {"status": "unavailable", "url": RELEASES_URL}
+        raise ValueError("GitHub est momentanément indisponible.") from exc
+    except (URLError, TimeoutError, OSError, ValueError) as exc:
+        raise ValueError("Impossible de consulter les releases GitHub.") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tag_name"), str) or not data["tag_name"].strip():
+        raise ValueError("La réponse de GitHub est invalide.")
+    return {"status": "available", "version": data["tag_name"][:128], "url": RELEASES_URL}
 
 
 def verify_release(manifest: dict, package: Path, public_key: bytes, *, expected_version: str) -> dict:

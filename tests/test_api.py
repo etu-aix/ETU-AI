@@ -52,6 +52,35 @@ class TestAPIServer(unittest.TestCase):
         self.assertIn("paired_with_etu", data)
         self.assertIn("model_state", data)
 
+    def test_beacon_listener_fallback_handles_unavailable_command_output(self):
+        from types import ModuleType, SimpleNamespace
+
+        psutil_stub = ModuleType("psutil")
+        psutil_stub.net_connections = lambda **kwargs: (_ for _ in ()).throw(OSError("permission denied"))
+
+        with patch("setup_wizard.platform.system", return_value="Windows"), \
+             patch.dict(sys.modules, {"psutil": psutil_stub}), \
+             patch("setup_wizard.subprocess.run", return_value=SimpleNamespace(stdout=None)):
+            self.assertEqual(self.wizard._beacon_listener_pids(), [])
+
+    def test_beacon_listener_fallback_decodes_binary_netstat_output(self):
+        from types import ModuleType, SimpleNamespace
+
+        psutil_stub = ModuleType("psutil")
+        psutil_stub.net_connections = lambda **kwargs: (_ for _ in ()).throw(OSError("permission denied"))
+        output = b"  TCP    127.0.0.1:11343    0.0.0.0:0    LISTENING    4321\r\n"
+
+        with patch("setup_wizard.platform.system", return_value="Windows"), \
+             patch.dict(sys.modules, {"psutil": psutil_stub}), \
+             patch("setup_wizard.subprocess.run", return_value=SimpleNamespace(stdout=output)):
+            self.assertEqual(self.wizard._beacon_listener_pids(), [4321])
+
+    def test_beacon_model_guard_detects_another_model_inventory(self):
+        status = {"available_models": ["qwen2.5-1.5b-instruct-q4_k_m", "gemma-4-E4B-it-Q4_K_M.gguf"]}
+        self.assertTrue(api_server._beacon_has_model(status, "gemma-4-E4B-it-Q4_K_M"))
+        self.assertFalse(api_server._beacon_has_model(status, "Qwen3-4B-Q4_K_M"))
+        self.assertTrue(api_server._beacon_has_model({}, "Qwen3-4B-Q4_K_M"))
+
     def test_conversations_api(self):
         # Création
         create_resp = self.client.post("/api/conversations", json={"title": "Test API Conv"})

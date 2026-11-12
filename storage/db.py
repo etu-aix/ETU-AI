@@ -84,6 +84,9 @@ class StorageManager:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(conversations)")}
             if "profile_id" not in columns:
                 conn.execute("ALTER TABLE conversations ADD COLUMN profile_id TEXT")
+            message_columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+            if "reasoning_content" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT")
             if not conn.execute("SELECT 1 FROM assistant_profiles LIMIT 1").fetchone():
                 now = datetime.now(timezone.utc).isoformat()
                 conn.execute(
@@ -194,6 +197,7 @@ class StorageManager:
         role: str,
         content: str,
         tool_calls: Optional[list[dict[str, Any]]] = None,
+        reasoning_content: Optional[str] = None,
     ) -> str:
         """Ajoute un message à une conversation et met à jour le timestamp de la conversation."""
         msg_id = str(uuid.uuid4())
@@ -201,9 +205,9 @@ class StorageManager:
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
         with self._connection() as conn:
             conn.execute(
-                """INSERT INTO messages (id, conversation_id, role, content, tool_calls, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (msg_id, conversation_id, role, content, tool_calls_json, now),
+                """INSERT INTO messages (id, conversation_id, role, content, tool_calls, reasoning_content, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, conversation_id, role, content, tool_calls_json, reasoning_content, now),
             )
             conn.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -215,7 +219,7 @@ class StorageManager:
         """Récupère tous les messages chronologiques d'une conversation."""
         with self._connection() as conn:
             cursor = conn.execute(
-                "SELECT id, role, content, tool_calls, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
+                "SELECT id, role, content, tool_calls, reasoning_content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
                 (conversation_id,),
             )
             results = []
@@ -232,7 +236,7 @@ class StorageManager:
     def get_message(self, conversation_id: str, message_id: str) -> Optional[dict[str, Any]]:
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT id, role, content, tool_calls, created_at FROM messages WHERE conversation_id = ? AND id = ?",
+                "SELECT id, role, content, tool_calls, reasoning_content, created_at FROM messages WHERE conversation_id = ? AND id = ?",
                 (conversation_id, message_id),
             ).fetchone()
         return dict(row) if row else None

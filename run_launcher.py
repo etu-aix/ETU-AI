@@ -24,7 +24,7 @@ LAUNCH_MODES = ("normal", "local", "server")
 
 
 def choose_launch_mode() -> str | None:
-    """Show a small mode picker; normal mode is selected by default."""
+    """Show a small mode picker; local mode supports ETU 2 development on localhost."""
     try:
         import tkinter as tk
         from tkinter import ttk
@@ -33,7 +33,7 @@ def choose_launch_mode() -> str | None:
         root.title("Mode de lancement ETU-AI")
         root.resizable(False, False)
         root.attributes("-topmost", True)
-        mode = tk.StringVar(value="normal")
+        mode = tk.StringVar(value="local")
         result: dict[str, str | None] = {"mode": None}
         frame = ttk.Frame(root, padding=18)
         frame.grid(sticky="nsew")
@@ -74,8 +74,8 @@ def choose_launch_mode() -> str | None:
         root.mainloop()
         return result["mode"]
     except Exception as exc:
-        print(f"[!] Sélecteur graphique indisponible ({exc}). Le mode normal sera utilisé.")
-        return "normal"
+        print(f"[!] Sélecteur graphique indisponible ({exc}). Le mode local sera utilisé.")
+        return "local"
 
 
 def configure_launch_environment(env: dict[str, str], mode: str) -> dict[str, str]:
@@ -106,13 +106,15 @@ def check_server_ready(url: str, timeout: int = 15) -> bool:
     return False
 
 
-def start_server(mode: str = "normal") -> subprocess.Popen:
+def start_server(mode: str = "local") -> subprocess.Popen:
     """Démarre le serveur API FastAPI local."""
     env = configure_launch_environment(os.environ, mode)
     env["PYTHONPATH"] = str(ROOT_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
     # One process serves both the UI and ETU 2 bridge, sharing pairing state.
     project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not project_python.is_file() and sys.prefix == sys.base_prefix:
+        raise RuntimeError("Environnement virtuel introuvable. Créez .venv et installez requirements-app.txt avant de lancer ETU-AI.")
     cmd = [
         str(project_python) if project_python.is_file() else sys.executable,
         str(ROOT_DIR / "serve.py"),
@@ -129,7 +131,7 @@ def start_server(mode: str = "normal") -> subprocess.Popen:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Démarre ETU-AI avec un profil réseau explicite.")
-    parser.add_argument("--mode", choices=LAUNCH_MODES, help="normal (défaut), local ou server")
+    parser.add_argument("--mode", choices=LAUNCH_MODES, help="local (défaut), normal ou server")
     args = parser.parse_args(argv)
     mode = args.mode or choose_launch_mode()
     if mode is None:
@@ -157,7 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # 1. Démarrer le serveur
-    process = start_server(mode)
+    try:
+        process = start_server(mode)
+    except RuntimeError as exc:
+        print(f"[!] {exc}")
+        return 1
 
     try:
         # 2. Attendre que l'API soit prête

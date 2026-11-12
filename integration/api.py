@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from integration.bridge import bridge, is_etu_origin, digest
 from integration.tool_relay import tool_relay
-from integration.ephemeral import selected_profile_public, selected_model, upstream, normalized, stream_event, final_stream, validate_images, require_local_vision, attach_images
+from integration.ephemeral import selected_profile_public, selected_model, selected_upstream, normalized, stream_event, final_stream, validate_images, require_local_vision, attach_images
 
 router = APIRouter()
 LOCAL_ORIGINS = {f"http://{host}:{port}" for host in ("localhost", "127.0.0.1", "[::1]") for port in (8901, 8900)}
@@ -203,7 +203,7 @@ class CompletionRequest(StrictModel):
 
 class ToolProviderRequest(StrictModel):
     version: int = Field(ge=1, le=1)
-    tools: list[dict] = Field(max_length=2)
+    tools: list[dict] = Field(max_length=5)
 
 
 class ToolResultRequest(StrictModel):
@@ -213,6 +213,22 @@ class ToolResultRequest(StrictModel):
 
 class ModelSelectionRequest(StrictModel):
     model: str = Field(min_length=1, max_length=200)
+
+
+def _log_provider_error(response):
+    """Log only provider error identifiers, never request or response content."""
+    try:
+        error = response.json().get("error", {})
+    except (ValueError, AttributeError):
+        error = {}
+    if not isinstance(error, dict):
+        error = {}
+    details = {key: error.get(key) for key in ("type", "code", "param") if isinstance(error.get(key), (str, int))}
+    logging.getLogger(__name__).warning(
+        "Workspace provider rejected request: HTTP %s (%s)",
+        getattr(response, "status_code", "unknown"),
+        json.dumps(details, ensure_ascii=True),
+    )
 
 
 @router.put("/v1/tools/provider")
@@ -276,8 +292,33 @@ def installed_models(request: Request):
         {"id": filename, "filename": filename, "name": filename[:-5], "source": "local", "installed": True}
         for filename in files
     ]
+    from api_server import get_configured_api_models
+    cloud_models = [{
+        "id": model["id"],
+        # Keep the filename-shaped key consumed by older ETU 2 model pickers;
+        # it is an opaque cloud ID, never a path or a local file.
+        "filename": model["id"],
+        "name": model["name"],
+        "model": model["model"],
+        "provider": model["provider"],
+        "provider_label": model["provider_label"],
+        "provider_type": model.get("provider_type", "openai"),
+        **({"reasoning_efforts": model["reasoning_efforts"]} if model.get("reasoning_efforts") else {}),
+        "source": "cloud",
+        "installed": True,
+    } for model in get_configured_api_models() if model.get("provider_type", "openai") in {"openai", "anthropic", "gemini", "chatgpt"}]
+    models.extend(cloud_models)
     selected = selected_model(request.app.state.etu_storage)
-    return {"models": models, "selected": {key: selected[key] for key in ("model", "source", "provider")}}
+    selected_payload = {key: selected[key] for key in ("model", "source", "provider")}
+    if selected["source"] == "cloud":
+        selected_payload["id"] = f"api:{selected['provider']}:{selected['model']}"
+    return {
+        "models": models,
+        "cloud_models": cloud_models,
+        # Standard model-list alias for clients that consume OpenAI's `data` key.
+        "data": [{"id": item["id"], "object": "model", "owned_by": item.get("provider", "etu-ai")} for item in models],
+        "selected": selected_payload,
+    }
 
 
 @router.get("/v1/models/status")
@@ -325,9 +366,13 @@ def select_workspace_model(body: ModelSelectionRequest, request: Request):
     session = auth(request)
     if "etu.ai.model.select" not in session["permissions"]:
         raise HTTPException(403, "Permission etu.ai.model.select requise")
+    # Cloud model IDs are opaque provider-scoped IDs from GET /v1/models.
+    from api_server import ModelSelectRequest, get_configured_api_models, select_model
+    remote = next((model for model in get_configured_api_models()
+                   if model["id"] == body.model and model.get("provider_type", "openai") in {"openai", "anthropic", "gemini", "chatgpt"}), None)
+    if remote:
+        return select_model(ModelSelectRequest(model=remote["model"], source="api", provider=remote["provider"]))
     # Reuse the same installation checks and Beacon switch logic as the local UI.
-    from api_server import ModelSelectRequest, select_model
-
     return select_model(ModelSelectRequest(model=body.model, source="local"))
 
 
@@ -441,6 +486,15 @@ async def completions(body: CompletionRequest, request: Request):
     target = selected_model(request.app.state.etu_storage) if body.model == "selected" else None
     images = []
     if target:
+        if target["source"] == "local":
+            # Workspace completions bypass ChatStreamHandler, so wake the
+            # selected local model here before checking vision or sending the
+            # request directly to Beacon.
+            from api_server import activate_local_model_for_chat
+            try:
+                await asyncio.to_thread(activate_local_model_for_chat, target["model"])
+            except RuntimeError as exc:
+                raise HTTPException(503, {"code": "workspace_local_unavailable"}) from exc
         document = snapshot["workspace"].get("document") or {}
         if body.workspace_mode == "chat" and not document.get("content"):
             raise HTTPException(422, "Document entier requis pour le chat Workspace")
@@ -462,7 +516,7 @@ async def completions(body: CompletionRequest, request: Request):
             if isinstance(instructions, str) and instructions.strip():
                 payload["messages"][0]["content"] += "\nPréférences personnelles de l'utilisateur (respecte toujours le protocole JSON Workspace) : " + instructions[:16000]
         payload["temperature"] = 0.2
-        if target["provider"] in {"mistral", "openai"}:
+        if target["type"] == "openai" and target["provider"] in {"mistral", "openai"}:
             payload["response_format"] = {"type": "json_schema", "json_schema": {"name": "workspace_chat", "strict": True, "schema": CHAT_SCHEMA}}
         elif target["source"] == "local":
             payload["response_format"] = {"type": "json_object", "schema": CHAT_SCHEMA}
@@ -517,7 +571,7 @@ async def completions(body: CompletionRequest, request: Request):
     completion_payload = copy.deepcopy(payload)
     endpoint, headers = "http://127.0.0.1:11343/v1/chat/completions", {}
     if target:
-        endpoint, headers, payload = upstream(target, payload)
+        endpoint, headers, payload = await selected_upstream(target, payload)
     async def guarded(task):
         try:
             while not task.done():
@@ -538,6 +592,8 @@ async def completions(body: CompletionRequest, request: Request):
                 if not body.stream:
                     task = asyncio.create_task(client.post(endpoint, json=payload, headers=headers))
                     response = await guarded(task)
+                    if target and response.is_error:
+                        _log_provider_error(response)
                     response.raise_for_status()
                     yield normalized(response.json(), target) if target else response.json()
                 else:
@@ -545,13 +601,20 @@ async def completions(body: CompletionRequest, request: Request):
                     response = await guarded(asyncio.create_task(stream.__aenter__()))
                     try:
                         if target and getattr(response, "status_code", 200) in {400, 415, 422, 501}:
+                            await guarded(asyncio.create_task(response.aread()))
+                            _log_provider_error(response)
                             # A rejected stream has emitted no content: retry once
                             # using the same transient context and selected model.
-                            final_url, final_headers, final_payload = upstream(target, {**completion_payload, "stream": False})
+                            final_url, final_headers, final_payload = await selected_upstream(target, {**completion_payload, "stream": False})
                             final_response = await guarded(asyncio.create_task(client.post(final_url, json=final_payload, headers=final_headers)))
+                            if final_response.is_error:
+                                _log_provider_error(final_response)
                             final_response.raise_for_status()
                             yield final_stream(final_response.json(), target)
                             return
+                        if target and response.is_error:
+                            await guarded(asyncio.create_task(response.aread()))
+                            _log_provider_error(response)
                         response.raise_for_status()
                         if target and "application/json" in getattr(response, "headers", {}).get("content-type", ""):
                             await guarded(asyncio.create_task(response.aread()))

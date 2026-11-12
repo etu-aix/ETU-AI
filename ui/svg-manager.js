@@ -25,6 +25,8 @@
     heart: '<path d="M20.8 8.6c0 4.2-8.8 10.2-8.8 10.2S3.2 12.8 3.2 8.6a4.6 4.6 0 0 1 8.8-1.9 4.6 4.6 0 0 1 8.8 1.9Z"/>',
     memory: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 9v6m4-6v6m4-6v6M6 18v3m6-3v3m6-3v3"/>',
     hint: '<path d="M9 18h6m-5 3h4M9 14.5a7 7 0 1 1 6 0L14 18h-4z"/>',
+    thinking: '<path d="M9 18h6m-5 3h4m-5-6.5a6.5 6.5 0 1 1 6 0L14 18h-4z"/><path d="M12 7v4m-2-2h4"/>',
+    help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 4.2 1.8c-1.1 1-1.8 1.3-1.8 3M12 17h.01"/>',
     hub: '<circle cx="12" cy="12" r="3"/><circle cx="4" cy="5" r="1.5"/><circle cx="20" cy="5" r="1.5"/><circle cx="12" cy="21" r="1.5"/><path d="m6 6.5 4 3.5m8-3.5-4 3.5m-2 5v4.5"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
     cloudOff: '<path d="m3 3 18 18"/><path d="M7.1 7.1A6 6 0 0 0 7 19h10a5 5 0 0 0 1.8-.34M16.5 5.5A6 6 0 0 0 7.2 7.2M12 19h5a5 5 0 0 0 1.8-.34M19 13a5 5 0 0 0-3.2-4.67"/>',

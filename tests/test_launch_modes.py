@@ -46,10 +46,16 @@ class LaunchModeTests(unittest.TestCase):
         self.assertEqual(launch.call_args.args[0][0],str(expected))
         self.assertEqual(launch.call_args.kwargs['env']['ETU_LAUNCH_MODE'],'local')
 
-    def test_server_retains_current_interpreter_without_project_environment(self):
-        with patch('run_launcher.Path.is_file',return_value=False), patch('run_launcher.subprocess.Popen') as launch:
+    def test_server_retains_current_virtual_environment(self):
+        with patch('run_launcher.Path.is_file',return_value=False), patch('run_launcher.sys.prefix', 'virtual-env'), patch('run_launcher.sys.base_prefix', 'system-python'), patch('run_launcher.subprocess.Popen') as launch:
             start_server('normal')
         self.assertEqual(launch.call_args.args[0][0],sys.executable)
+
+    def test_server_rejects_system_python_without_project_environment(self):
+        with patch('run_launcher.Path.is_file', return_value=False), patch('run_launcher.sys.prefix', 'system-python'), patch('run_launcher.sys.base_prefix', 'system-python'), patch('run_launcher.subprocess.Popen') as launch:
+            with self.assertRaises(RuntimeError):
+                start_server('normal')
+            launch.assert_not_called()
 
 
 if __name__ == "__main__":
