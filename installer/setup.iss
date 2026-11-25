@@ -14,7 +14,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=ETU-AI
 
 [Files]
-Source: "..\release-payload\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release-payload\ai-server\config.json"; DestDir: "{app}\ai-server"; Flags: onlyifdoesntexist
 
 [Icons]
 Name: "{autodesktop}\ETU-AI"; Filename: "{app}\.venv\Scripts\pythonw.exe"; Parameters: """{app}\run_launcher.py"""; WorkingDir: "{app}"
