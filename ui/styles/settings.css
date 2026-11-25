@@ -1,10 +1,18 @@
 #settings-view { flex: 1; min-height: 0; overflow: hidden; background: var(--bg-primary); }
 .chat-quick-actions { position: absolute; z-index: 51; top: 14px; right: 24px; display: flex; align-items: center; gap: 8px; }
+.provider-quota-meter { width: 196px; padding: 7px 10px 6px; border: 1px solid var(--border-color); border-radius: 12px; background: color-mix(in srgb, var(--bg-primary) 92%, transparent); box-shadow: 0 4px 18px color-mix(in srgb, var(--text-main) 7%, transparent); }
+.provider-quota-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-muted); font-size: 11px; line-height: 1.3; }
+.provider-quota-heading strong { color: var(--text-main); font-size: 12px; font-variant-numeric: tabular-nums; }
+.provider-quota-meter progress { display: block; width: 100%; height: 4px; margin-top: 6px; overflow: hidden; border: 0; border-radius: 99px; background: var(--bg-tertiary); accent-color: var(--accent-color); }
+.provider-quota-meter progress::-webkit-progress-bar { border-radius: 99px; background: var(--bg-tertiary); }
+.provider-quota-meter progress::-webkit-progress-value { border-radius: 99px; background: var(--accent-color); }
+.provider-quota-meter progress::-moz-progress-bar { border-radius: 99px; background: var(--accent-color); }
 .chat-quick-actions .theme-toggle { background: var(--bg-primary); }
 #chat-messages { padding-top: 64px; }
 #app-container.settings-open .chat-quick-actions { display: none; }
 @media (max-width: 700px) {
   .chat-quick-actions { left: 12px; right: 12px; justify-content: space-between; }
+  .provider-quota-meter { width: min(42vw, 196px); margin-inline: auto; }
   #chat-messages { padding-top: 62px; }
 }
 #settings-view[hidden] { display: none; }

@@ -28,10 +28,64 @@ const streamFrames = new WeakMap();
 const appliedStreamTemplates = new WeakMap();
 const assistantScheduleEvents = new WeakMap();
 const assistantFriendLists = new WeakMap();
+const assistantPersonalEvents = new WeakMap();
 let activeChatStream = null;
 let chatViewVersion = 0;
 let appPowerState = "awake";
 let currentLaunchMode = "normal";
+
+function formatProviderMoney(value, currency = "USD", maximumFractionDigits = 8) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return "";
+  return new Intl.NumberFormat("fr-FR", { style: "currency", currency, minimumFractionDigits: amount > 0 && amount < 0.01 ? 4 : 2, maximumFractionDigits }).format(amount);
+}
+
+async function refreshProviderQuota() {
+  const meter = document.getElementById("provider-quota-meter");
+  if (!meter) return;
+  try {
+    const response = await fetch("/api/provider/usage");
+    if (!response.ok) throw new Error("Quota indisponible");
+    const data = await response.json();
+    const limit = Number(data.limit);
+    const remaining = Number(data.remaining);
+    if (!data.available || !(limit > 0) || !Number.isFinite(remaining)) {
+      meter.hidden = true;
+      return;
+    }
+    const percent = Math.max(0, Math.min(100, Math.round(remaining / limit * 100)));
+    const unit = data.unit === "requests" ? "requêtes" : "tokens";
+    const displayedRemaining = data.currency
+      ? formatProviderMoney(remaining, data.currency, 4)
+      : `${Math.round(remaining).toLocaleString("fr-FR")} ${unit}`;
+    const displayedLimit = data.currency
+      ? formatProviderMoney(limit, data.currency, 4)
+      : `${Math.round(limit).toLocaleString("fr-FR")} ${unit}`;
+    document.getElementById("provider-quota-label").textContent = data.kind === "balance" ? "Solde API restant" : data.unit === "requests" ? "Requêtes restantes" : data.unit === "tokens" ? "Tokens restants" : "Quota API restant";
+    document.getElementById("provider-quota-remaining").textContent = data.currency ? displayedRemaining : `${Math.round(remaining).toLocaleString("fr-FR")} / ${Math.round(limit).toLocaleString("fr-FR")}`;
+    const progress = document.getElementById("provider-quota-progress");
+    progress.value = percent;
+    progress.setAttribute("aria-label", `${percent} % du quota API restant`);
+    meter.title = `${displayedRemaining} restant sur ${displayedLimit}`;
+    meter.hidden = false;
+  } catch (_) {
+    meter.hidden = true;
+  }
+}
+
+function setAssistantReportedCost(message, amount, currency = "USD") {
+  const meta = ensureAssistantMeta(message);
+  if (!meta || !Number.isFinite(Number(amount)) || Number(amount) < 0) return;
+  let price = meta.querySelector(":scope > .assistant-reported-cost");
+  if (!price) {
+    price = document.createElement("span");
+    price.className = "assistant-reported-cost";
+    price.setAttribute("aria-label", "Coût communiqué par le fournisseur pour cette réponse");
+    meta.append(price);
+  }
+  price.textContent = `Coût · ${formatProviderMoney(amount, currency, 8)}`;
+  price.title = "Coût communiqué par le fournisseur";
+}
 let powerActionMenu = null;
 const notificationStorageKey = "etu-app-notifications";
 let appNotifications = [];
@@ -56,6 +110,8 @@ const seenDownloadStatuses = new Map();
 let downloadRefreshInFlight = false;
 let applyingAppRoute = false;
 let lastAppliedAppRoute = null;
+const isCompanionWindow = new URLSearchParams(window.location.search).get("companion") === "1";
+if (isCompanionWindow) document.body.classList.add("is-companion-window");
 
 const modelTabRoutes = {
   "tab-catalog": "local",
@@ -66,6 +122,9 @@ const modelTabRoutes = {
 const modelRouteTabs = Object.fromEntries(Object.entries(modelTabRoutes).map(([tab, route]) => [route, tab]));
 
 function setAppRoute(route, replace = false) {
+  if (isCompanionWindow && /^#\/chat(?:\/[^/]+)?$/.test(route)) {
+    try { localStorage.setItem("etu-companion-route", route); } catch (_) { /* Storage may be unavailable. */ }
+  }
   requestAnimationFrame(dismissViewedResponseNotifications);
   if (applyingAppRoute || window.location.hash === route) return;
   window.history[replace ? "replaceState" : "pushState"]({}, "", route);
@@ -121,7 +180,18 @@ function restoreAppRoute() {
 }
 
 function initAppUrlRouting() {
-  if (!window.location.hash) setAppRoute("#/chat", true);
+  if (!window.location.hash) {
+    let route = "#/chat";
+    if (isCompanionWindow) {
+      try {
+        const saved = localStorage.getItem("etu-companion-route");
+        if (/^#\/chat(?:\/[a-zA-Z0-9%_-]+)?$/.test(saved || "")) route = saved;
+      } catch (_) { /* Start a new chat if storage is unavailable. */ }
+    }
+    setAppRoute(route, true);
+    // The restored route must be applied even though setAppRoute records it.
+    lastAppliedAppRoute = null;
+  }
   window.addEventListener("popstate", restoreAppRoute);
   window.addEventListener("hashchange", restoreAppRoute);
   window.addEventListener("popstate", dismissViewedResponseNotifications);
@@ -136,6 +206,29 @@ function resizeChatInput() {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 150)}px`;
   input.style.overflowY = input.value.length && input.scrollHeight > input.clientHeight + 1 ? "auto" : "hidden";
+}
+
+async function copyTextToClipboard(value) {
+  const text = String(value);
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch (_) { /* Native WebViews may reject the async clipboard API. */ }
+  const field = document.createElement("textarea");
+  field.value = text;
+  field.setAttribute("aria-hidden", "true");
+  field.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+  document.body.append(field);
+  let copied = false;
+  try {
+    field.select();
+    copied = document.execCommand("copy");
+  } finally {
+    field.remove();
+  }
+  if (!copied) throw new Error("Presse-papiers indisponible");
 }
 
 function trackChatComposerHeight() {
@@ -210,7 +303,7 @@ document.addEventListener("DOMContentLoaded", () => {
   ETUChatUI.configure({
     submit: submitGeneratedPrompt,
     renderProgram: (container, html) => renderAuthoredPreview(container, html, true),
-    copy: value => navigator.clipboard.writeText(String(value).slice(0, 10000)).catch(() => {}),
+    copy: value => copyTextToClipboard(String(value).slice(0, 10000)).catch(() => {}),
     viewChanged: (available, active) => {
       const button = document.getElementById("btn-chat-view");
       button.hidden = !available;
@@ -219,6 +312,25 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-chat-view").addEventListener("click", () => { ETUChatUI.toggleView(); scrollToBottom(); });
   document.getElementById("chat-messages").addEventListener("click", (event) => {
+    const codeAction = event.target.closest("[data-code-action]");
+    if (codeAction) {
+      const block = codeAction.closest(".chat-code-block");
+      const code = block?.querySelector("pre > code");
+      if (!block || !code) return;
+      if (codeAction.dataset.codeAction === "copy") {
+        copyTextToClipboard(code.textContent).then(() => {
+          codeAction.textContent = "Copié";
+          window.setTimeout(() => { if (codeAction.isConnected) codeAction.textContent = "Copier"; }, 1500);
+        }).catch(() => { codeAction.textContent = "Copie impossible"; });
+      } else {
+        const showPreview = codeAction.dataset.codeAction === "preview";
+        block.classList.toggle("show-preview", showPreview);
+        block.querySelectorAll("[data-code-action='preview'], [data-code-action='source']").forEach(button => {
+          button.setAttribute("aria-pressed", String(button.dataset.codeAction === (showPreview ? "preview" : "source")));
+        });
+      }
+      return;
+    }
     const suggestion = event.target.closest("[data-prompt]");
     if (!suggestion) return;
     document.getElementById("chat-input").value = suggestion.dataset.prompt;
@@ -230,6 +342,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initHardwarePreference();
   initAppUtilities();
   initApiSettings();
+  void refreshProviderQuota();
+  setInterval(refreshProviderQuota, 60_000);
   loadConversations();
   loadServerStatus();
 
@@ -283,6 +397,54 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-open-settings")?.addEventListener("click", () => showSettingsView("general"));
   document.getElementById("btn-settings-close")?.addEventListener("click", closeSettingsView);
   document.getElementById("btn-settings-theme")?.addEventListener("click", () => document.getElementById("btn-theme")?.click());
+  const startup = document.getElementById("settings-startup");
+  const startupStatus = document.getElementById("settings-startup-status");
+  if (startup && startupStatus) {
+    fetch("/api/settings/startup").then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(data => {
+      startup.checked = data.enabled;
+      startup.disabled = !data.supported;
+      if (!data.supported) startupStatus.textContent = "Disponible uniquement sous Windows.";
+    }).catch(() => { startupStatus.textContent = "Impossible de charger ce réglage."; });
+    startup.addEventListener("change", async () => {
+      const enabled = startup.checked;
+      startup.disabled = true;
+      try {
+        const response = await fetch("/api/settings/startup", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail);
+        startupStatus.textContent = "Réglage enregistré.";
+      } catch (error) {
+        startup.checked = !enabled;
+        startupStatus.textContent = error.message || "Impossible d’enregistrer ce réglage.";
+      } finally { startup.disabled = false; }
+    });
+  }
+  const companionShortcut = document.getElementById("settings-companion-shortcut");
+  const companionStatus = document.getElementById("settings-companion-status");
+  if (companionShortcut && companionStatus) {
+  let savedCompanionShortcut = companionShortcut.value;
+  companionShortcut.disabled = true;
+  fetch("/api/settings/companion").then(response => {
+    if (!response.ok) throw new Error();
+    return response.json();
+  }).then(data => { companionShortcut.value = data.shortcut; savedCompanionShortcut = data.shortcut; }).catch(() => {
+    companionStatus.textContent = "Impossible de charger le raccourci.";
+  }).finally(() => { companionShortcut.disabled = false; });
+  companionShortcut.addEventListener("change", async () => {
+    companionShortcut.disabled = true;
+    try {
+      const response = await fetch("/api/settings/companion", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ shortcut: companionShortcut.value }) });
+      if (!response.ok) throw new Error();
+      savedCompanionShortcut = companionShortcut.value;
+      companionStatus.textContent = "Raccourci enregistré.";
+    } catch (_) {
+      companionShortcut.value = savedCompanionShortcut;
+      companionStatus.textContent = "Impossible d’enregistrer le raccourci. Réessayez.";
+    } finally {
+      companionShortcut.disabled = false;
+    }
+  });
+  }
   document.getElementById("btn-settings-repair")?.addEventListener("click", () => document.getElementById("btn-reinstall-app")?.click());
   document.getElementById("btn-settings-uninstall")?.addEventListener("click", () => showToast("La désinstallation sera disponible avec le programme d’installation de bureau.", "info"));
   document.getElementById("btn-settings-dependencies")?.addEventListener("click", () => showToast("La désinstallation des dépendances sera disponible avec le programme d’installation de bureau.", "info"));
@@ -314,26 +476,44 @@ document.addEventListener("DOMContentLoaded", () => {
       button.disabled = false;
     }
   });
-  document.getElementById("btn-settings-update")?.addEventListener("click", checkEngineUpdates);
-  document.getElementById("btn-settings-app-update")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    const status = document.getElementById("settings-app-update-status");
-    const link = document.getElementById("settings-app-release-link");
-    button.disabled = true;
-    link.hidden = true;
-    status.textContent = "Recherche sur GitHub…";
+  document.getElementById("wiki-remote-consent")?.addEventListener("change", async (event) => {
+    const checkbox = event.currentTarget;
+    const status = document.getElementById("wiki-remote-consent-status");
+    const requested = checkbox.checked;
+    checkbox.disabled = true;
     try {
-      const response = await fetch("/api/updates/app", { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Recherche impossible.");
-      status.textContent = data.status === "available" ? `Dernière release publiée : ${data.version}. La version installée n’est pas encore vérifiée automatiquement.` : "Aucune release stable publiée n’a été trouvée.";
-      link.hidden = false;
+      const response = await fetch("/api/wiki/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ allow_remote: requested }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+      checkbox.checked = Boolean(result.allow_remote);
+      if (status) status.textContent = checkbox.checked
+        ? "Le partage des passages du Wiki est autorisé pour les fournisseurs compatibles."
+        : "Le partage des passages du Wiki est désactivé.";
     } catch (error) {
-      status.textContent = error.message || "Recherche impossible. Réessayez plus tard.";
+      checkbox.checked = !requested;
+      if (status) status.textContent = "Impossible d’enregistrer cette autorisation. Réessayez.";
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
+  document.getElementById("btn-settings-delete-wiki")?.addEventListener("click", async (event) => {
+    if (!window.confirm("Supprimer définitivement tous les documents du Wiki et leur historique de révision sur cet ordinateur ?")) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/wiki/documents", { method: "DELETE" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`);
+      window.ETUWiki?.refresh();
+      showToast("Le Wiki et son historique ont été supprimés.", "success");
+    } catch (error) {
+      console.error("Erreur suppression du Wiki :", error);
+      showToast("Impossible de supprimer le Wiki.", "error");
     } finally {
       button.disabled = false;
     }
   });
+  document.getElementById("btn-settings-update")?.addEventListener("click", checkEngineUpdates);
   document.querySelectorAll(".settings-nav-item").forEach((button) => {
     button.addEventListener("click", () => showSettingsView(button.dataset.settingsSection));
   });
@@ -706,7 +886,7 @@ async function initApiSettings() {
   };
   const setKeyStatus = (hasKey) => {
     const status = document.getElementById("api-key-status");
-    status.textContent = hasKey ? "Clé enregistrée" : "Aucune clé";
+    status.textContent = hasKey ? "Clé enregistrée" : currentConfig.auth_optional ? "Clé facultative" : "Aucune clé";
     status.dataset.hasKey = String(Boolean(hasKey));
     if (clearKeyButton) clearKeyButton.hidden = !hasKey || (providerSelect.value === "openai" && chatgptAuthMethod !== "api_key");
   };
@@ -790,11 +970,11 @@ async function initApiSettings() {
         modelHint.textContent = `La liste Mistral n’a pas répondu. ${replacementId} remplace le modèle retiré mistral-medium ; enregistrez pour l’activer.`;
         return;
       }
-      const conciseMessage = isTimeout ? "La réponse met trop de temps" : providerSelect.value === "openai" && chatgptAuthMethod === "account" && !hasAvailableKey ? "Connectez votre compte ChatGPT" : (/clé API|key|401|403/i.test(statusMessage) ? "Vérifiez la clé API" : (/404|statut/i.test(statusMessage) ? "Aucun modèle disponible" : (hasAvailableKey ? "Modèles indisponibles" : "Saisissez une clé API")));
+      const conciseMessage = isTimeout ? "La réponse met trop de temps" : providerSelect.value === "openai" && chatgptAuthMethod === "account" && !hasAvailableKey ? "Connectez votre compte ChatGPT" : (/clé API|key|401|403/i.test(statusMessage) ? "Vérifiez l’authentification" : (/404|statut/i.test(statusMessage) ? "Aucun modèle disponible" : "Connexion impossible"));
       const detail = isTimeout ? "Délai dépassé après 25 secondes. Vérifiez la connexion et réessayez." : (providerSelect.value === "openai" && chatgptAuthMethod === "account" && !hasAvailableKey ? "Connectez-vous avec votre compte ChatGPT, puis réessayez." : statusMessage);
       modelsContainer.replaceChildren(renderModelEmptyState(conciseMessage, detail));
       modelSearch.hidden = true;
-      modelHint.textContent = hasAvailableKey ? "Utilisez ↻ pour réessayer." : providerSelect.value === "openai" && chatgptAuthMethod === "account" ? "Connectez votre compte pour charger les modèles." : "Saisissez une clé API, puis utilisez ↻ pour charger les modèles.";
+      modelHint.textContent = providerSelect.value === "openai" && chatgptAuthMethod === "account" && !hasAvailableKey ? "Connectez votre compte pour charger les modèles." : "Vérifiez l’URL et les identifiants éventuels, puis réessayez.";
     } finally {
       if (activeModelRequest === controller) activeModelRequest = null;
       if (sequence === loadSequence && refreshButton) {
@@ -836,7 +1016,7 @@ async function initApiSettings() {
     setProviderMark(document.getElementById("api-provider-mark"), id);
     document.getElementById("api-provider-brand-name").textContent = provider.label || labels[id] || id;
     document.getElementById("api-provider-brand-detail").textContent = id === "openai" || id === "chatgpt" ? (config.auth_method === "account" ? "Compte ChatGPT" : "Clé API OpenAI") : `${provider.type === "openai" ? "API compatible OpenAI" : "Connexion API native"} · clé stockée localement`;
-    document.getElementById("api-provider-brand-state").textContent = config.enabled ? "Actif" : (config.has_api_key ? ((id === "openai" || id === "chatgpt") && config.auth_method === "account" ? "Compte connecté" : "Clé enregistrée") : "À configurer");
+    document.getElementById("api-provider-brand-state").textContent = config.enabled ? "Actif" : config.local_no_auth ? "Serveur local" : (config.has_api_key ? ((id === "openai" || id === "chatgpt") && config.auth_method === "account" ? "Compte connecté" : "Clé enregistrée") : config.auth_optional ? "Connexion à tester" : "À configurer");
     card.classList.toggle("is-active", Boolean(config.enabled));
   };
   const updatePrivacyHint = (config) => {
@@ -1375,6 +1555,15 @@ class WizardParticlesFX {
 async function initSetupWizard() {
   const wizardContainer = document.getElementById("wizard-container");
   const appContainer = document.getElementById("app-container");
+
+  // The companion is a chat-only surface; setup belongs to the main window.
+  if (isCompanionWindow) {
+    wizardContainer.style.display = "none";
+    appContainer.style.display = "flex";
+    loadServerStatus();
+    loadConversations();
+    return;
+  }
 
   // Initialisation du canvas de particules et d'ondulations
   // Les effets de particules étaient coûteux sur les machines visées par l'IA locale.
@@ -2709,6 +2898,7 @@ function showSettingsView(section = "general", { fromRoute = false } = {}) {
   });
   if (selected === "etu") window.refreshEtuRemoteConnection?.();
   if (selected === "wiki") window.ETUWiki?.refresh();
+  if (selected === "data") loadWikiDataConsent();
   if (selected === "installation") loadServerVariants();
   if (selected === "general") loadBeaconSettings();
   if (selected === "providers") requestAnimationFrame(updateProviderSidebarHeight);
@@ -4401,6 +4591,7 @@ async function switchActiveModel(modelFilename, displayName = null, source = "lo
         currentModelState = "selected";
       } else {
         loadServerStatus();
+        void refreshProviderQuota();
       }
     } else {
       throw new Error(data.error || "Impossible de changer de modèle.");
@@ -4544,11 +4735,24 @@ function renderConversationHistory() {
 async function loadConversations() {
   try {
     const resp = await fetch("/api/conversations");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     conversationHistory = data.conversations || [];
     renderConversationHistory();
   } catch (err) {
     console.error("Erreur chargement conversations :", err);
+    const list = document.getElementById("conv-list");
+    if (list && !conversationHistory.length) {
+      const status = document.createElement("p");
+      status.className = "download-empty";
+      status.textContent = "Historique indisponible.";
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "etu-btn etu-btn-secondary";
+      retry.textContent = "Réessayer";
+      retry.addEventListener("click", loadConversations);
+      list.replaceChildren(status, retry);
+    }
   }
 }
 
@@ -4563,7 +4767,9 @@ async function selectConversation(convId) {
   try {
     if (!assistantProfiles.length) await loadProfiles();
     const resp = await fetch(`/api/conversations/${convId}/messages`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    if (!data.conversation || !Array.isArray(data.messages)) throw new Error("Réponse invalide");
     if (viewVersion !== chatViewVersion || currentConversationId !== convId) return;
     const profileId = data.conversation.profile_id || "default";
     setDisplayedProfile(profileId);
@@ -4579,6 +4785,21 @@ async function selectConversation(convId) {
     dismissViewedResponseNotifications();
   } catch (err) {
     console.error("Erreur affichage messages :", err);
+    if (viewVersion !== chatViewVersion || currentConversationId !== convId) return;
+    const container = document.getElementById("chat-messages");
+    if (!container) return;
+    const status = document.createElement("div");
+    status.className = "chat-welcome";
+    const message = document.createElement("p");
+    message.setAttribute("role", "alert");
+    message.textContent = "Impossible de charger cette discussion.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "etu-btn etu-btn-secondary";
+    retry.textContent = "Réessayer";
+    retry.addEventListener("click", () => selectConversation(convId));
+    status.append(message, retry);
+    container.replaceChildren(status);
   }
 }
 
@@ -4649,6 +4870,26 @@ function setWebSearchEnabled(enabled) {
   webSearchEnabled = Boolean(enabled && webSearchAvailable);
   localStorage.setItem("etu-web-search-enabled", String(webSearchEnabled));
   updateWebSearchUI();
+}
+
+async function loadWikiDataConsent() {
+  const checkbox = document.getElementById("wiki-remote-consent");
+  const status = document.getElementById("wiki-remote-consent-status");
+  if (!checkbox) return;
+  checkbox.disabled = true;
+  try {
+    const response = await fetch("/api/wiki/settings");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const settings = await response.json();
+    checkbox.checked = Boolean(settings.allow_remote);
+    if (status) status.textContent = checkbox.checked
+      ? "Le partage des passages du Wiki est autorisé pour les fournisseurs compatibles."
+      : "Le partage des passages du Wiki est désactivé.";
+  } catch (error) {
+    if (status) status.textContent = "Impossible de charger les autorisations du Wiki.";
+  } finally {
+    checkbox.disabled = false;
+  }
 }
 
 function setChatAttachMenu(open, trigger = document.getElementById("btn-attach")) {
@@ -5075,40 +5316,195 @@ function handleStreamEvent(data, bubbleEl) {
     const message = bubbleEl.closest(".message");
     const panel = document.createElement("div");
     panel.className = "etu-confirmation-card";
+    const creatingEvent = data.tool === "etu_schedule_create";
     const label = document.createElement("strong");
-    label.textContent = data.tool === "etu_schedule_share" ? "Partager cet événement ?" : "Ajouter cet événement à l’EDT ?";
+    label.textContent = creatingEvent ? "Ajouter à l’EDT" : "Partager cet événement ?";
     const detail = document.createElement("p");
     const args = data.arguments || {};
-    detail.textContent = data.tool === "etu_schedule_share"
-      ? `Événement ${args.event_id} · ami ${args.friend_id}`
-      : [args.title, args.start, args.end, args.location].filter(Boolean).join(" · ");
+    const sharedEvent = data.tool === "etu_schedule_share"
+      ? (assistantPersonalEvents.get(bubbleEl) || []).find(event => Number(event.event_id) === Number(args.event_id))
+      : null;
+    detail.textContent = creatingEvent ? "Modifie l’événement et choisis, si tu veux, les amis à prévenir." : [sharedEvent?.title || `Événement ${args.event_id}`, sharedEvent?.start, sharedEvent?.end, sharedEvent?.location].filter(Boolean).join(" · ");
+    panel.append(label, detail);
     const actions = document.createElement("div");
-    let friendSelect = null;
-    if (data.tool === "etu_schedule_share") {
-      const friends = assistantFriendLists.get(bubbleEl) || [];
-      friendSelect = document.createElement("select");
-      friendSelect.setAttribute("aria-label", "Ami destinataire");
-      for (const friend of friends) {
-        const option = document.createElement("option");
-        option.value = String(friend.id);
-        option.textContent = friend.name || `Ami ${friend.id}`;
-        option.selected = Number(friend.id) === Number(args.friend_id);
-        friendSelect.append(option);
-      }
-      if (friends.length) panel.append(friendSelect);
+    actions.className = "etu-confirmation-actions";
+    let friendSelection = null;
+    let confirmButton = null;
+    let eventFields = null;
+    if (creatingEvent) {
+      const sourceStart = String(args.start || "");
+      const sourceEnd = String(args.end || "");
+      const sourceDate = sourceStart.slice(0, 10);
+      const endDate = sourceEnd.slice(0, 10);
+      const dayOffset = Number.isFinite(Date.parse(`${sourceDate}T12:00:00Z`)) && Number.isFinite(Date.parse(`${endDate}T12:00:00Z`))
+        ? Math.max(0, Math.min(1, Math.round((Date.parse(`${endDate}T12:00:00Z`) - Date.parse(`${sourceDate}T12:00:00Z`)) / 86400000))) : 0;
+      const form = document.createElement("div");
+      form.className = "etu-event-fields";
+      const addField = (caption, key, type, value, required = false) => {
+        const fieldLabel = document.createElement("label");
+        fieldLabel.className = "etu-event-field";
+        fieldLabel.textContent = caption;
+        const input = document.createElement("input");
+        input.type = type;
+        input.name = key;
+        input.value = value || "";
+        input.required = required;
+        input.maxLength = key === "title" || key === "location" ? 200 : 1000;
+        input.autocomplete = "off";
+        fieldLabel.append(input);
+        form.append(fieldLabel);
+        return input;
+      };
+      const eventTitle = addField("Événement", "title", "text", args.title, true);
+      const eventDate = addField("Date", "date", "date", sourceDate, true);
+      const startTime = addField("Début", "start", "time", sourceStart.split("T")[1]?.slice(0, 5), true);
+      const endTime = addField("Fin", "end", "time", sourceEnd.split("T")[1]?.slice(0, 5), true);
+      const eventLocation = addField("Lieu", "location", "text", args.location);
+      const eventDescription = addField("Notes", "description", "text", args.description);
+      panel.append(form);
+      eventFields = {eventTitle, eventDate, startTime, endTime, eventLocation, eventDescription, dayOffset};
     }
-    for (const [caption, approved] of [["Confirmer", true], ["Refuser", false]]) {
+    if (data.tool === "etu_schedule_share" || creatingEvent) {
+      const friends = creatingEvent ? (Array.isArray(data.friends) ? data.friends : []) : (assistantFriendLists.get(bubbleEl) || []);
+      const selected = new Set((Array.isArray(args.friend_ids) ? args.friend_ids : args.friend_id ? [args.friend_id] : []).map(Number).filter(id => Number.isInteger(id) && id > 0));
+      const picker = document.createElement("section");
+      picker.className = "etu-friend-picker";
+      picker.setAttribute("aria-label", "Partager avec des amis");
+      const pickerTitle = document.createElement("strong");
+      pickerTitle.textContent = "Partager avec";
+      const searchLabel = document.createElement("label");
+      searchLabel.className = "etu-friend-search-label";
+      searchLabel.textContent = "Rechercher un ami";
+      const search = document.createElement("input");
+      search.type = "search";
+      search.className = "etu-friend-search";
+      searchLabel.append(search);
+      const list = document.createElement("div");
+      list.className = "etu-friend-list";
+      list.setAttribute("role", "group");
+      list.setAttribute("aria-label", "Amis destinataires");
+      const rows = [];
+      for (const friend of friends) {
+        const id = Number(friend.id);
+        if (!Number.isInteger(id) || id <= 0) continue;
+        const row = document.createElement("label");
+        row.className = "etu-friend-option";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = String(id);
+        checkbox.checked = selected.has(id);
+        const avatar = document.createElement("span");
+        avatar.className = "etu-friend-avatar";
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.textContent = (friend.name || "?").trim().slice(0, 1).toLocaleUpperCase();
+        if (friend.profile_image_url) {
+          const image = document.createElement("img");
+          image.src = friend.profile_image_url;
+          image.alt = "";
+          image.loading = "lazy";
+          image.onerror = () => image.remove();
+          avatar.append(image);
+        }
+        const copy = document.createElement("span");
+        copy.className = "etu-friend-copy";
+        const name = document.createElement("strong");
+        name.textContent = friend.name || `Ami ${id}`;
+        const group = document.createElement("small");
+        group.textContent = friend.group || "";
+        copy.append(name);
+        if (group.textContent) copy.append(group);
+        row.append(checkbox, avatar, copy);
+        list.append(row);
+        rows.push({row, checkbox, friend, id});
+      }
+      const selectedCount = document.createElement("p");
+      selectedCount.className = "etu-friend-selection-count";
+      friendSelection = {rows, selected, selectedCount};
+      const refreshSelection = (changedCheckbox = null) => {
+        if (rows.filter(({checkbox}) => checkbox.checked).length > 100) {
+          if (changedCheckbox) changedCheckbox.checked = false;
+          selectedCount.textContent = "Sélectionnez au maximum 100 amis.";
+          return;
+        }
+        selected.clear();
+        for (const {row, checkbox, id} of rows) {
+          if (checkbox.checked) selected.add(id);
+          row.classList.toggle("is-selected", checkbox.checked);
+        }
+        selectedCount.textContent = `${selected.size} ami${selected.size > 1 ? "s" : ""} sélectionné${selected.size > 1 ? "s" : ""}`;
+        if (confirmButton) {
+          confirmButton.disabled = !creatingEvent && selected.size === 0;
+          if (creatingEvent) confirmButton.textContent = selected.size ? `Ajouter et partager (${selected.size})` : "Ajouter à l’EDT";
+        }
+      };
+      rows.forEach(({checkbox}) => checkbox.addEventListener("change", () => refreshSelection(checkbox)));
+      search.addEventListener("input", () => {
+        const query = search.value.trim().toLocaleLowerCase();
+        for (const {row, friend} of rows) {
+          row.hidden = query !== "" && ![friend.name, friend.username, friend.group].some(value => String(value || "").toLocaleLowerCase().includes(query));
+        }
+      });
+      if (friends.length) picker.append(pickerTitle, searchLabel, list, selectedCount);
+      else {
+        selectedCount.textContent = creatingEvent ? "Aucun ami disponible pour le partage." : "La liste des amis n’est pas disponible.";
+        picker.append(selectedCount);
+      }
+      panel.append(picker);
+      refreshSelection();
+    }
+    for (const [caption, approved] of [[creatingEvent ? "Ajouter à l’EDT" : "Confirmer", true], [creatingEvent ? "Annuler" : "Refuser", false]]) {
       const button = document.createElement("button");
       button.type = "button";
       button.textContent = caption;
+      if (approved) {
+        confirmButton = button;
+        if (friendSelection && !creatingEvent) button.disabled = friendSelection.selected.size === 0;
+        if (creatingEvent && friendSelection?.selected.size) button.textContent = `Ajouter et partager (${friendSelection.selected.size})`;
+      }
       button.addEventListener("click", async () => {
+        let editedEvent;
+        if (approved && creatingEvent) {
+          if (!eventFields.eventTitle.value.trim() || !eventFields.eventDate.value || !eventFields.startTime.value || !eventFields.endTime.value) {
+            detail.textContent = "Renseigne le nom, la date et les deux horaires.";
+            return;
+          }
+          try {
+            const toParisIso = (date, time) => {
+              const [year, month, day] = date.split("-").map(Number);
+              const [hour, minute] = time.split(":").map(Number);
+              const wall = Date.UTC(year, month - 1, day, hour, minute);
+              const formatter = new Intl.DateTimeFormat("en-GB", {timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
+              let candidate = wall;
+              for (let pass = 0; pass < 3; pass++) {
+                const parts = Object.fromEntries(formatter.formatToParts(new Date(candidate)).map(part => [part.type, part.value]));
+                const parisWall = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+                candidate = wall - (parisWall - candidate);
+              }
+              const parts = Object.fromEntries(formatter.formatToParts(new Date(candidate)).map(part => [part.type, part.value]));
+              if (`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}` !== `${date}T${time}`) throw new Error("Cette heure n’existe pas à Paris lors du changement d’heure.");
+              const offset = Math.round((wall - candidate) / 60000);
+              const absoluteOffset = Math.abs(offset);
+              return `${date}T${time}:00${offset >= 0 ? "+" : "-"}${String(Math.floor(absoluteOffset / 60)).padStart(2, "0")}:${String(absoluteOffset % 60).padStart(2, "0")}`;
+            };
+            const endDay = new Date(`${eventFields.eventDate.value}T12:00:00Z`);
+            endDay.setUTCDate(endDay.getUTCDate() + eventFields.dayOffset);
+            const endDate = `${endDay.getUTCFullYear()}-${String(endDay.getUTCMonth() + 1).padStart(2, "0")}-${String(endDay.getUTCDate()).padStart(2, "0")}`;
+            const start = toParisIso(eventFields.eventDate.value, eventFields.startTime.value);
+            const end = toParisIso(endDate, eventFields.endTime.value);
+            if (Date.parse(end) <= Date.parse(start)) throw new Error("L’heure de fin doit être après l’heure de début.");
+            editedEvent = {title: eventFields.eventTitle.value.trim(), start, end, location: eventFields.eventLocation.value.trim(), description: eventFields.eventDescription.value.trim()};
+          } catch (error) {
+            detail.textContent = error.message || "Vérifie la date et les horaires.";
+            return;
+          }
+        }
         actions.querySelectorAll("button").forEach(control => { control.disabled = true; });
         try {
           const response = await fetch(`/api/conversations/${encodeURIComponent(data.conversation_id)}/etu-confirmations/${encodeURIComponent(data.token)}`, {
-            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({approved, friend_id: friendSelect ? Number(friendSelect.value) || Number(args.friend_id) : undefined}),
+            method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({approved, friend_ids: friendSelection ? [...friendSelection.selected] : undefined, event: editedEvent}),
           });
           if (!response.ok) throw new Error("Cette confirmation a expiré.");
-          detail.textContent = approved ? "Création en cours…" : "Action refusée.";
+          detail.textContent = approved ? (creatingEvent ? (friendSelection?.selected.size ? "Ajout et partage en cours…" : "Ajout en cours…") : "Partage en cours…") : (creatingEvent ? "Ajout annulé." : "Partage annulé.");
           pendingEtuConfirmations.delete(data.token);
           renderConversationHistory();
         } catch (error) {
@@ -5118,7 +5514,7 @@ function handleStreamEvent(data, bubbleEl) {
       });
       actions.append(button);
     }
-    panel.append(label, detail, actions);
+    panel.append(actions);
     message.append(panel);
     pendingEtuConfirmations.set(data.token, {conversationId: data.conversation_id, panel});
     renderConversationHistory();
@@ -5131,9 +5527,12 @@ function handleStreamEvent(data, bubbleEl) {
     if (data.tool === "etu_friends_list" && data.result?.success && Array.isArray(data.result.data?.friends)) {
       assistantFriendLists.set(bubbleEl, data.result.data.friends);
     }
+    if (data.tool === "etu_schedule_read" && data.result?.success && Array.isArray(data.result.data?.personal_event_series)) {
+      assistantPersonalEvents.set(bubbleEl, data.result.data.personal_event_series);
+    }
     if (data.tool === "etu_schedule_read" && data.result?.success && Array.isArray(data.result.data?.events)) {
       const events = assistantScheduleEvents.get(bubbleEl) || [];
-      events.push(...data.result.data.events.map(event => ({ ...event, group: data.result.data.label || "" })));
+      events.push(...data.result.data.events.map(event => ({ ...event, group: data.result.data.label || "", etu_origin: data.result.data.etu_origin || "" })));
       assistantScheduleEvents.set(bubbleEl, events);
     }
   } else if (data.event === "metrics") {
@@ -5141,8 +5540,15 @@ function handleStreamEvent(data, bubbleEl) {
     if (data.completion_tokens !== null && data.completion_tokens !== undefined && Number.isFinite(Number(data.completion_tokens))) bubbleEl.dataset.completionTokens = String(data.completion_tokens);
     if (data.total_tokens !== null && data.total_tokens !== undefined && Number.isFinite(Number(data.total_tokens))) bubbleEl.dataset.totalTokens = String(data.total_tokens);
     if (data.generation_tps !== null && data.generation_tps !== undefined && Number.isFinite(Number(data.generation_tps))) bubbleEl.dataset.generationTps = String(data.generation_tps);
+    if (data.cost !== null && data.cost !== undefined && Number.isFinite(Number(data.cost)) && Number(data.cost) >= 0) {
+      bubbleEl.dataset.reportedCost = String(data.cost);
+      bubbleEl.dataset.reportedCurrency = data.currency || "USD";
+      setAssistantReportedCost(bubbleEl.closest(".message"), data.cost, data.currency || "USD");
+      void refreshProviderQuota();
+    }
     updateAssistantTelemetry(bubbleEl, true);
   } else if (data.event === "done") {
+    void refreshProviderQuota();
     if (bubbleEl.dataset.generationCompleted !== "true" && bubbleEl.dataset.conversationId) {
       addAppNotification("Réponse terminée", "Le modèle a fini sa réponse.", "response", {
         conversationId: bubbleEl.dataset.conversationId,
@@ -5414,7 +5820,7 @@ window.addEventListener("message", async (event) => {
   } else if (event.data.type === "etu-preview-copy" && typeof event.data.value === "string") {
     if (!navigator.userActivation.isActive) return;
     const value = event.data.value.slice(0, 500);
-    try { await navigator.clipboard.writeText(value); }
+    try { await copyTextToClipboard(value); }
     catch { /* Clipboard may require browser permission. */ }
   } else if (event.data.type === "etu-preview-action" && typeof event.data.value === "string") {
     if (!navigator.userActivation.isActive) return;
@@ -5460,8 +5866,8 @@ function finalizeAssistantBubble(bubble) {
   bubble.dataset.renderFinalized = "true";
 }
 
-function appendScheduleCourseWidgets(bubble) {
-  const events = assistantScheduleEvents.get(bubble);
+function appendScheduleCourseWidgets(bubble, persistedEvents = null) {
+  const events = persistedEvents || assistantScheduleEvents.get(bubble);
   assistantScheduleEvents.delete(bubble);
   if (!events?.length || bubble.querySelector(":scope > .schedule-course-widgets")) return;
   const unique = new Map();
@@ -5472,89 +5878,65 @@ function appendScheduleCourseWidgets(bubble) {
     const key = `${event.title}\n${start.toISOString()}`;
     if (!unique.has(key)) unique.set(key, { ...event, start, end });
   }
-  const normalize = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  const answer = normalize(bubble.textContent);
-  const matches = [...unique.values()].filter(event => {
-    const title = normalize(event.title);
-    return title.length >= 3 && answer.includes(title);
-  });
-  const courses = matches.slice(0, 4);
+  const normalize = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase().replace(/\bmathematiques\b/g, "maths").replace(/[^a-z0-9]+/g, " ").trim();
+  const answer = ` ${normalize(bubble.textContent)} `;
+  const mentionsCourse = title => {
+    const withoutCode = title.replace(/^(?:[RS]\d+(?:\.[A-Z0-9&]+)*|S\d+(?:\.[A-Z0-9&]+)+)\s+/i, "");
+    const withoutGroup = withoutCode.replace(/\s+(?:GA|G|Grp)\s*[A-Z0-9-]+\*?$/i, "");
+    return [title, withoutCode, withoutGroup].some(candidate => {
+      const key = normalize(candidate);
+      return key.length >= 5 && answer.includes(` ${key} `);
+    });
+  };
+  const courses = [...unique.values()].filter(event => mentionsCourse(event.title)).slice(0, 4);
   if (!courses.length) return;
   const region = document.createElement("section");
   region.className = "schedule-course-widgets";
   region.setAttribute("aria-label", "Cours de l’emploi du temps");
-  const heading = document.createElement("h4");
-  heading.textContent = "Cours de l’emploi du temps";
-  region.append(heading);
   for (const course of courses) {
-    const article = document.createElement("article");
-    article.className = "schedule-course-widget";
-    const courseColor = String(course.color || course.backgroundColor || "");
-    if (/^#[0-9a-f]{6}$/i.test(courseColor)) {
-      const channels = courseColor.slice(1).match(/.{2}/g).map(channel => parseInt(channel, 16) / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
-      const luminance = channels[0] * .2126 + channels[1] * .7152 + channels[2] * .0722;
-      article.style.setProperty("--schedule-course-color", courseColor);
-      article.style.setProperty("--schedule-course-text", luminance > .48 ? "#171717" : "#ffffff");
-    }
-    const header = document.createElement("div");
-    header.className = "schedule-course-widget-header";
-    const badge = document.createElement("span");
-    badge.className = "schedule-course-widget-icon";
-    badge.setAttribute("aria-hidden", "true");
-    badge.innerHTML = window.ETUSVG?.icon("book") || "";
-    const title = document.createElement("strong");
-    title.textContent = course.title;
-    header.append(badge, title);
-    const details = document.createElement("p");
-    details.className = "schedule-course-widget-meta";
-    const dateLabel = new Intl.DateTimeFormat("fr-FR", { dateStyle: "full", timeZone: "Europe/Paris" }).format(course.start);
-    const timeLabel = new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
-    const metadata = [dateLabel, course.location, course.teacher].filter(Boolean);
-    details.textContent = metadata.join(" · ");
-    const time = document.createElement("span");
-    time.className = "schedule-course-widget-time";
-    time.textContent = `${timeLabel.format(course.start)}–${timeLabel.format(course.end)}`;
-    const payload = {
-      title: course.title.slice(0, 300), start: course.start.toISOString(), end: course.end.toISOString(),
-      teacher: String(course.teacher || "").slice(0, 200), room: String(course.location || "").slice(0, 200),
-      group: String(course.group || "").slice(0, 100),
-    };
+    const payload = {title: course.title.slice(0, 300), start: course.start.toISOString(), end: course.end.toISOString(), teacher: String(course.teacher || "").slice(0, 200), room: String(course.location || "").slice(0, 200), group: String(course.group || "").slice(0, 100)};
     const link = document.createElement("a");
-    link.href = `https://etu-aix.alwaysdata.net/schedule?shared_course=${encodeURIComponent(JSON.stringify(payload))}`;
+    link.className = "schedule-course-event";
+    const resourceMatch = course.title.match(/([RS]\d+(?:\.[A-Z]?(?:&[A-Z])?\.\d+|\.[A-Z]?\.\w+|\.\d+)|S\d+\.[A-Z]?\.\d+)/i);
+    if (resourceMatch) link.classList.add(`resource-${resourceMatch[1].replace(/[.&\s]/g, "-")}`);
+    if (/Examen|Soutenance|Evaluation|évaluation|contrôle|partiel|test/i.test(course.title)) link.classList.add("exam-event");
+    if (/S\d+\.\d+/.test(course.title)) link.classList.add("SAE");
+    if (/autonomie/i.test(course.title)) link.classList.add("autonomie");
+    if (/Vacances|Ferié|Férié/.test(course.title)) link.classList.add("vacances");
+    const etuOrigin = /^https?:\/\//i.test(course.etu_origin || "") ? course.etu_origin.replace(/\/$/, "") : "https://etu-aix.alwaysdata.net";
+    const sharedUrl = new URL(`${etuOrigin}/schedule`);
+    sharedUrl.searchParams.set("shared_course", encodeURIComponent(JSON.stringify(payload)));
+    link.href = sharedUrl.toString();
     link.target = "_blank";
     link.rel = "noopener noreferrer";
-    link.innerHTML = `<span>Ouvrir le cours dans ETU 2</span>${window.ETUSVG?.icon("externalLink") || ""}`;
-    const extra = [course.group && `Groupe : ${course.group}`, course.description].filter(Boolean);
-    const detailsId = `schedule-course-details-${crypto.randomUUID()}`;
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "schedule-course-widget-toggle";
-    toggle.textContent = "Plus de détails";
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.setAttribute("aria-controls", detailsId);
-    const detailsPanel = document.createElement("div");
-    detailsPanel.id = detailsId;
-    detailsPanel.className = "schedule-course-widget-details";
-    detailsPanel.hidden = true;
-    if (extra.length) {
-      for (const value of extra) {
-        const item = document.createElement("p");
-        item.textContent = value;
-        detailsPanel.append(item);
-      }
-    } else {
-      const item = document.createElement("p");
-      item.textContent = course.location ? `Salle : ${course.location}` : "Aucun détail supplémentaire.";
-      detailsPanel.append(item);
+    link.setAttribute("aria-label", `Ouvrir ${course.title} dans ETU 2`);
+    if (/Vacances|Ferié|Férié/i.test(course.title)) {
+      link.style.backgroundImage = `url("${etuOrigin}/assets/img/calendar/manette.png")`;
     }
-    toggle.addEventListener("click", () => {
-      const expanded = toggle.getAttribute("aria-expanded") === "true";
-      toggle.setAttribute("aria-expanded", String(!expanded));
-      detailsPanel.hidden = expanded;
-      toggle.textContent = expanded ? "Plus de détails" : "Moins de détails";
-    });
-    article.append(header, time, details, toggle, detailsPanel, link);
-    region.append(article);
+    const title = document.createElement("strong");
+    title.className = "schedule-course-event-title";
+    title.textContent = course.title;
+    const footer = document.createElement("span");
+    footer.className = "schedule-course-event-footer";
+    const location = document.createElement("span");
+    location.className = "schedule-course-event-location";
+    location.textContent = [course.location, course.teacher].filter(Boolean).join(" · ");
+    const time = document.createElement("span");
+    time.className = "schedule-course-event-time";
+    const clock = new Intl.DateTimeFormat("fr-FR", {hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris"});
+    time.textContent = `${clock.format(course.start)} - ${clock.format(course.end)}`;
+    footer.append(location, time);
+    link.append(title, footer);
+    const color = String(course.color || course.backgroundColor || "");
+    const textColor = String(course.textColor || "");
+    if (/^(?:#[\da-f]{3,8}|rgba?\([\d.% ,]+\))$/i.test(color)) link.style.setProperty("--ressource-color", color);
+    else if (/autonomie/i.test(course.title)) link.classList.add("autonomie");
+    else link.style.setProperty("--ressource-color", "#0099ff");
+    if (/^(?:#[\da-f]{3,8}|rgba?\([\d.% ,]+\))$/i.test(textColor)) {
+      link.style.setProperty("--font-ressource-color", textColor);
+      link.style.setProperty("--schedule-event-text-color", textColor);
+    }
+    region.append(link);
   }
   bubble.append(region);
 }
@@ -5676,28 +6058,16 @@ function recordModelPerformance(bubble) {
 function addAssistantActions(message, bubble) {
   const actions = document.createElement("div");
   actions.className = "assistant-message-actions";
-  const attach = document.createElement("button");
-  attach.type = "button";
-  attach.className = "assistant-action-button assistant-attach-button";
-  attach.setAttribute("aria-label", "Ajouter un fichier ou un outil au prochain message");
-  attach.title = "Ajouter un fichier ou activer la recherche web";
-  attach.innerHTML = `${window.ETUSVG?.icon("plus", "assistant-action-icon") || ""}<span>Ajouter</span>`;
-  attach.addEventListener("click", () => {
-    document.getElementById("chat-input")?.focus();
-    const trigger = document.getElementById("btn-attach");
-    if (trigger && document.getElementById("attach-dropdown-menu")?.hidden) trigger.click();
-  });
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "assistant-action-button assistant-copy-button";
   copy.setAttribute("aria-label", "Copier la réponse");
   copy.innerHTML = `${window.ETUSVG?.icon("copy", "assistant-action-icon") || ""}<span>Copier</span>`;
   copy.addEventListener("click", async () => {
-    const visibleText = (bubble.innerText || bubble.textContent || "").trim();
-    const text = visibleText || (bubble.dataset.copyText || "").trim();
+    const text = copyAssistantMessageText(bubble);
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       copy.innerHTML = `${window.ETUSVG?.icon("check", "assistant-action-icon") || ""}<span>Copié</span>`;
       showToast("Réponse copiée", "success", 1600);
       setTimeout(() => { copy.innerHTML = `${window.ETUSVG?.icon("copy", "assistant-action-icon") || ""}<span>Copier</span>`; }, 1400);
@@ -5721,9 +6091,19 @@ function addAssistantActions(message, bubble) {
   progress.hidden = true;
   panel.append(list, progress);
   details.append(summary, panel);
-  actions.append(attach, copy, details);
+  actions.append(copy, details);
   message.appendChild(actions);
   updateAssistantTelemetry(bubble, true);
+}
+
+function copyAssistantMessageText(bubble) {
+  const clone = bubble.cloneNode(true);
+  clone.querySelectorAll(".assistant-message-actions, .chat-code-toolbar, .chat-code-preview, .authored-preview-frame, .assistant-preview-source, .assistant-telemetry").forEach(node => node.remove());
+  clone.querySelectorAll(".chat-code-block").forEach(block => {
+    const code = block.querySelector("pre > code");
+    if (code) block.replaceWith(document.createTextNode(code.textContent));
+  });
+  return (clone.innerText || clone.textContent || "").trim() || (bubble.dataset.copyText || "").trim();
 }
 
 function attachInteractiveButtons(container) {
@@ -5788,8 +6168,12 @@ function renderMessage(role, contentHtml, attachments = [], messageId = "", tool
   }
   if (!isUser) {
     addMessageToolBadges(msgDiv, toolCalls.map((call) => call?.function?.name || call?.name).filter(Boolean));
+    const reportedCost = toolCalls.find(call => call?.etu_usage_cost)?.etu_usage_cost;
+    if (reportedCost) setAssistantReportedCost(msgDiv, reportedCost.amount, reportedCost.currency || "USD");
     addAssistantActions(msgDiv, bubble);
     applyPartialUpdates(bubble);
+    const persistedScheduleEvents = toolCalls.flatMap(call => Array.isArray(call?.etu_schedule_events) ? call.etu_schedule_events : []);
+    if (persistedScheduleEvents.length) appendScheduleCourseWidgets(bubble, persistedScheduleEvents);
   } else if (messageId) {
     addUserMessageActions(msgDiv);
   }
@@ -6047,7 +6431,54 @@ function highlightCode(root) {
 function renderAssistantFragment(raw) {
   const fragment = safeFragment(formatAssistantMarkup(raw));
   highlightCode(fragment);
+  enhanceCodeBlocks(fragment);
   return fragment;
+}
+
+function enhanceCodeBlocks(root) {
+  for (const pre of root.querySelectorAll("pre")) {
+    const code = pre.querySelector(":scope > code");
+    if (!code) continue;
+    const language = code.className.match(/(?:^|\s)language-([\w+#-]+)/)?.[1]?.toLowerCase() || "";
+    const wrapper = document.createElement("section");
+    wrapper.className = "chat-code-block";
+    const toolbar = document.createElement("div");
+    toolbar.className = "chat-code-toolbar";
+    const label = document.createElement("span");
+    label.textContent = language || "Code";
+    toolbar.append(label);
+    const actions = document.createElement("div");
+    actions.className = "chat-code-actions";
+    const addButton = (action, text, pressed) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.codeAction = action;
+      button.textContent = text;
+      button.setAttribute("aria-pressed", String(pressed));
+      actions.append(button);
+    };
+    addButton("copy", "", false);
+    const copyButton = actions.querySelector("[data-code-action='copy']");
+    copyButton.setAttribute("aria-label", "Copier le code");
+    copyButton.title = "Copier le code";
+    copyButton.innerHTML = window.ETUSVG?.icon("copy", "code-copy-icon") || "Copier";
+    copyButton.style.order = "2";
+    if (language === "svg") {
+      addButton("preview", "Preview", true);
+      addButton("source", "Code", false);
+      const preview = document.createElement("div");
+      preview.className = "chat-code-preview";
+      const image = document.createElement("img");
+      image.alt = "Aperçu du SVG";
+      image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(code.textContent)}`;
+      preview.append(image);
+      wrapper.classList.add("show-preview");
+      wrapper.append(toolbar, preview);
+    } else wrapper.append(toolbar);
+    toolbar.append(actions);
+    pre.replaceWith(wrapper);
+    wrapper.append(pre);
+  }
 }
 
 function safeFragment(html) {

@@ -8,8 +8,7 @@
   <link rel="stylesheet" href="/static/style.css?v=schedule-widgets-event-ids-1">
   <style>
     html, body { min-height: 100%; height: auto; overflow-y: auto !important; }
-    :root { --dark-font-color: #202020; --light-font-color: #202020; }
-    :root[data-theme="dark"] { --dark-font-color: #efefef; --light-font-color: #efefef; }
+    :root { --dark-font-color: #efefef; --light-font-color: #202020; }
     .autonomie { --ressource-color: #7f7fff; --font-ressource-color: var(--dark-font-color); }
     .resource-R1-02 { --ressource-color: #0099ff; --font-ressource-color: var(--dark-font-color); }
     body { min-height: 100vh; overflow-x: hidden; background: radial-gradient(ellipse at 10% 0%, color-mix(in srgb, var(--accent-color) 10%, transparent), transparent 42%), var(--bg-primary); color: var(--text-main); }
@@ -41,14 +40,21 @@
     .preview-chat .schedule-course-widgets { margin-top: 16px; }
     .preview-chat .schedule-course-widgets > h4 { font-size: .74rem; font-weight: 600; }
     .preview-chat .schedule-course-widget { display: grid; gap: 8px; padding: 0; border: 0; background: transparent; }
-    .schedule-course-event { display: flex; min-height: 174px; flex-direction: column; justify-content: space-between; box-sizing: border-box; overflow: hidden; padding: 4px 6px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--ressource-color, #0099ff); color: var(--schedule-event-text-color, var(--font-ressource-color, #fff)); text-decoration: none; }
-    .preview-chat .schedule-course-widget a.schedule-course-event { width: 100%; min-height: 174px; margin: 0; padding: 4px 6px; border: 1px solid var(--border-color); background: var(--ressource-color, #0099ff); color: var(--schedule-event-text-color, var(--font-ressource-color, #fff)); text-decoration: none; }
-    .schedule-course-event-title { font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
-    .schedule-course-event-footer { display: grid; gap: 2px; line-height: 1.15; }
-    .schedule-course-event-location, .schedule-course-event-time { font-size: .83rem; }
-    .schedule-course-event-time { font-variant-numeric: tabular-nums; }
+    .schedule-course-event { --dark-font-color: #efefef; --light-font-color: #202020; --font-ressource-color: #efefef; --schedule-event-text-color: var(--font-ressource-color); display: flex; min-height: 150px; flex-direction: column; justify-content: space-between; box-sizing: border-box; overflow: hidden; width: 100%; margin-left: 0; padding: 4px 6px; border: 1px solid var(--border-soft, var(--border-color)); border-radius: 8px; background: var(--ressource-color, #0099ff); color: var(--schedule-event-text-color); text-decoration: none; transition: min-height .25s ease, box-shadow .2s ease; }
+    .preview-chat .schedule-course-widget a.schedule-course-event { width: 100%; min-height: 150px; margin: 0; padding: 4px 6px; border: 1px solid var(--border-soft, var(--border-color)); background: var(--ressource-color, #0099ff); color: var(--schedule-event-text-color); text-decoration: none; }
+    .schedule-course-event-title { margin: 0; color: inherit; font-size: .85em; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+    .schedule-course-event-footer { display: flex; flex-direction: column; color: inherit; font-size: .75em; line-height: 1.15; }
+    .schedule-course-event-location { margin: 2px 0 0; color: inherit; font-size: .75em; font-weight: 600; opacity: .9; }
+    .schedule-course-event-time { margin: 0; color: color-mix(in srgb, var(--schedule-event-text-color), transparent 15%); font-size: .75em; font-variant-numeric: tabular-nums; }
+    .schedule-course-event.exam-event { animation: etu-calendar-exam-pulse 4s infinite; }
+    .schedule-course-event.SAE { --ressource-color: #99ccff; --font-ressource-color: var(--light-font-color); }
+    .schedule-course-event.vacances { background-position: center; background-size: 72px 72px; background-repeat: no-repeat; }
+    @keyframes etu-calendar-exam-pulse { 0%, 100% { box-shadow: -10px -10px 20px red, 10px 10px 20px grey; } 25% { box-shadow: 10px -10px 20px red, -10px 10px 20px grey; } 50% { box-shadow: 10px 10px 20px red, -10px -10px 20px grey; } 75% { box-shadow: -10px 10px 20px red, 10px -10px 20px grey; } }
+    @media (prefers-reduced-motion: reduce) { .schedule-course-event.exam-event { animation: none; } }
     .preview-chat .schedule-course-event:hover, .preview-chat .schedule-course-event:focus-visible { filter: brightness(1.06); outline: 2px solid var(--accent-color); outline-offset: 2px; }
     .preview-confirmation { margin-top: 25px; }
+    .preview-confirmation [data-preview-share]:disabled { opacity: .55; cursor: not-allowed; }
+    .preview-confirmed-message { margin-top: 14px; }
     .preview-confirmation .etu-confirmation-card { width: 100%; max-width: none; box-sizing: border-box; margin: 0; }
     .preview-friends-label { display: block; margin-bottom: 9px; }
     .preview-friend-search { width: 100%; box-sizing: border-box; margin: 0 0 8px; padding: 9px 11px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); font: inherit; font-size: .85rem; }
@@ -69,7 +75,6 @@
     .preview-friend-copy small { color: var(--text-muted); font-size: .72rem; }
     .preview-selected-count { min-height: 1.25em; margin: -7px 0 13px; color: var(--text-muted); font-size: .74rem; }
     .preview-chat .schedule-course-widget-details { padding: 8px; border-radius: 6px; background: var(--bg-primary); }
-    .preview-confirmation .etu-confirmation-card .preview-share-result { min-height: 1.3em; color: var(--text-muted); font-size: .76rem; }
     .preview-share-caption { margin: 9px 0 0; color: var(--text-muted); font-size: .74rem; line-height: 1.5; }
     @media (max-width: 760px) { .preview-grid { grid-template-columns: minmax(0, 1fr); } .preview-topbar { margin-bottom: 26px; } }
     @media (max-width: 420px) { .widget-preview { width: min(100% - 24px, 1040px); } .preview-chat { padding: 15px 12px; } .preview-section-heading { align-items: flex-start; flex-direction: column; gap: 4px; } }
@@ -86,7 +91,7 @@
     <div class="preview-heading">
       <p class="preview-eyebrow">Aperçu d’interface</p>
       <h1>Les widgets de l’emploi du temps</h1>
-      <p>Une réponse garde son rythme naturel ; les cours cités deviennent des cartes compactes, ouvrables et détaillables.</p>
+      <p>Les cours cités reprennent l’affichage ETU 2 et s’ouvrent directement dans l’emploi du temps.</p>
     </div>
     <p class="preview-demo-note"><span aria-hidden="true">●</span><span><strong>Démonstration locale.</strong> Les cours et les contacts sont fictifs. Les boutons sont interactifs, mais aucune donnée n’est envoyée et aucun événement n’est partagé.</span></p>
 
@@ -101,12 +106,8 @@
               <p>Tu as deux cours à venir : <strong>Maths discrètes</strong> mercredi matin, puis <strong>Atelier projet web</strong> jeudi après-midi. Ouvre une carte pour les détails ou l’emploi du temps dans ETU 2.</p>
               <section class="schedule-course-widgets" aria-label="Cours de l’emploi du temps">
                 <h4>Cours de l’emploi du temps</h4>
-                <article class="schedule-course-widget" data-course="maths">
-                  <a class="schedule-course-event autonomie" href="http://localhost:8888/schedule?shared_course=%7B%22title%22%3A%22S5.A%26B.01%20Autonomie%20libre%20GA1%2A%22%2C%22start%22%3A%222026-11-18T08%3A15%3A00%2B01%3A00%22%2C%22end%22%3A%222026-11-18T12%3A15%3A00%2B01%3A00%22%2C%22room%22%3A%22Lieu%20de%20votre%20choix%22%2C%22group%22%3A%22GA1%22%7D" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir Autonomie libre dans ETU 2"><strong class="schedule-course-event-title">S5.A&amp;B.01 Autonomie libre GA1*</strong><span class="schedule-course-event-footer"><span class="schedule-course-event-location">Lieu de votre choix</span><span class="schedule-course-event-time">08h15 - 12h15</span></span></a>
-                </article>
-                <article class="schedule-course-widget" data-course="web">
-                  <a class="schedule-course-event resource-R1-02" href="http://localhost:8888/schedule?shared_course=%7B%22title%22%3A%22R1.02%20Math%C3%A9matiques%20discr%C3%A8tes%22%2C%22start%22%3A%222026-11-18T10%3A15%3A00%2B01%3A00%22%2C%22end%22%3A%222026-11-18T12%3A15%3A00%2B01%3A00%22%2C%22room%22%3A%22A-204%22%2C%22group%22%3A%223A1-1%22%7D" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir Mathématiques discrètes dans ETU 2"><strong class="schedule-course-event-title">R1.02 Mathématiques discrètes</strong><span class="schedule-course-event-footer"><span class="schedule-course-event-location">A-204 · Mme Salma B.</span><span class="schedule-course-event-time">10h15 - 12h15</span></span></a>
-                </article>
+                <a class="schedule-course-event autonomie" href="http://localhost:8888/schedule?shared_course=%7B%22title%22%3A%22S5.A%26B.01%20Autonomie%20libre%20GA1%2A%22%2C%22start%22%3A%222026-11-18T08%3A15%3A00%2B01%3A00%22%2C%22end%22%3A%222026-11-18T12%3A15%3A00%2B01%3A00%22%2C%22room%22%3A%22Lieu%20de%20votre%20choix%22%2C%22group%22%3A%22GA1%22%7D" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir Autonomie libre dans ETU 2"><strong class="schedule-course-event-title">S5.A&amp;B.01 Autonomie libre GA1*</strong><span class="schedule-course-event-footer"><span class="schedule-course-event-location">Lieu de votre choix</span><span class="schedule-course-event-time">08h15 - 12h15</span></span></a>
+                <a class="schedule-course-event resource-R1-02" href="http://localhost:8888/schedule?shared_course=%7B%22title%22%3A%22R1.02%20Math%C3%A9matiques%20discr%C3%A8tes%22%2C%22start%22%3A%222026-11-18T10%3A15%3A00%2B01%3A00%22%2C%22end%22%3A%222026-11-18T12%3A15%3A00%2B01%3A00%22%2C%22room%22%3A%22A-204%22%2C%22group%22%3A%223A1-1%22%7D" target="_blank" rel="noopener noreferrer" aria-label="Ouvrir Mathématiques discrètes dans ETU 2"><strong class="schedule-course-event-title">R1.02 Mathématiques discrètes</strong><span class="schedule-course-event-footer"><span class="schedule-course-event-location">A-204 · Mme Salma B.</span><span class="schedule-course-event-time">10h15 - 12h15</span></span></a>
               </section>
             </div>
           </article>
@@ -130,7 +131,6 @@
             <button type="button" data-preview-share>Confirmer</button>
             <button type="button" data-preview-decline>Refuser</button>
           </div>
-          <p class="preview-share-result" role="status" aria-live="polite"></p>
         </div>
         <p class="preview-share-caption">La sélection du contact et l’étape de confirmation restent explicites. Ici, les actions ne quittent pas cette page.</p>
       </section>
@@ -146,6 +146,14 @@
       themeToggle.setAttribute("aria-pressed", String(dark));
       themeToggle.textContent = dark ? "Passer en thème clair" : "Passer en thème sombre";
     });
+    document.querySelectorAll(".schedule-course-event").forEach(link => {
+      const url = new URL(link.href);
+      const sharedCourse = url.searchParams.get("shared_course");
+      if (sharedCourse) {
+        url.searchParams.set("shared_course", encodeURIComponent(sharedCourse));
+        link.href = url.toString();
+      }
+    });
     const friendInputs = [...document.querySelectorAll('input[name="preview-friend"]')];
     const friendSearch = document.querySelector(".preview-friend-search");
     friendSearch.addEventListener("input", () => {
@@ -153,14 +161,51 @@
       document.querySelectorAll(".preview-friend").forEach(row => { row.hidden = !row.textContent.toLocaleLowerCase("fr").includes(query); });
     });
     const selectedCount = document.querySelector(".preview-selected-count");
+    const confirmShare = document.querySelector("[data-preview-share]");
     const updateFriendSelection = () => {
       const selected = friendInputs.filter(input => input.checked);
       selectedCount.textContent = selected.length ? `${selected.length} ami${selected.length > 1 ? "s" : ""} sélectionné${selected.length > 1 ? "s" : ""}` : "Sélectionne au moins un ami pour continuer.";
+      confirmShare.disabled = selected.length === 0;
     };
     friendInputs.forEach(input => input.addEventListener("change", updateFriendSelection));
     updateFriendSelection();
-    document.querySelector("[data-preview-share]").addEventListener("click", event => { event.preventDefault(); });
-    document.querySelector("[data-preview-decline]").addEventListener("click", event => { event.preventDefault(); });
+    confirmShare.addEventListener("click", event => {
+      event.preventDefault();
+      const names = friendInputs.filter(input => input.checked).map(input => input.closest(".preview-friend").querySelector("strong").textContent);
+      if (!names.length) return;
+      confirmShare.disabled = true;
+      confirmShare.textContent = "Envoi…";
+      window.setTimeout(() => {
+        const message = document.createElement("article");
+        message.className = "message assistant preview-confirmed-message";
+        const avatar = document.createElement("div");
+        avatar.className = "avatar ai-avatar";
+        avatar.setAttribute("aria-hidden", "true");
+        avatar.textContent = "✦";
+        const meta = document.createElement("div");
+        meta.className = "assistant-meta";
+        const author = document.createElement("strong");
+        author.textContent = "MAIA";
+        const separator = document.createElement("span");
+        separator.textContent = "·";
+        const label = document.createElement("span");
+        label.textContent = "Partage d’EDT";
+        meta.append(author, separator, label);
+        const bubble = document.createElement("div");
+        bubble.className = "message-bubble";
+        const confirmation = document.createElement("p");
+        confirmation.textContent = `C’est partagé avec ${names.join(", ")}.`;
+        bubble.append(confirmation);
+        message.append(avatar, meta, bubble);
+        document.querySelector(".preview-chat").append(message);
+        confirmShare.textContent = "Envoyé";
+      }, 350);
+    });
+    document.querySelector("[data-preview-decline]").addEventListener("click", event => {
+      event.preventDefault();
+      confirmShare.disabled = true;
+      confirmShare.textContent = "Refusé";
+    });
   </script>
 </body>
 </html>

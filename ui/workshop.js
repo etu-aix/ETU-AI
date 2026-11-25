@@ -108,6 +108,9 @@
     modelButton.setAttribute('aria-expanded', 'false');
   });
   let refreshing = false;
+  let publicationExists = false;
+  const publishLabel = 'Publier dans le Workshop';
+  const updateLabel = 'Mettre à jour dans le Workshop';
   async function refreshImportedProfiles() {
     if (refreshing || document.hidden || document.getElementById('modal-profiles')?.classList.contains('active')) return;
     refreshing = true;
@@ -123,6 +126,8 @@
   window.refreshWorkshopPublication = async profile => {
     const generation = ++loading;
     description.value = ''; refreshModelChoices(); terms.checked = false;
+    publicationExists = false;
+    publish.textContent = publishLabel;
     status.textContent = profile ? '' : 'Enregistrez d’abord ce profil.';
     publish.disabled = !profile;
     if (!profile) return;
@@ -137,6 +142,8 @@
       if (!response.ok) return;
       const body = await response.json();
       if (generation !== loading) return;
+      publicationExists = body.published === true || (body.published == null && Boolean(body.description));
+      publish.textContent = publicationExists ? updateLabel : publishLabel;
       description.value = body.description || '';
       refreshModelChoices(body.model || null);
     } catch (_) {}
@@ -152,7 +159,8 @@
     }
     const profileId = profileIdInput.value;
     if (!profileId || !description.value.trim() || !terms.checked) { status.textContent = 'Enregistrez le profil, ajoutez une description et acceptez les conditions.'; return; }
-    publish.disabled = true; status.textContent = 'Publication en cours…';
+    const updating = publicationExists;
+    publish.disabled = true; status.textContent = updating ? 'Mise à jour en cours…' : 'Publication en cours…';
     try {
       const saved = await fetch('/api/profiles/' + encodeURIComponent(profileId), {
         method: 'PUT', headers: {'Content-Type':'application/json'},
@@ -169,7 +177,9 @@
       const response = await fetch('/api/profiles/' + encodeURIComponent(profileId) + '/workshop', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({description:description.value.trim(), model, accept_workshop_terms:true}) });
       const body = await response.json();
       if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Publication impossible. Vérifiez le modèle et la connexion ETU.');
-      status.textContent = 'Profil publié dans le Workshop de votre compte ETU.';
+      publicationExists = true;
+      publish.textContent = updateLabel;
+      status.textContent = 'Profil ' + (updating ? 'mis à jour' : 'publié') + ' dans le Workshop de votre compte ETU.';
     } catch (error) { status.textContent = error.message; }
     finally { publish.disabled = false; }
   });

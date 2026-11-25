@@ -212,6 +212,27 @@ class WikiStore:
         with self.connect() as db:
             return [dict(r) for r in db.execute("SELECT path,max(created) AS updated FROM revisions WHERE path NOT IN (SELECT path FROM documents) GROUP BY path ORDER BY updated DESC LIMIT 200")]
 
+    def clear(self):
+        """Permanently remove Wiki documents and their local history/index."""
+        with self.lock:
+            for directory, folders, files in os.walk(self.root, followlinks=False):
+                folders[:] = [name for name in folders if not (Path(directory) / name).is_symlink()]
+                for filename in files:
+                    target = Path(directory) / filename
+                    if target.suffix.casefold() == ".md":
+                        target.unlink(missing_ok=True)
+            with self.connect() as db:
+                db.execute("DELETE FROM documents")
+                db.execute("DELETE FROM chunks")
+                db.execute("DELETE FROM links")
+                db.execute("DELETE FROM revisions")
+                db.execute("DELETE FROM events")
+                db.execute("DELETE FROM jobs")
+                if self.fts:
+                    db.execute("DELETE FROM search")
+            self._file_stats.clear()
+            self._last_scan = 0
+
     def restore(self, name, revision, expected_hash):
         with self.connect() as db:
             row = db.execute("SELECT content FROM revisions WHERE id=? AND path=?", (revision, name)).fetchone()

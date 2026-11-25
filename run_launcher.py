@@ -129,6 +129,27 @@ def start_server(mode: str = "local") -> subprocess.Popen:
     return process
 
 
+def start_companion() -> bool:
+    """Start the desktop process when its optional dependencies are installed."""
+    project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not project_python.is_file() and sys.prefix == sys.base_prefix:
+        return False
+    python = str(project_python) if project_python.is_file() else sys.executable
+    try:
+        check = subprocess.run(
+            [python, "-c", "import importlib.util,sys; sys.exit(not all(importlib.util.find_spec(m) for m in ('webview', 'pynput')))"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+        )
+        if check.returncode:
+            return False
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        subprocess.Popen([python, str(ROOT_DIR / "companion.py")], cwd=str(ROOT_DIR),
+                         stdin=subprocess.DEVNULL, creationflags=flags, start_new_session=True)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Démarre ETU-AI avec un profil réseau explicite.")
     parser.add_argument("--mode", choices=LAUNCH_MODES, help="local (défaut), normal ou server")
@@ -153,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             running_mode = None
         if running_mode == mode:
             print("[OK] ETU-AI est déjà lancé dans ce mode. Ouverture du navigateur.")
+            start_companion()
             webbrowser.open(SERVER_URL)
             return 0
         print(f"[!] ETU-AI répond déjà en mode {running_mode or 'inconnu'} ; arrêt manuel requis avant de passer en mode {mode}.")
@@ -170,6 +192,8 @@ def main(argv: list[str] | None = None) -> int:
         print("[+] Attente de la disponibilité de l'interface...")
         if check_server_ready(SERVER_URL, timeout=20):
             print(f"[OK] Serveur prêt ! Ouverture du navigateur sur {SERVER_URL}")
+            if not start_companion():
+                print("[i] Fenêtre compagnon indisponible : installez requirements-desktop.txt dans le venv.")
             if mode == "server":
                 lan_ips = sorted({
                     address[4][0]

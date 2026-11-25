@@ -299,7 +299,7 @@ class RemoteClient:
             permissions = [SCOPES[s] for s in pair["scopes"] if SCOPES[s]]
             session = {"pair_id": pair["pair_id"], "origin": "https://etu-aix.alwaysdata.net", "permissions": permissions, "expires_at": self.identity.clock() + 130, "context": {}}
             self.identity.sessions[self.tool_key] = session
-            catalog = [{"name": name} for name, permission in [("profile.group", "etu.profile.group"), ("schedule.read", "etu.schedule.read"), ("schedule.create", "etu.schedule.write"), ("friends.list", "etu.schedule.write"), ("schedule.share", "etu.schedule.write")] if permission in permissions]
+            catalog = [{"name": name} for name, permission in [("profile.group", "etu.profile.group"), ("schedule.read", "etu.schedule.read"), ("outlets.read", "etu.schedule.read"), ("schedule.create", "etu.schedule.write"), ("friends.list", "etu.schedule.write"), ("schedule.share", "etu.schedule.write")] if permission in permissions]
             if catalog:
                 tool_relay.register(self.identity, self.tool_key, session, catalog)
             else:

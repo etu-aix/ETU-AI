@@ -15,6 +15,7 @@ from integration.ephemeral import selected_profile_public, selected_model, selec
 
 router = APIRouter()
 LOCAL_ORIGINS = {f"http://{host}:{port}" for host in ("localhost", "127.0.0.1", "[::1]") for port in (8901, 8900)}
+LOCAL_UI_ORIGINS = {f"http://{host}:8900" for host in ("localhost", "127.0.0.1", "[::1]")}
 CHAT_SCHEMA = {'type': 'object',
  'additionalProperties': False,
  'required': ['message', 'edits'],
@@ -154,9 +155,14 @@ def auth(request):
 
 def admin(request):
     value = request.cookies.get("etu_local_admin", "")
-    if request.headers.get("origin") not in LOCAL_ORIGINS | {None} or request.headers.get("sec-fetch-site") == "cross-site" or not secrets.compare_digest(value, bridge.admin_token):
+    origin = request.headers.get("origin")
+    fetch_site = request.headers.get("sec-fetch-site")
+    local_origin = origin in LOCAL_UI_ORIGINS
+    same_origin_fetch = fetch_site == "same-origin" and origin in LOCAL_UI_ORIGINS | {None}
+    has_local_cookie = secrets.compare_digest(value, bridge.admin_token)
+    if origin not in LOCAL_UI_ORIGINS | {None} or fetch_site == "cross-site" or not (has_local_cookie or local_origin or same_origin_fetch):
         raise HTTPException(403, "Autorisation depuis l'interface locale requise")
-    if request.method != "GET" and request.headers.get("origin") not in LOCAL_ORIGINS:
+    if request.method != "GET" and not (local_origin or same_origin_fetch):
         raise HTTPException(403, "Origine locale requise")
 
 

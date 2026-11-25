@@ -145,23 +145,25 @@ def upstream(target, payload):
         return target["base_url"] + "/chat/completions", headers, body
     try:
         key = get_api_key(target["provider"])
-    except Exception as exc:
-        raise HTTPException(503, "Clé du modèle sélectionné inaccessible") from exc
-    if not key:
-        raise HTTPException(503, "Clé du modèle sélectionné manquante")
+    except Exception:
+        key = None
     system = "\n\n".join(message["content"] for message in body["messages"] if message["role"] == "system")
     messages = [message for message in body["messages"] if message["role"] != "system"]
     if target["type"] == "anthropic":
-        headers.update({"x-api-key": key, "anthropic-version": "2023-06-01"})
+        headers["anthropic-version"] = "2023-06-01"
+        if key:
+            headers["x-api-key"] = key
         messages = [{**message, "content": provider_content(message["content"], "anthropic")} for message in messages]
         body = {"model": target["model"], "system": system, "messages": messages, "stream": body["stream"], "max_tokens": body["max_tokens"], "temperature": body["temperature"]}
         return target["base_url"] + "/v1/messages", headers, body
     if target["type"] == "gemini":
-        headers["x-goog-api-key"] = key
+        if key:
+            headers["x-goog-api-key"] = key
         body = {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "model" if message["role"] == "assistant" else "user", "parts": provider_content(message["content"], "gemini")} for message in messages], "generationConfig": {"temperature": body["temperature"], "maxOutputTokens": body["max_tokens"]}}
         method = "streamGenerateContent?alt=sse" if payload["stream"] else "generateContent"
         return target["base_url"] + "/v1beta/models/" + quote(target["model"], safe="") + ":" + method, headers, body
-    headers["Authorization"] = "Bearer " + key
+    if key:
+        headers["Authorization"] = "Bearer " + key
     # Match the main ETU-AI chat's compatible-provider payload. In particular,
     # newer OpenAI models reject the legacy max_tokens parameter.
     if target["provider"] in {"openai", "openai-compatible"}:

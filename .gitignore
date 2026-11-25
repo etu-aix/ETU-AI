@@ -1,5 +1,6 @@
 models/
 .env
+.tmp/
 .env.*
 .venv/
 state.json

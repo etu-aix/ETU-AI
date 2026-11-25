@@ -43,6 +43,12 @@ def router_for(service):
     def configure(patch: dict):
         return handle(lambda: service.configure(patch))
 
+    @router.delete("/documents")
+    def clear_documents():
+        service.queue.interrupt()
+        service.store.clear()
+        return {"deleted": True}
+
     @router.get("/documents")
     def documents(q: str = Query(default="", max_length=200)):
         service.sync()

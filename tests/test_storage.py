@@ -54,6 +54,15 @@ class TestStorageManager(unittest.TestCase):
         self.assertEqual(messages[0]["content"], "Bonjour !")
         self.assertEqual(messages[1]["role"], "assistant")
 
+    def test_schedule_widget_events_survive_conversation_reload(self):
+        conversation_id = self.storage.create_conversation("EDT")
+        event = {"title": "Autonomie libre", "start": "2026-11-18T08:15:00+01:00", "end": "2026-11-18T12:15:00+01:00", "location": "Salle B204", "color": "#7f7fff", "etu_origin": "http://localhost:8888"}
+        self.storage.add_message(conversation_id, "assistant", "Tu as autonomie libre.", tool_calls=[{"function": {"name": "etu_schedule_read"}}, {"etu_schedule_events": [event]}])
+
+        reopened = StorageManager(db_path=self.db_path)
+        message = reopened.get_messages(conversation_id)[0]
+        self.assertEqual(message["tool_calls"][1]["etu_schedule_events"], [event])
+
     def test_settings(self):
         self.storage.set_setting("pairing_token", "secret_token_123")
         token = self.storage.get_setting("pairing_token")

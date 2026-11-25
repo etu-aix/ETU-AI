@@ -103,6 +103,16 @@ class RemoteSecurityTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(self.wire.messages[-1]['error']['code'],{'PERMISSION_DENIED','INVALID_MESSAGE'})
             self.assertFalse(self.identity.sessions)
 
+    async def test_remote_timetable_read_scope_registers_outlet_map_tool(self):
+        scopes = ['ai.chat', 'timetable.read']
+        self.client.save({'pair_id': self.pair, 'scopes': scopes})
+        await self.client.receive({'type': 'device.authenticated', 'pair_id': self.pair, 'scopes': scopes})
+        from integration.tool_relay import tool_relay
+        names = [item['function']['name'] for item in tool_relay.tools(self.client.tool_key)]
+        self.assertIn('etu_schedule_read', names)
+        self.assertIn('etu_outlets_map_read', names)
+        self.assertNotIn('etu_schedule_create', names)
+
     async def test_each_generation_has_separate_context_and_cancellation_cleans_its_session(self):
         entered=asyncio.Event(); release=asyncio.Event(); snapshots=[]
         async def generate(body,request):

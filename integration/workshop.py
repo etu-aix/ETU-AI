@@ -70,7 +70,7 @@ async def publish_profile(profile_id: str, body: Publication, request: Request):
     payload.update(source_id=profile_id, description=body.description.strip(),
                    model=body.model.model_dump() if body.model else None, accept_workshop_terms=True)
     result = await remote.publish_profile(payload)
-    storage.set_setting("workshop.publication." + profile_id, body.model_dump())
+    storage.set_setting("workshop.publication." + profile_id, {**body.model_dump(), "published": True})
     return result
 
 
@@ -102,7 +102,7 @@ def import_profile(body: ImportProfile, request: Request):
         if match:
             selected_model = match.get("id")
     profile = storage.save_profile(name, avatar, instructions, selected_model, profile_id)
-    storage.set_setting("workshop.publication." + profile_id, {"description": body.description, "model": body.model.model_dump() if body.model else None})
+    storage.set_setting("workshop.publication." + profile_id, {"description": body.description, "model": body.model.model_dump() if body.model else None, "published": False})
     return {"profile": profile, "download_task_id": task_id}
 
 

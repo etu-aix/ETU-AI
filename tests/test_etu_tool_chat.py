@@ -44,6 +44,37 @@ class ChatToolTest(unittest.IsolatedAsyncioTestCase):
             synthesis = json.loads(requests[1].content)
             self.assertEqual(json.loads(synthesis['messages'][-1]['content'])['data']['group'], 'Group1')
 
+    async def test_chat_can_read_outlet_map_through_the_browser_relay(self):
+        bridge = Bridge()
+        bridge.sessions['session'] = {'pair_id':'pair', 'origin':'http://localhost:8888', 'permissions':['etu.schedule.read'], 'expires_at':bridge.clock()+1800}
+        relay = ToolRelay()
+        relay.register(bridge, 'session', bridge.sessions['session'], [{'name':'outlets.read'}])
+        async def browser():
+            for _ in range(200):
+                pending = relay.poll('session')
+                if pending:
+                    self.assertEqual(pending[0]['arguments'], {'query':'A-204', 'has_outlets':True})
+                    relay.result('session', pending[0]['request_id'], {'success':True, 'data':{'rooms':{'A': [{'salle_label':'A-204','outlets':'Oui'}]}, 'map_url':'http://localhost:8888/outletsmap'}})
+                    return
+                await asyncio.sleep(.01)
+            raise AssertionError('No outlet map request arrived')
+        tool_lines = [b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tool-map","function":{"name":"etu_outlets_map_read","arguments":"{\\"query\\":\\"A-204\\",\\"has_outlets\\":true}"}}]}}]}\n\n', b'data: [DONE]\n\n']
+        answer_lines = [b'data: {"choices":[{"delta":{"content":"La salle A-204 dispose de prises."}}]}\n\n', b'data: [DONE]\n\n']
+        with tempfile.TemporaryDirectory() as directory:
+            storage = StorageManager(Path(directory)/'chat.db')
+            conversation = storage.create_conversation('Carte des prises')
+            with patch('chat.sse_handler.tool_relay', relay), mock_sse([tool_lines, answer_lines]) as requests:
+                browser_task = asyncio.create_task(browser())
+                events = [json.loads(event.split('data: ',1)[1]) async for event in ChatStreamHandler(storage=storage).stream_chat(conversation, 'Où trouver une salle avec prises ?')]
+                await browser_task
+            payload = json.loads(requests[0].content)
+            self.assertEqual(payload['tools'][0]['function']['name'], 'etu_outlets_map_read')
+            self.assertIn('etu_outlets_map_read', payload['messages'][0]['content'])
+            result = next(event['result'] for event in events if event['event']=='tool_result')
+            self.assertEqual(result['data']['rooms']['A'][0]['salle_label'], 'A-204')
+            synthesis = json.loads(requests[1].content)
+            self.assertIn('A-204', json.loads(synthesis['messages'][-1]['content'])['data']['rooms']['A'][0]['salle_label'])
+
     async def test_etu_tools_are_not_offered_without_remote_sharing_consent(self):
         with tempfile.TemporaryDirectory() as directory:
             storage = StorageManager(Path(directory)/'chat.db')

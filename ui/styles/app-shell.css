@@ -595,7 +595,33 @@ header {
   font-size: 0.95rem;
   line-height: 1.55;
   width: 100%;
+  user-select: text;
+  -webkit-user-select: text;
 }
+
+body.is-companion-window #chat-messages .message,
+body.is-companion-window #chat-messages .message * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+.chat-code-block { margin: 1em 0; overflow: hidden; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-primary); }
+.chat-code-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 4px 8px 4px 12px; color: var(--text-muted); font-size: .78rem; }
+.chat-code-actions { display: flex; gap: 4px; margin-left: auto; }
+.chat-code-actions button { display: inline-grid; place-items: center; min-width: 34px; min-height: 30px; padding: 4px 9px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-main); font: inherit; cursor: pointer; }
+.chat-code-actions [data-code-action="copy"] { order: 2; }
+.chat-code-actions [data-code-action="copy"] svg { width: 16px; height: 16px; }
+.assistant-message-actions { opacity: 0; transition: opacity .15s ease; }
+.message.assistant:hover .assistant-message-actions,
+.message.assistant:focus-within .assistant-message-actions { opacity: 1; }
+.message.assistant .assistant-message-actions:focus-within { opacity: 1; }
+.chat-code-actions button:hover, .chat-code-actions button[aria-pressed="true"] { background: var(--bg-tertiary); border-color: var(--border-color); }
+.chat-code-actions button:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
+.chat-code-block pre { margin: 0; overflow: auto; padding: 12px; }
+.chat-code-block.show-preview pre { display: none; }
+.chat-code-preview { display: none; min-height: 100px; padding: 16px; background: #fff; }
+.chat-code-block.show-preview .chat-code-preview { display: grid; place-items: center; }
+.chat-code-preview img { display: block; max-width: 100%; max-height: 360px; object-fit: contain; }
+body.is-companion-window #chat-messages { scroll-behavior: auto; -webkit-mask-image: none; mask-image: none; }
 
 .message.user .message-bubble {
   background: #1f6feb;

@@ -6,8 +6,10 @@ downloaded manifest and of the per-installation bridge identity.
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import tempfile
 from urllib.parse import urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -39,7 +41,28 @@ def latest_app_release() -> dict:
     return {"status": "available", "version": data["tag_name"][:128], "url": RELEASES_URL}
 
 
-def verify_release(manifest: dict, package: Path, public_key: bytes, *, expected_version: str) -> dict:
+def installed_version() -> str | None:
+    try:
+        value = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="utf-8").strip()
+        return value if re.fullmatch(r"v?\d+(?:\.\d+){1,3}", value) else None
+    except OSError:
+        return None
+
+
+def is_newer_version(remote: str, installed: str | None) -> bool:
+    def parts(value):
+        if not value or not re.fullmatch(r"v?\d+(?:\.\d+){1,3}", value):
+            return None
+        numbers = tuple(map(int, value.lstrip("v").split(".")))
+        return numbers + (0,) * (4 - len(numbers))
+    latest, current = parts(remote), parts(installed)
+    return latest is not None and current is not None and latest > current
+
+
+def verify_release_manifest(manifest: dict, public_key: bytes, *, expected_version: str) -> dict:
+    """Authenticate the URL and hash before making any network request."""
+    if not isinstance(manifest, dict):
+        raise ValueError("Manifest signé incomplet")
     required = {"version", "url", "sha256", "signature"}
     if set(manifest) != required or any(not isinstance(manifest[k], str) for k in required):
         raise ValueError("Manifest signé incomplet")
@@ -57,6 +80,11 @@ def verify_release(manifest: dict, package: Path, public_key: bytes, *, expected
         Ed25519PublicKey.from_public_bytes(public_key).verify(signature, signed)
     except (ValueError, InvalidSignature) as exc:
         raise ValueError("Signature de mise à jour invalide") from exc
+    return payload
+
+
+def verify_release(manifest: dict, package: Path, public_key: bytes, *, expected_version: str) -> dict:
+    payload = verify_release_manifest(manifest, public_key, expected_version=expected_version)
     checksum = hashlib.sha256()
     with Path(package).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
@@ -64,3 +92,33 @@ def verify_release(manifest: dict, package: Path, public_key: bytes, *, expected
     if checksum.hexdigest() != payload["sha256"]:
         raise ValueError("Intégrité du paquet invalide")
     return payload
+
+
+def download_verified_release(manifest: dict, destination: Path, public_key: bytes, *, expected_version: str,
+                              max_bytes: int = 2 * 1024 * 1024 * 1024) -> dict:
+    """Download to a temporary file, authenticate it, then atomically publish it."""
+    payload = verify_release_manifest(manifest, public_key, expected_version=expected_version)
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
+    try:
+        request = Request(payload["url"], headers={"User-Agent": "ETU-AI"})
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".etu-update-", delete=False) as output:
+            temp_path = Path(output.name)
+            with urlopen(request, timeout=30) as response:
+                total = 0
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    total += len(block)
+                    if total > max_bytes:
+                        raise ValueError("Paquet de mise à jour trop volumineux")
+                    output.write(block)
+        verify_release(manifest, temp_path, public_key, expected_version=expected_version)
+        os.replace(temp_path, destination)
+        temp_path = None
+        return payload
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)

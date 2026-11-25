@@ -8,10 +8,16 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.bridge = Bridge()
         self.bridge.sessions['session-a'] = {'pair_id':'pair-a', 'origin':'http://localhost:8888', 'permissions':['etu.profile.group','etu.schedule.read'], 'expires_at':self.bridge.clock()+1800}
         self.relay = ToolRelay()
-        self.relay.register(self.bridge,'session-a',self.bridge.sessions['session-a'],[{'name':'profile.group'}, {'name':'schedule.read'}])
+        self.relay.register(self.bridge,'session-a',self.bridge.sessions['session-a'],[{'name':'profile.group'}, {'name':'schedule.read'}, {'name':'outlets.read'}])
     async def test_real_round_trip_does_not_contact_server_or_use_tokens(self):
         key=self.relay.binding()
-        self.assertEqual([v['function']['name'] for v in self.relay.tools(key)],['etu_profile_group','etu_schedule_read'])
+        tools = self.relay.tools(key)
+        self.assertEqual([v['function']['name'] for v in tools],['etu_profile_group','etu_schedule_read','etu_outlets_map_read'])
+        outlet_schema = tools[2]['function']['parameters']
+        self.assertEqual(outlet_schema['required'], ['query', 'group', 'room', 'id_text', 'has_outlets'])
+        self.assertIn('query', outlet_schema['properties'])
+        self.assertEqual(outlet_schema['properties']['query']['type'], ['string', 'null'])
+        self.assertEqual(outlet_schema['properties']['has_outlets']['type'], ['boolean', 'null'])
         task=asyncio.create_task(self.relay.call(key,'etu_schedule_read',{'from':'2026-10-04','to':'2026-10-05'}))
         await asyncio.sleep(0)
         pending=self.relay.poll(key)[0]
@@ -19,6 +25,15 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
         self.relay.result(key,pending['request_id'],{'success':True,'data':{'events':[{'title':'Real course'}]}})
         self.assertEqual((await task)['data']['events'][0]['title'],'Real course')
         self.assertEqual(self.relay.poll(key),[])
+    async def test_outlet_map_filters_are_relayed_as_optional_arguments(self):
+        key = self.relay.binding()
+        task = asyncio.create_task(self.relay.call(key, 'etu_outlets_map_read', {'query': 'A-204', 'has_outlets': True}))
+        await asyncio.sleep(0)
+        pending = self.relay.poll(key)[0]
+        self.assertEqual(pending['tool'], 'outlets.read')
+        self.assertEqual(pending['arguments'], {'query': 'A-204', 'has_outlets': True})
+        self.relay.result(key, pending['request_id'], {'success': True, 'data': {'rooms': {}}})
+        self.assertEqual((await task)['data']['rooms'], {})
     async def test_write_unknown_permission_and_extra_actor_are_denied(self):
         for tool,args in [('friends.request',{}),('etu_schedule_read',{'from':'2026-10-04','to':'2026-10-05','user_id':2})]:
             self.assertFalse((await self.relay.call('session-a',tool,args))['success'])

@@ -37,6 +37,7 @@ if str(AI_SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(AI_SERVER_DIR))
 
 from chat.sse_handler import ChatStreamHandler
+from chat.provider_usage import get_rate_limit
 from chat import chatgpt_auth
 from chat.attachments import prepare_attachments, load_attachments
 from configs import init_file_logger
@@ -61,7 +62,8 @@ from wiki.api import router_for as wiki_router
 from tools.executor import ToolExecutor
 from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
 from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
-from integration.updates import latest_app_release
+from integration.updates import latest_app_release, installed_version, is_newer_version
+from companion import SHORTCUTS, DEFAULT_SHORTCUT
 
 from setup_wizard import wizard_manager
 
@@ -160,6 +162,7 @@ async def reject_requests_while_sleeping(request: Request, call_next):
         if state != "awake" and request.url.path not in {
             "/api/power/state", "/api/power/wake", "/api/power/restart", "/api/power/shutdown",
             "/api/settings/beacon", "/api/settings/beacon/context",
+            "/v1/status",
         }:
             return JSONResponse(status_code=503, content={"detail": "Désolé je suis en veille"})
     return await call_next(request)
@@ -277,13 +280,97 @@ def get_launch_mode():
     }
 
 
+class CompanionShortcutRequest(BaseModel):
+    shortcut: str
+
+
+@app.get("/api/settings/companion")
+def get_companion_settings(request: Request):
+    require_local_admin(request)
+    shortcut = storage.get_setting("companion_shortcut", DEFAULT_SHORTCUT)
+    return {"shortcut": shortcut if shortcut in SHORTCUTS else DEFAULT_SHORTCUT}
+
+
+@app.put("/api/settings/companion")
+def set_companion_settings(request: Request, body: CompanionShortcutRequest):
+    require_local_admin(request)
+    if body.shortcut not in SHORTCUTS:
+        raise HTTPException(status_code=422, detail="Raccourci non pris en charge.")
+    storage.set_setting("companion_shortcut", body.shortcut)
+    return {"shortcut": body.shortcut}
+
+
 @app.get("/api/updates/app")
 def get_app_release(request: Request):
     require_local_admin(request)
     try:
-        return latest_app_release()
+        result = latest_app_release()
+        current = installed_version()
+        result["installed_version"] = current
+        result["update_available"] = is_newer_version(result.get("version", ""), current)
+        result["choice"] = storage.get_setting("app_update_choice_" + result.get("version", ""), "")
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+class UpdateChoiceRequest(BaseModel):
+    version: str = Field(pattern=r"^v?\d+(?:\.\d+){1,3}$", max_length=128)
+    choice: Literal["open", "later"]
+
+
+@app.put("/api/updates/app/choice")
+def set_update_choice(request: Request, body: UpdateChoiceRequest):
+    require_local_admin(request)
+    storage.set_setting("app_update_choice_" + body.version, body.choice)
+    return {"version": body.version, "choice": body.choice}
+
+
+def _startup_command() -> str:
+    python = BASE_DIR / ".venv" / "Scripts" / "pythonw.exe"
+    if not python.is_file():
+        raise ValueError("Environnement Windows introuvable. Installez ETU-AI avant d’activer cette option.")
+    return subprocess.list2cmdline([str(python), str(BASE_DIR / "run_launcher.py"), "--mode", "local"])
+
+
+@app.get("/api/settings/startup")
+def get_startup_setting(request: Request):
+    require_local_admin(request)
+    if os.name != "nt":
+        return {"supported": False, "enabled": False}
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+            value, _ = winreg.QueryValueEx(key, "ETU-AI")
+        enabled = value == _startup_command()
+    except (FileNotFoundError, ValueError):
+        enabled = False
+    return {"supported": True, "enabled": enabled}
+
+
+class StartupRequest(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/settings/startup")
+def set_startup_setting(request: Request, body: StartupRequest):
+    require_local_admin(request)
+    if os.name != "nt":
+        raise HTTPException(status_code=400, detail="Disponible uniquement sous Windows.")
+    import winreg
+    try:
+        command = _startup_command() if body.enabled else None
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
+            if body.enabled:
+                winreg.SetValueEx(key, "ETU-AI", 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, "ETU-AI")
+                except FileNotFoundError:
+                    pass
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"supported": True, "enabled": body.enabled}
 
 
 @app.get("/api/power/state")
@@ -694,7 +781,7 @@ def list_conversations():
 @app.post("/api/conversations/{conv_id}/etu-confirmations/{token}")
 async def confirm_etu_action(conv_id: str, token: str, body: dict[str, Any]):
     from chat.confirmations import decide
-    if not storage.get_conversation(conv_id) or not decide(token, conv_id, body.get("approved") is True, body.get("friend_id")):
+    if not storage.get_conversation(conv_id) or not decide(token, conv_id, body.get("approved") is True, body.get("friend_ids", body.get("friend_id")), body.get("event")):
         raise HTTPException(404, "Confirmation expirée")
     return {"ok": True}
 
@@ -805,13 +892,14 @@ def get_configured_api_models() -> list[dict[str, Any]]:
             selected_models.insert(0, preferred_model)
         if not selected_models:
             continue
-        try:
-            uses_chatgpt_account = config.get("type") == "chatgpt" or provider_id == "chatgpt"
-            has_key = bool(chatgpt_auth.status()["active"]) if uses_chatgpt_account else bool(get_api_key(provider_id))
-        except Exception:
-            has_key = False
-        if not has_key:
-            continue
+        uses_chatgpt_account = config.get("type") == "chatgpt" or provider_id == "chatgpt"
+        if uses_chatgpt_account:
+            try:
+                has_account = bool(chatgpt_auth.status()["active"])
+            except Exception:
+                has_account = False
+            if not has_account:
+                continue
         preset = PROVIDER_PRESETS.get(provider_id, {})
         for model_name in selected_models:
             model_entry = {
@@ -1409,7 +1497,7 @@ def select_model(req: ModelSelectRequest):
             raise HTTPException(status_code=404, detail="Modèle API non configuré")
         try:
             uses_chatgpt_account = config.get("type") == "chatgpt" or req.provider == "chatgpt"
-            if not (chatgpt_auth.status()["active"] if uses_chatgpt_account else get_api_key(req.provider)):
+            if uses_chatgpt_account and not chatgpt_auth.status()["active"]:
                 raise HTTPException(status_code=400, detail="Connectez le compte ou ajoutez une clé API pour ce fournisseur")
         except HTTPException:
             raise
@@ -1625,6 +1713,11 @@ def get_provider_settings(provider: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Fournisseur inconnu.")
     config = configs.get(provider, {})
     preset = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["custom"])
+    try:
+        config_url = urlsplit((config.get("base_url") or preset["base_url"]).strip())
+        local_no_auth = preset["type"] == "openai" and config_url.scheme == "http" and config_url.hostname in {"127.0.0.1", "localhost", "::1"}
+    except ValueError:
+        local_no_auth = False
     auth_method = config.get("auth_method", "api_key") if provider == "openai" else (config.get("auth_method", "account") if provider == "chatgpt" else None)
     try:
         has_key = (bool(chatgpt_auth.status()["active"]) if auth_method == "account" else bool(get_api_key(provider))) if provider in {"openai", "chatgpt"} else bool(get_api_key(provider))
@@ -1649,8 +1742,64 @@ def get_provider_settings(provider: Optional[str] = None):
         "has_api_key": has_key,
         "has_openai_api_key": has_openai_api_key,
         "auth_method": auth_method,
+        "local_no_auth": local_no_auth,
+        "auth_optional": preset["type"] != "chatgpt" and auth_method != "account",
         "api_key": "",
     }
+
+
+@app.get("/api/provider/usage")
+async def get_active_provider_usage(request: Request):
+    """Return a provider-reported remaining quota when one is available."""
+    require_local_admin(request)
+    provider_state = storage.get_setting("api_providers", {}) or {}
+    provider_id = provider_state.get("active_provider")
+    if not provider_id:
+        return {"available": False}
+    # First use the provider's cached response headers, which are scoped to the
+    # actual model request and expire when the reported window resets.
+    cached_limit = get_rate_limit(provider_id)
+    if cached_limit and provider_id != "openrouter":
+        return cached_limit
+    if provider_id != "openrouter":
+        return cached_limit or {"available": False}
+    try:
+        api_key = get_api_key("openrouter")
+    except Exception:
+        api_key = None
+    if not api_key:
+        return cached_limit or {"available": False}
+    try:
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+            response = await client.get(
+                "https://openrouter.ai/api/v1/key",
+                headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            candidate = payload.get("data", {}) if isinstance(payload, dict) else {}
+            data = candidate if isinstance(candidate, dict) else {}
+        limit = data.get("limit")
+        remaining = data.get("limit_remaining")
+        if isinstance(limit, (int, float)) and not isinstance(limit, bool) and isinstance(remaining, (int, float)) and not isinstance(remaining, bool) and limit > 0 and remaining >= 0:
+            return {"available": True, "kind": "quota", "limit": limit, "remaining": min(remaining, limit), "currency": "USD"}
+        # Management keys can read account credits; ordinary keys cannot.
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+            response = await client.get(
+                "https://openrouter.ai/api/v1/credits",
+                headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+            candidate = payload.get("data", {}) if isinstance(payload, dict) else {}
+            credits = candidate if isinstance(candidate, dict) else {}
+        total = credits.get("total_credits")
+        spent = credits.get("total_usage")
+        if isinstance(total, (int, float)) and not isinstance(total, bool) and isinstance(spent, (int, float)) and not isinstance(spent, bool):
+            return {"available": True, "kind": "balance", "limit": total, "remaining": max(0, total - spent), "currency": "USD"}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return cached_limit or {"available": False}
+    return cached_limit or {"available": False}
 
 
 @app.get("/api/settings/provider/chatgpt")
@@ -1687,7 +1836,46 @@ async def chatgpt_connection_callback(request: Request):
         logger.exception("ChatGPT sign-in failed")
         chatgpt_auth.fail(request.query_params.get("state", ""), "La connexion ChatGPT a échoué. Réessayez depuis ETU-AI.")
         message = "La connexion a échoué. Vous pouvez revenir à ETU-AI et réessayer."
-    return HTMLResponse(f"<!doctype html><html lang='fr'><meta charset='utf-8'><title>ETU-AI</title><body><main><h1>ETU-AI</h1><p>{message}</p></main></body></html>")
+    success = "terminée" in message
+    title = "Connexion réussie" if success else ("Connexion annulée" if "annulée" in message else "Connexion interrompue")
+    state = "success" if success else "neutral"
+    return HTMLResponse(f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{title} · ETU-AI</title>
+  <style>
+    :root {{ color-scheme: dark light; --page: #09090b; --panel: #121215; --text: #f4f4f5; --muted: #a1a1aa; --border: rgba(255,255,255,.1); --accent: #38bdf8; --success: #4ade80; }}
+    @media (prefers-color-scheme: light) {{ :root {{ --page: #fcfcfd; --panel: #fff; --text: #18181b; --muted: #62626c; --border: rgba(0,0,0,.1); --accent: #0071e3; --success: #15803d; }} }}
+    * {{ box-sizing: border-box; }}
+    body {{ min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 52%), var(--page); color: var(--text); font: 15px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    main {{ width: min(100%, 430px); padding: clamp(28px, 7vw, 44px); border: 1px solid var(--border); border-radius: 22px; background: color-mix(in srgb, var(--panel) 92%, transparent); box-shadow: 0 24px 80px rgba(0,0,0,.18); text-align: center; }}
+    .brand {{ display: inline-flex; align-items: center; gap: 10px; margin-bottom: 36px; color: var(--text); font-size: .9rem; font-weight: 650; letter-spacing: -.02em; }}
+    .brand img {{ width: 30px; height: 30px; object-fit: contain; }}
+    .status {{ display: grid; place-items: center; width: 54px; height: 54px; margin: 0 auto 20px; border: 1px solid color-mix(in srgb, var(--success) 30%, var(--border)); border-radius: 18px; background: color-mix(in srgb, var(--success) 10%, transparent); color: var(--success); font-size: 25px; }}
+    [data-state="neutral"] .status {{ border-color: var(--border); background: var(--page); color: var(--muted); }}
+    h1 {{ margin: 0; font-size: clamp(1.45rem, 5vw, 1.8rem); font-weight: 650; letter-spacing: -.045em; line-height: 1.2; }}
+    p {{ margin: 12px 0 28px; color: var(--muted); }}
+    a {{ display: inline-flex; min-height: 44px; align-items: center; justify-content: center; padding: 0 18px; border-radius: 11px; background: var(--text); color: var(--page); font-weight: 600; text-decoration: none; transition: opacity .16s ease, transform .16s ease; }}
+    a:hover {{ opacity: .88; transform: translateY(-1px); }}
+    a:focus-visible {{ outline: 3px solid var(--accent); outline-offset: 3px; }}
+    .footnote {{ display: block; margin-top: 22px; color: var(--muted); font-size: .78rem; }}
+    @media (prefers-reduced-motion: reduce) {{ *, *::before, *::after {{ scroll-behavior: auto !important; transition-duration: .01ms !important; }} }}
+  </style>
+</head>
+<body>
+  <main data-state="{state}">
+    <div class="brand"><img src="/static/logo_etu_ai.svg" alt=""><span>ETU-AI</span></div>
+    <div class="status" aria-hidden="true">{"✓" if success else "·"}</div>
+    <h1>{title}</h1>
+    <p>{message}</p>
+    <a href="/">Revenir à ETU-AI</a>
+    <span class="footnote">Vous pouvez fermer cet onglet une fois de retour dans l’application.</span>
+  </main>
+</body>
+</html>""")
 
 
 @app.put("/api/settings/provider/chatgpt/select")
@@ -1750,33 +1938,33 @@ async def list_provider_models(req: ProviderModelsRequest, origin: Optional[str]
     base_url = (req.base_url or saved.get("base_url") or preset["base_url"]).strip().rstrip("/")
     try:
         parsed = urlsplit(base_url)
-        local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-        valid_url = (parsed.scheme == "https" and bool(parsed.hostname)) or local_http
+        valid_url = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
     except ValueError:
         valid_url = False
         parsed = None
     if not valid_url or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise HTTPException(status_code=400, detail="L’URL du fournisseur doit utiliser HTTPS (sauf pour un serveur local).")
+        raise HTTPException(status_code=400, detail="Saisissez une URL HTTP ou HTTPS valide, sans identifiants, paramètres ni fragment.")
     api_key = (req.api_key or "").strip()
     if not api_key:
         try:
             api_key = get_api_key(req.provider) or ""
         except Exception:
             api_key = ""
-    if not api_key:
-        raise HTTPException(status_code=400, detail="Saisissez ou enregistrez la clé API avant de charger les modèles.")
-
     headers = {"Accept": "application/json", "User-Agent": "ETU-AI/1.0"}
     endpoint = ""
     if preset["type"] == "anthropic":
         endpoint = f"{base_url}/v1/models?limit=1000"
-        headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+        headers["anthropic-version"] = "2023-06-01"
+        if api_key:
+            headers["x-api-key"] = api_key
     elif preset["type"] == "gemini":
         endpoint = f"{base_url}/v1beta/models?{urlencode({'pageSize': 1000})}"
-        headers["x-goog-api-key"] = api_key
+        if api_key:
+            headers["x-goog-api-key"] = api_key
     else:
         endpoint = f"{base_url}/models"
-        headers["Authorization"] = f"Bearer {api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
     try:
         def fetch_models():
             request = urllib.request.Request(endpoint, headers=headers, method="GET")
@@ -1852,13 +2040,12 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
     model = (req.model or "").strip() or preset["model"]
     try:
         parsed_url = urlsplit(base_url)
-        local_http = parsed_url.scheme == "http" and parsed_url.hostname in {"127.0.0.1", "localhost", "::1"}
-        secure_https = parsed_url.scheme == "https" and bool(parsed_url.hostname)
+        secure_https = parsed_url.scheme in {"http", "https"} and bool(parsed_url.hostname)
     except ValueError:
-        local_http = secure_https = False
+        secure_https = False
         parsed_url = None
-    if not (local_http or secure_https) or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
-        raise HTTPException(status_code=400, detail="L’URL doit utiliser HTTPS (sauf pour un serveur local).")
+    if not secure_https or parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
+        raise HTTPException(status_code=400, detail="Saisissez une URL HTTP ou HTTPS valide, sans identifiants, paramètres ni fragment.")
     if len(model) > 200:
         raise HTTPException(status_code=400, detail="Nom de modèle invalide.")
     key = (req.api_key or "").strip()
@@ -1881,8 +2068,8 @@ def update_provider_settings(req: ProviderSettingsRequest, origin: Optional[str]
         raise HTTPException(status_code=503, detail="Le coffre-fort système n’est pas disponible.") from exc
     if req.provider in {"openai", "chatgpt"}:
         has_key = bool(chatgpt_auth.status()["active"]) if req.auth_method == "account" else bool(get_api_key(req.provider))
-    if req.enabled and not has_key:
-        raise HTTPException(status_code=400, detail="Connectez le compte ou ajoutez une clé API avant d’activer le fournisseur.")
+    if req.enabled and req.provider in {"openai", "chatgpt"} and req.auth_method == "account" and not has_key:
+        raise HTTPException(status_code=400, detail="Connectez le compte ChatGPT avant d’activer le fournisseur.")
     if req.provider == "chatgpt" and req.enabled and not model:
         raise HTTPException(status_code=400, detail="Sélectionnez un modèle ChatGPT avant d'activer le fournisseur.")
     state = storage.get_setting("api_providers", {}) or {}

@@ -1,6 +1,6 @@
 /* Consent controls whether ETU tools may be used with third-party providers. */
 (() => {
-  const labels = {'etu.profile.group': 'Groupe', 'etu.schedule.read': 'Emploi du temps', 'etu.schedule.write': 'Modifier mon emploi du temps', 'etu.workspace.read': 'Workspace', 'etu.ai.models.read': 'Modèles ETU-AI', 'etu.ai.model.select': 'Changer le modèle ETU-AI'};
+  const labels = {'etu.profile.group': 'Groupe', 'etu.schedule.read': 'Emploi du temps et carte des prises', 'etu.schedule.write': 'Modifier mon emploi du temps', 'etu.workspace.read': 'Workspace', 'etu.ai.models.read': 'Modèles ETU-AI', 'etu.ai.model.select': 'Changer le modèle ETU-AI'};
   const configuration = document.getElementById('modal-configuration');
   const connection = document.getElementById('modal-etu-connection');
   const status = document.getElementById('etu-connection-status');

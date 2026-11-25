@@ -10,7 +10,7 @@ AI_SERVER = ROOT / "ai-server"
 sys.path.insert(0, str(AI_SERVER))
 
 import configs
-from run_launcher import configure_launch_environment, start_server
+from run_launcher import configure_launch_environment, start_server, start_companion
 
 
 class LaunchModeTests(unittest.TestCase):
@@ -56,6 +56,11 @@ class LaunchModeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 start_server('normal')
             launch.assert_not_called()
+
+    def test_companion_never_uses_system_python(self):
+        with patch('run_launcher.Path.is_file', return_value=False), patch('run_launcher.sys.prefix', 'system-python'), patch('run_launcher.sys.base_prefix', 'system-python'), patch('run_launcher.subprocess.run') as probe:
+            self.assertFalse(start_companion())
+            probe.assert_not_called()
 
 
 if __name__ == "__main__":
