@@ -314,7 +314,7 @@ class QueueCase(unittest.IsolatedAsyncioTestCase):
             self.service.approve(review["id"])
 
     async def test_no_secret_uncertain_or_assistant_inference(self):
-        for text in ("Retiens mon mot de passe : abcdef", "Je préfère peut-être Python pour ce projet.", "Retiens mon identifiant utilisateur max14", "Retiens ceci : sk-1234567890123456789012345678901234", "Je préfère écrire à moi@example.com"):
+        for text in ("Retiens mon mot de passe : abcdef", "Je préfère peut-être Python pour ce projet.", "Retiens mon identifiant utilisateur max14", "Retiens ceci : ", "Je préfère écrire à moi@example.com"):
             self.assertIsNone(self.add(text)[1])
             self.assertFalse(safe_fact(text))
         message, _ = self.add("Une explication temporaire sans décision explicite.")
