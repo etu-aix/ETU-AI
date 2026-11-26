@@ -27,7 +27,7 @@
       option.setAttribute('role', 'option');
       option.setAttribute('aria-selected', String(key === selectedModelKey));
       const isApi = model?.type === 'api';
-      const providerLogoIds = new Set(['openai','anthropic','gemini','mistral','openrouter','groq','together','deepseek','xai','cerebras','fireworks','perplexity','nvidia','sambanova','deepinfra','github-models']);
+      const providerLogoIds = new Set(['openai','anthropic','gemini','mistral','openrouter','groq','together','deepseek','xai','cerebras','fireworks','perplexity','nvidia','sambanova','deepinfra','github-models','maia-systems']);
       let badge = '';
       if (isApi) {
         const provider = model.provider || '';

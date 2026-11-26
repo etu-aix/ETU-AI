@@ -18,6 +18,8 @@ jobs:
         with:
           python-version: '3.12'
           architecture: x64
+      - name: Install build tools
+        run: python -m pip install pyinstaller
       - name: Prepare release files
         shell: pwsh
         env:
@@ -32,11 +34,56 @@ jobs:
           Copy-Item -Recurse "$env:pythonLocation" release-payload/python
           Set-Content -Encoding ascii release-payload/VERSION $env:RELEASE_VERSION
           "RELEASE_VERSION=$($env:RELEASE_VERSION.TrimStart('v'))" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build ETU-AI launcher
+        run: pyinstaller --onefile --noconsole --name ETU-AI --distpath release-payload --workpath .tmp/pyinstaller --specpath .tmp/pyinstaller run_launcher.py
+      - name: Check signing configuration
+        id: signing
+        env:
+          SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        shell: pwsh
+        run: |
+          if (($env:SIGNING_PFX -and -not $env:SIGNING_PASSWORD) -or (-not $env:SIGNING_PFX -and $env:SIGNING_PASSWORD)) { throw 'Configurez ensemble WINDOWS_SIGNING_PFX et WINDOWS_SIGNING_PASSWORD.' }
+          if ($env:SIGNING_PFX) { 'enabled=true' >> $env:GITHUB_OUTPUT } else { 'enabled=false' >> $env:GITHUB_OUTPUT }
+      - name: Sign application executable
+        env:
+          SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        if: ${{ steps.signing.outputs.enabled == 'true' }}
+        shell: pwsh
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'etu-aix-signing.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_PFX))
+          $sdkBin = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $signtool = Join-Path $sdkBin.FullName 'x64\signtool.exe'
+          if (-not (Test-Path $signtool)) { throw 'SignTool introuvable' }
+          & $signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $pfxPath /p $env:SIGNING_PASSWORD /d 'ETU-AI' release-payload/ETU-AI.exe
+          if ($LASTEXITCODE -ne 0) { throw 'La signature de ETU-AI.exe a échoué' }
+          & $signtool verify /pa /v release-payload/ETU-AI.exe
+          if ($LASTEXITCODE -ne 0) { throw 'La vérification de ETU-AI.exe a échoué' }
+          Remove-Item -LiteralPath $pfxPath -Force
       - name: Build setup
         shell: pwsh
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:RELEASE_VERSION" installer/setup.iss
           if ($LASTEXITCODE -ne 0) { throw 'Compilation impossible' }
+      - name: Sign setup
+        env:
+          SIGNING_PFX: ${{ secrets.WINDOWS_SIGNING_PFX }}
+          SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        if: ${{ steps.signing.outputs.enabled == 'true' }}
+        shell: pwsh
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'etu-aix-signing.pfx'
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_PFX))
+          $sdkBin = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          $signtool = Join-Path $sdkBin.FullName 'x64\signtool.exe'
+          $setup = Get-ChildItem installer/output/*.exe | Select-Object -First 1
+          & $signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $pfxPath /p $env:SIGNING_PASSWORD /d 'ETU-AI Setup' $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'La signature de setup.exe a échoué' }
+          & $signtool verify /pa /v $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'La vérification du setup a échoué' }
+          Remove-Item -LiteralPath $pfxPath -Force
       - uses: actions/upload-artifact@v4
         with:
           name: ETU-AI-Setup

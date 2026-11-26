@@ -17,7 +17,9 @@ import time
 import urllib.request
 import webbrowser
 
-ROOT_DIR = Path(__file__).resolve().parent
+# A frozen launcher lives beside the installed application files.  In source
+# mode, keep the existing script-relative behavior.
+ROOT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 SERVER_URL = "http://127.0.0.1:8900"
 BRIDGE_URL = "http://127.0.0.1:8901"
 LAUNCH_MODES = ("normal", "local", "server")

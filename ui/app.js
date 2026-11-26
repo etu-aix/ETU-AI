@@ -17,7 +17,7 @@ let assistantProfiles = [];
 let activeProfileId = "default";
 let preferredProfileId = "default";
 let pendingAvatarData = null;
-let profileAvatarFallback = "✦";
+let profileAvatarFallback = "etu-ai-default-profile";
 let currentContextLimit = null;
 let currentModelReady = null;
 let currentModelState = "unknown";
@@ -33,6 +33,8 @@ let activeChatStream = null;
 let chatViewVersion = 0;
 let appPowerState = "awake";
 let currentLaunchMode = "normal";
+let appUpdateActivity = null;
+let appUpdateCheckPromise = null;
 
 function formatProviderMoney(value, currency = "USD", maximumFractionDigits = 8) {
   const amount = Number(value);
@@ -513,7 +515,14 @@ document.addEventListener("DOMContentLoaded", () => {
       button.disabled = false;
     }
   });
-  document.getElementById("btn-settings-update")?.addEventListener("click", checkEngineUpdates);
+  document.getElementById("btn-settings-update")?.addEventListener("click", () => {
+    if (appUpdateActivity?.status === "available") {
+      showDownloadsView();
+      return;
+    }
+    checkAppUpdates();
+    checkEngineUpdates();
+  });
   document.querySelectorAll(".settings-nav-item").forEach((button) => {
     button.addEventListener("click", () => showSettingsView(button.dataset.settingsSection));
   });
@@ -850,9 +859,9 @@ async function initApiSettings() {
     settingsMessage.textContent = text;
     settingsMessage.dataset.state = state;
   };
-  const providerLabels = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral", openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek", xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity", nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models", "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé" };
+  const providerLabels = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral", openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek", xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity", nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models", "maia-systems": "MAIA Systems", "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé" };
   const providerMarks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
-  const providerSvg = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models"]);
+  const providerSvg = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models", "maia-systems"]);
   const setProviderMark = (element, id) => {
     element.replaceChildren();
     if (providerSvg.has(id)) {
@@ -1007,10 +1016,10 @@ async function initApiSettings() {
       openai: "OpenAI", chatgpt: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral",
       openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek",
       xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity",
-      nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models",
+      nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models", "maia-systems": "MAIA Systems",
       "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé",
     };
-    const marks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
+    const marks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "maia-systems": "MA", "openai-compatible": "AI", custom: "＋" };
     const card = document.getElementById("api-provider-brand");
     card.dataset.provider = id;
     setProviderMark(document.getElementById("api-provider-mark"), id);
@@ -2439,12 +2448,28 @@ function initModals() {
   });
 
   // Bouton Auto-Sélection dans la modale
+  const openModelsFolderButton = document.getElementById("btn-open-models-folder");
+  const openModelsFolderIcon = openModelsFolderButton?.querySelector('[data-svg-icon="folder"]');
+  if (openModelsFolderIcon) openModelsFolderIcon.innerHTML = window.ETUSVG?.icon("folder") || "";
+  openModelsFolderButton?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/models/open-folder", { method: "POST" });
+      if (!response.ok) throw new Error("Impossible d’ouvrir le dossier des modèles.");
+    } catch (error) {
+      window.alert(error.message || "Impossible d’ouvrir le dossier des modèles.");
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   const btnModalAuto = document.getElementById("btn-modal-autoselect");
   if (btnModalAuto) {
     btnModalAuto.addEventListener("click", async () => {
       try {
         btnModalAuto.disabled = true;
-        btnModalAuto.textContent = "⚡ Détection...";
+        btnModalAuto.textContent = "Sélection en cours…";
         const resp = await fetch("/api/models/auto-select?count=1");
         const data = await resp.json();
         const primary = data.primary_model;
@@ -2462,7 +2487,7 @@ function initModals() {
         showToast("Erreur auto-sélection : " + err, "warning");
       } finally {
         btnModalAuto.disabled = false;
-        btnModalAuto.textContent = "⚡ Auto-Sélection Config PC";
+        btnModalAuto.textContent = "Choisir pour moi";
       }
     });
   }
@@ -2899,7 +2924,10 @@ function showSettingsView(section = "general", { fromRoute = false } = {}) {
   if (selected === "etu") window.refreshEtuRemoteConnection?.();
   if (selected === "wiki") window.ETUWiki?.refresh();
   if (selected === "data") loadWikiDataConsent();
-  if (selected === "installation") loadServerVariants();
+  if (selected === "installation") {
+    loadServerVariants();
+    checkAppUpdates();
+  }
   if (selected === "general") loadBeaconSettings();
   if (selected === "providers") requestAnimationFrame(updateProviderSidebarHeight);
   if (!fromRoute) {
@@ -3153,10 +3181,11 @@ function initSettingsPage() {
   }
   document.querySelector(".settings-content")?.addEventListener("scroll", updateProviderSidebarHeight, { passive: true });
   window.addEventListener("resize", updateProviderSidebarHeight);
-  document.getElementById("btn-refresh-library")?.addEventListener("click", async event => {
+  const refreshModelLibrary = async event => {
     const button = event.currentTarget;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
+    button.classList.add("is-loading");
     try {
       const data = await loadModelCatalog({ throwOnError: true });
       const installed = new Set(data.installed || []);
@@ -3170,10 +3199,17 @@ function initSettingsPage() {
       if (document.getElementById("tab-hf-explorer").classList.contains("active")) {
         await loadHfExplorerResults(hfExplorerState.query, hfExplorerState.onlyCompatible, hfExplorerState.page);
       }
-      showToast(`Bibliothèque actualisée · ${installed.size} modèle${installed.size > 1 ? "s" : ""} ${installed.size > 1 ? "locaux" : "local"}.`, "success");
+      const localModels = (data.catalog || []).filter(model => model.is_installed).map(model => model.name || model.filename);
+      const nativeModels = (data.native_models || []).map(model => model.name || model.repo || model.id).filter(Boolean);
+      const names = [...localModels, ...nativeModels];
+      const projectors = (data.installed_projectors || []).length;
+      const details = names.length ? names.map(name => escapeHtml(name)).join("<br>") : "Aucun modèle local trouvé.";
+      showToast(`${details}${projectors ? `<br>${projectors} projecteur${projectors > 1 ? "s" : ""} de vision détecté${projectors > 1 ? "s" : ""}.` : ""}`, "success", 9000, `Modèles locaux détectés · ${names.length}`);
     } catch (error) { showToast(escapeHtml(error.message), "warning"); }
-    finally { button.disabled = false; button.removeAttribute("aria-busy"); }
-  });
+    finally { button.disabled = false; button.removeAttribute("aria-busy"); button.classList.remove("is-loading"); }
+  };
+  document.getElementById("btn-refresh-library")?.addEventListener("click", refreshModelLibrary);
+  document.getElementById("btn-scan-models-folder")?.addEventListener("click", refreshModelLibrary);
 }
 
 function closeModal(id, { fromRoute = false } = {}) {
@@ -3352,9 +3388,9 @@ function downloadBrand(task = {}) {
   for (const [pattern, label, icon, color] of brands) {
     if (pattern.test(source)) return { label, logo: icon ? `/static/provider-icons/${icon}.svg${label === "OpenAI" ? "?v=logo-2" : ""}` : "/static/platform-icons/windows.svg", color };
   }
-  if (task.kind === "engine" || task.kind === "update") return { label: "ETU-AI", logo: "/static/logo_etu_ai.svg", color: "#5585df" };
+  if (task.kind === "engine" || task.kind === "update") return { label: "ETU-AI", logo: "/static/logo_etu_ai.svg?v=etu-ai-logo-20261126", color: "#5585df" };
   return source ? { label: "Modèle GGUF", logo: "/static/provider-icons/huggingface-color.svg", color: "#e9bd52" }
-    : { label: "ETU-AI", logo: "/static/logo_etu_ai.svg", color: "#5585df" };
+    : { label: "ETU-AI", logo: "/static/logo_etu_ai.svg?v=etu-ai-logo-20261126", color: "#5585df" };
 }
 
 function createDownloadHeading(titleText, task) {
@@ -3584,6 +3620,7 @@ function renderDownloadManager(tasks, serverInstall = null) {
     ? `${activeCount} transfert${activeCount > 1 ? "s" : ""} à traiter`
     : "";
   list.replaceChildren();
+  renderAppUpdateDownload(list);
   const groups = {};
   for (const [key, label, empty] of [["running", "En cours", "Aucun téléchargement en cours."], ["queued", "En attente", "Aucun téléchargement en attente."], ["done", "Fait", "Aucun téléchargement terminé."]]) {
     const section = document.createElement("section");
@@ -3720,6 +3757,77 @@ function renderEngineUpdateActivity(list) {
     row.append(choose);
   }
   list.append(row);
+}
+
+function renderAppUpdateActivity() {
+  const title = document.getElementById("settings-app-update-title");
+  const status = document.getElementById("settings-app-update-status");
+  const button = document.getElementById("btn-settings-update");
+  const icon = document.getElementById("settings-app-update-icon");
+  if (!title || !status || !button) return;
+  const activity = appUpdateActivity;
+  if (icon) icon.innerHTML = window.ETUSVG?.icon(activity?.status === "available" ? "update" : "download") || "";
+  const version = activity?.version || (activity?.installedVersion !== "version inconnue" ? activity?.installedVersion : null);
+  title.textContent = version ? `ETU-AI ${version}` : "ETU-AI";
+  status.textContent = activity?.message || "Vérifiez si une version plus récente de l’application est disponible.";
+  button.disabled = activity?.status === "checking";
+  button.textContent = activity?.status === "available" ? "Mettre à jour"
+    : activity?.status === "checking" ? "Recherche en cours…"
+    : "Rechercher des mises à jour";
+}
+
+async function checkAppUpdates() {
+  if (appUpdateCheckPromise) return appUpdateCheckPromise;
+  appUpdateActivity = { ...(appUpdateActivity || {}), status: "checking", message: "Recherche d’une mise à jour de l’application sur GitHub…" };
+  renderAppUpdateActivity();
+  appUpdateCheckPromise = (async () => {
+    try {
+      const response = await fetch("/api/updates/app", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "GitHub est momentanément indisponible.");
+      const installedVersion = data.installed_version || "version inconnue";
+      if (data.status === "unavailable") {
+        appUpdateActivity = { status: "current", installedVersion, message: "Aucune release stable n’est publiée pour le moment." };
+      } else if (data.update_available || (!data.installed_version && data.installer_available)) {
+        appUpdateActivity = data.installer_available
+          ? { status: "available", installedVersion, version: data.version, url: data.url, installer: data.installer,
+            message: `La version ${data.version} est disponible (installée : ${installedVersion}).` }
+          : { status: "package-unavailable", installedVersion, version: data.version,
+            message: `La version ${data.version} est publiée, mais aucun installateur n’est disponible pour ${data.platform || "ce système"}.` };
+      } else if (data.installed_version) {
+        appUpdateActivity = { status: "current", installedVersion, version: data.version,
+          message: `Vous utilisez la dernière version (${installedVersion}).` };
+      } else {
+        appUpdateActivity = { status: "unknown", installedVersion, version: data.version, url: data.url, installer: data.installer,
+          message: `Dernière version publiée : ${data.version}. Version installée inconnue : cette copie de développement ne contient pas de numéro de version.` };
+      }
+    } catch (error) {
+      appUpdateActivity = { status: "error", installedVersion: appUpdateActivity?.installedVersion,
+        message: error.message || "Impossible de rechercher une mise à jour." };
+    } finally {
+      appUpdateCheckPromise = null;
+      renderAppUpdateActivity();
+      refreshDownloadManager();
+    }
+  })();
+  return appUpdateCheckPromise;
+}
+
+function renderAppUpdateDownload(list) {
+  if (!appUpdateActivity || !["available", "unknown"].includes(appUpdateActivity.status) || !appUpdateActivity.installer?.url) return;
+  const row = document.createElement("article");
+  row.className = "download-manager-item download-manager-item--update";
+  const heading = createDownloadHeading(`ETU-AI ${appUpdateActivity.version}`, { kind: "update" });
+  const status = document.createElement("span");
+  status.textContent = appUpdateActivity.status === "available" ? "Mise à jour de l’application disponible" : "Version publiée";
+  const detail = document.createElement("small");
+  detail.textContent = `${appUpdateActivity.message} Le SHA-256 publié par GitHub sera vérifié avant le téléchargement. Fermez ETU-AI avant de lancer l’installateur.`;
+  const link = document.createElement("a");
+  link.className = "etu-btn etu-btn-primary";
+  link.href = `/api/updates/app/download/${encodeURIComponent(appUpdateActivity.version)}`;
+  link.textContent = "Télécharger l’installateur vérifié";
+  row.append(heading, status, detail, link);
+  list.prepend(row);
 }
 
 async function checkEngineUpdates() {
@@ -4260,7 +4368,7 @@ function updateModelUI(activeModelName, installedModels, remoteModels = null) {
   }
   if (remoteModels && Array.isArray(remoteModels)) remoteApiModels = remoteModels;
   const selectableModels = [...availableInstalledModels, ...remoteApiModels];
-  const providerLogoIds = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models"]);
+  const providerLogoIds = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models", "maia-systems"]);
   const profileModel = getActiveProfile().model;
   const displayedModel = profileModel || currentActiveModel;
   const profileHint = document.getElementById("model-profile-hint");
@@ -4817,7 +4925,7 @@ function startNewConversation() {
   setDisplayedProfile(preferredProfileId);
   const container = document.getElementById("chat-messages");
   if (container) {
-    container.innerHTML = '<div class="chat-welcome"><div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div><h2>Comment puis-je vous aider ?</h2><p>Un assistant local pour apprendre, coder et explorer vos idées.</p><div class="welcome-suggestions"><button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button><button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button><button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button></div></div>';
+    container.innerHTML = '<div class="chat-welcome"><div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt=""></div><h2>Comment puis-je vous aider ?</h2><p>Un assistant local pour apprendre, coder et explorer vos idées.</p><div class="welcome-suggestions"><button type="button" data-prompt="Explique-moi la récursivité avec un exemple simple.">Comprendre un concept</button><button type="button" data-prompt="Prépare un quiz interactif sur SQL.">Créer un quiz</button><button type="button" data-prompt="Aide-moi à relire mon devoir.">Relire un devoir</button></div></div>';
   }
   resizeChatInput();
   loadConversations();
@@ -6571,7 +6679,7 @@ function applyPartialUpdates(bubble) {
 
 function getActiveProfile() {
   return assistantProfiles.find((profile) => profile.id === activeProfileId) ||
-    { id: "default", name: "ETU-AI", avatar: "✦", instructions: "" };
+    { id: "default", name: "ETU-AI", avatar: "etu-ai-default-profile", instructions: "" };
 }
 
 function profileOrigin(profile) {
@@ -6664,6 +6772,7 @@ function populateProfileModels(selectedModel = "") {
 }
 
 function avatarMarkup(avatar) {
+  if (avatar === "etu-ai-default-profile") return '<img src="/static/etu-ai_profile.svg?v=etu-ai-profile-white-20261126" alt="" class="profile-avatar-image">';
   return /^data:image\/webp;base64,[A-Za-z0-9+/=]+$/.test(avatar || "")
     ? `<img src="${avatar}" alt="" class="profile-avatar-image">`
     : escapeHtml(avatar || "✦");
@@ -6706,7 +6815,11 @@ async function loadProfiles() {
   const response = await fetch("/api/profiles");
   if (!response.ok) throw new Error("Impossible de charger les profils");
   const data = await response.json();
-  assistantProfiles = data.profiles;
+  assistantProfiles = data.profiles.map((profile) =>
+    profile.id === "default" && profile.avatar === "✦"
+      ? { ...profile, avatar: "etu-ai-default-profile" }
+      : profile
+  );
   preferredProfileId = data.active_profile_id;
   if (!currentConversationId) activeProfileId = preferredProfileId;
   const options = document.getElementById("profile-options");
@@ -6725,7 +6838,7 @@ async function loadProfiles() {
 }
 
 function editProfile(profile = null) {
-  profileAvatarFallback = profile?.avatar || "✦";
+  profileAvatarFallback = profile?.avatar || "etu-ai-default-profile";
   pendingAvatarData = null;
   document.getElementById("profile-id").value = profile?.id || "";
   document.getElementById("profile-name").value = profile?.name || "";
@@ -7028,13 +7141,23 @@ async function loadModelCatalog({ throwOnError = false } = {}) {
       document.getElementById("mmproj-panel").hidden = true;
     } else {
       visionSelect.disabled = false;
-      visionModels.forEach(model => visionSelect.add(new Option(model.name, model.filename)));
+      visionModels.forEach(model => {
+        const localProjectors = model.mmproj?.local_projectors?.length || 0;
+        visionSelect.add(new Option(`${model.name}${localProjectors ? ` · ${localProjectors} projecteur${localProjectors > 1 ? "s" : ""} local${localProjectors > 1 ? "aux" : ""}` : ""}`, model.filename));
+      });
       visionSelect.value = visionModels.some(model => model.filename === previousSelection) ? previousSelection : visionModels[0].filename;
       if (document.getElementById("tab-vision").classList.contains("active") && document.getElementById("mmproj-panel").dataset.model !== visionSelect.value) {
         openProjectorManager(visionModels.find(model => model.filename === visionSelect.value));
       }
     }
     availableInstalledModels = installed;
+    const visionHelp = document.getElementById("vision-model-help");
+    if (visionHelp) {
+      const localProjectors = new Set(data.installed_projectors || []);
+      visionHelp.textContent = localProjectors.size
+        ? `${visionModels.length} modèle${visionModels.length > 1 ? "s" : ""} vision · ${localProjectors.size} projecteur${localProjectors.size > 1 ? "s" : ""} local${localProjectors.size > 1 ? "aux" : ""} détecté${localProjectors.size > 1 ? "s" : ""}. Vérifiez l'association avant utilisation.`
+        : "Le projecteur doit correspondre exactement à la variante du modèle.";
+    }
     remoteApiModels = Array.isArray(data.remote_models) ? data.remote_models : [];
     updateModelUI(currentActiveModel, availableInstalledModels);
 

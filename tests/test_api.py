@@ -52,6 +52,63 @@ class TestAPIServer(unittest.TestCase):
         self.assertIn("paired_with_etu", data)
         self.assertIn("model_state", data)
 
+    def test_app_update_endpoint_reports_release_and_persists_user_choice(self):
+        installer = {"name": "ETU-AI-Setup-0.9.1.exe", "url": "https://github.com/etu-aix/ETU-AI/releases/download/v0.9.1/ETU-AI-Setup-0.9.1.exe", "size": 1024, "digest": None}
+        release = {"status": "available", "version": "v0.9.1", "url": "https://github.com/etu-aix/ETU-AI/releases/latest", "assets": [installer]}
+        with patch.object(api_server, "latest_app_release", return_value=release), \
+             patch.object(api_server, "installed_version", return_value="v0.9.0"), \
+             patch.object(api_server, "is_newer_version", return_value=True), \
+             patch.object(api_server.platform, "system", return_value="Windows"):
+            response = self.client.get("/api/updates/app", headers={"Origin": "http://127.0.0.1:8900"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["version"], "v0.9.1")
+        self.assertEqual(response.json()["installed_version"], "v0.9.0")
+        self.assertTrue(response.json()["update_available"])
+        self.assertTrue(response.json()["installer_available"])
+        self.assertEqual(response.json()["installer"]["url"], installer["url"])
+        self.assertEqual(response.json()["choice"], "")
+
+        choice = self.client.put("/api/updates/app/choice", json={"version": "v0.9.1", "choice": "later"},
+                                 headers={"Origin": "http://127.0.0.1:8900"})
+        self.assertEqual(choice.status_code, 200)
+        with patch.object(api_server, "latest_app_release", return_value=release), \
+             patch.object(api_server, "installed_version", return_value="v0.9.0"), \
+             patch.object(api_server, "is_newer_version", return_value=True), \
+             patch.object(api_server.platform, "system", return_value="Windows"):
+            self.assertEqual(self.client.get("/api/updates/app", headers={"Origin": "http://127.0.0.1:8900"}).json()["choice"], "later")
+
+        with patch.object(api_server, "latest_app_release", return_value=release), \
+             patch.object(api_server, "installed_version", return_value="v0.9.0"), \
+             patch.object(api_server, "is_newer_version", return_value=True), \
+             patch.object(api_server.platform, "system", return_value="Linux"):
+            linux = self.client.get("/api/updates/app", headers={"Origin": "http://127.0.0.1:8900"}).json()
+        self.assertTrue(linux["update_available"])
+        self.assertFalse(linux["installer_available"])
+        self.assertIsNone(linux["installer"])
+
+    def test_app_installer_download_uses_latest_platform_asset_and_disposes_temp_file(self):
+        import hashlib
+        import tempfile
+
+        payload = b"verified fake installer"
+        installer = {"name": "ETU-AI-Setup-0.9.1.exe", "url": "https://github.com/etu-aix/ETU-AI/releases/download/v0.9.1/ETU-AI-Setup-0.9.1.exe", "size": len(payload), "digest": "sha256:" + hashlib.sha256(payload).hexdigest()}
+        release = {"status": "available", "version": "v0.9.1", "url": "https://github.com/etu-aix/ETU-AI/releases/latest", "assets": [installer]}
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             patch.object(api_server, "latest_app_release", return_value=release), \
+             patch.object(api_server, "download_verified_app_installer") as download, \
+             patch.object(api_server.platform, "system", return_value="Windows"):
+            package = Path(temp_dir) / installer["name"]
+            package.write_bytes(payload)
+            download.return_value = package
+            response = self.client.get("/api/updates/app/download/v0.9.1", headers={"Origin": "http://127.0.0.1:8900"})
+            self.assertFalse(package.exists())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, payload)
+        self.assertIn("ETU-AI-Setup-0.9.1.exe", response.headers["content-disposition"])
+        download.assert_called_once_with(installer, "v0.9.1")
+
     def test_beacon_listener_fallback_handles_unavailable_command_output(self):
         from types import ModuleType, SimpleNamespace
 

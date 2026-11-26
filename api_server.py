@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 from urllib.error import HTTPError, URLError
 import urllib.request
 from urllib.parse import urlencode, urlsplit
+from starlette.background import BackgroundTask
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,18 +52,19 @@ init_file_logger("api_server.log")
 from models_mgr.catalog import get_catalog_with_status
 from models_mgr.downloader import ModelDownloader
 from models_mgr.native import NativeInstaller
-from models_mgr.projectors import ProjectorManager, is_projector, known_text_only
+from models_mgr.projectors import ProjectorManager, is_projector, known_text_only, matching_projectors
 from models_mgr.hf_client import hf_client, PARAMETER_RANGES
 from storage.db import StorageManager
 from storage.api_credentials import delete_api_key, get_api_key, set_api_key
 from storage.state_manager import state_manager
 from storage.model_performance import append_model_performance, read_model_performance
 from wiki.service import WikiService
+from wiki.external import launch as launch_folder
 from wiki.api import router_for as wiki_router
 from tools.executor import ToolExecutor
 from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
 from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
-from integration.updates import latest_app_release, installed_version, is_newer_version
+from integration.updates import latest_app_release, installed_version, is_newer_version, select_app_installer, download_verified_app_installer
 from companion import SHORTCUTS, DEFAULT_SHORTCUT
 
 from setup_wizard import wizard_manager
@@ -308,10 +310,38 @@ def get_app_release(request: Request):
         current = installed_version()
         result["installed_version"] = current
         result["update_available"] = is_newer_version(result.get("version", ""), current)
+        result["platform"] = platform.system()
+        result["installer"] = select_app_installer(result.get("assets", []), result["platform"], result.get("version", ""))
+        result["installer_available"] = result["installer"] is not None
         result["choice"] = storage.get_setting("app_update_choice_" + result.get("version", ""), "")
         return result
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/updates/app/download/{version}")
+def download_app_release(request: Request, version: str):
+    require_local_admin(request)
+    if not re.fullmatch(r"v?\d+(?:\.\d+){1,3}", version):
+        raise HTTPException(status_code=422, detail="Version de release invalide.")
+    try:
+        release = latest_app_release()
+        normalized_version = version if version.startswith("v") else f"v{version}"
+        if release.get("version") != normalized_version:
+            raise HTTPException(status_code=404, detail="Cette version n’est plus la dernière release publiée.")
+        installer = select_app_installer(release.get("assets", []), platform.system(), version)
+        if not installer:
+            raise HTTPException(status_code=404, detail="Aucun installateur n’est publié pour ce système.")
+        path = download_verified_app_installer(installer, version)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        filename=installer["name"],
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(path.unlink, missing_ok=True),
+    )
 
 
 class UpdateChoiceRequest(BaseModel):
@@ -622,6 +652,7 @@ PROVIDER_PRESETS = {
     "sambanova": {"label": "SambaNova", "type": "openai", "base_url": "https://api.sambanova.ai/v1", "model": "Meta-Llama-3.3-70B-Instruct"},
     "deepinfra": {"label": "DeepInfra", "type": "openai", "base_url": "https://api.deepinfra.com/v1/openai", "model": "meta-llama/Meta-Llama-3.1-70B-Instruct"},
     "github-models": {"label": "GitHub Models", "type": "openai", "base_url": "https://models.inference.ai.azure.com", "model": "gpt-4o-mini"},
+    "maia-systems": {"label": "MAIA Systems", "type": "openai", "base_url": "", "model": ""},
     "anthropic": {"label": "Anthropic", "type": "anthropic", "base_url": "https://api.anthropic.com", "model": "claude-haiku-4-5-20251001"},
     "gemini": {"label": "Google Gemini", "type": "gemini", "base_url": "https://generativelanguage.googleapis.com", "model": "gemini-3.8-flash"},
     "custom": {"label": "Autre API compatible OpenAI", "type": "openai", "base_url": "https://api.openai.com/v1", "model": ""},
@@ -941,6 +972,15 @@ def _model_reasoning_efforts(item):
     return []
 
 
+@app.post("/api/models/open-folder")
+def open_models_folder(request: Request):
+    require_local_admin(request)
+    folder = downloader.models_dir.resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    launch_folder(str(folder))
+    return {"opened": True}
+
+
 @app.get("/api/models/catalog")
 def get_catalog():
     hw = get_hardware_info()
@@ -949,13 +989,25 @@ def get_catalog():
     # L'exploration distante possède son propre onglet et son propre endpoint.
     base_catalog = get_catalog_with_status(hw, list(installed))
     projectors = ProjectorManager(storage, downloader, hf_client)
+    installed_projectors = downloader.list_installed_projectors()
+    local_files = [{"filename": name} for name in installed]
+    local_files.extend({"filename": name} for name in installed_projectors)
     for item in base_catalog:
         item["mmproj"] = projectors.describe(item["filename"])
+        if item["is_installed"] and not item["mmproj"]["text_only"]:
+            item["mmproj"]["local_projectors"] = [
+                candidate["filename"] for candidate in matching_projectors(item["filename"], local_files)
+            ]
+            assigned = item["mmproj"].get("association")
+            assigned_file = assigned.get("local_filename") if assigned else None
+            if item["mmproj"]["installed"] and assigned_file and assigned_file not in item["mmproj"]["local_projectors"]:
+                item["mmproj"]["local_projectors"].append(assigned_file)
 
     return {
         "catalog": base_catalog,
         "native_models": native_installer.installed(),
         "installed": list(installed),
+        "installed_projectors": installed_projectors,
         "remote_models": get_configured_api_models(),
         "hardware": {
             "recommended_backend": hw.get("recommended_backend"),
@@ -1867,7 +1919,7 @@ async def chatgpt_connection_callback(request: Request):
 </head>
 <body>
   <main data-state="{state}">
-    <div class="brand"><img src="/static/logo_etu_ai.svg" alt=""><span>ETU-AI</span></div>
+    <div class="brand"><img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt=""><span>ETU-AI</span></div>
     <div class="status" aria-hidden="true">{"✓" if success else "·"}</div>
     <h1>{title}</h1>
     <p>{message}</p>

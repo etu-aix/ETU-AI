@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
   <link rel="stylesheet" href="/static/style.css?v=chat-code-tools-4">
-  <link rel="stylesheet" href="/static/styles/settings.css?v=beacon-settings-11">
+  <link rel="stylesheet" href="/static/styles/settings.css?v=models-folder-icon-3">
   <link rel="stylesheet" href="/static/styles/components.css?v=server-icons-3">
   <link rel="stylesheet" href="/static/styles/workshop.css?v=workshop-3">
-  <link rel="icon" href="/static/logo_etu_ai.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" type="image/svg+xml">
   <style>
     /* Le même fond continue derrière les messages et la zone de saisie. */
     #chat-main {
@@ -105,7 +105,7 @@
     <div class="wizard-card">
       <div class="wizard-header">
         <div class="brand">
-          <img class="wizard-brand-logo" src="/static/logo_etu_ai.svg" alt="" width="32" height="32">
+          <img class="wizard-brand-logo" src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt="" width="32" height="32">
           <div class="brand-text">
             <h1>ETU-AI</h1>
             <p class="wizard-subtitle">Votre assistant, sur cet ordinateur</p>
@@ -366,7 +366,7 @@
     <aside id="sidebar" aria-label="Navigation et historique">
       <div class="brand">
         <button id="btn-collapse-sidebar" class="brand-toggle" type="button" aria-label="Rétracter la barre latérale" aria-controls="sidebar" aria-expanded="true" title="Rétracter la barre latérale">
-          <img class="brand-logo" src="/static/logo_etu_ai.svg" alt="" width="34" height="34">
+          <img class="brand-logo" src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt="" width="34" height="34">
           <h1>ETU-AI</h1>
         </button>
         <button id="btn-close-sidebar" class="sidebar-close" type="button" aria-label="Fermer le menu" title="Fermer le menu">&times;</button>
@@ -604,10 +604,10 @@
             <section class="settings-update-card" aria-label="Mises à jour">
               <div class="settings-update-banner" role="status" aria-live="polite">
                 <span class="settings-update-symbol" aria-hidden="true">
-                  <img src="/static/logo_etu_ai.svg" alt="">
-                  <span class="settings-update-check" data-svg-icon="download"></span>
+                  <img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt="">
+                  <span id="settings-app-update-icon" class="settings-update-check" data-svg-icon="download"></span>
                 </span>
-                <div class="settings-update-copy"><strong>Mises à jour du moteur</strong><p>Recherchez les versions disponibles et suivez leur installation dans Téléchargements.</p></div>
+                <div class="settings-update-copy"><strong id="settings-app-update-title">ETU-AI</strong><p id="settings-app-update-status">Vérification des mises à jour de l’application…</p></div>
                 <button id="btn-settings-update" class="etu-btn etu-btn-primary" type="button">Rechercher des mises à jour</button>
               </div>
             </section>
@@ -652,7 +652,7 @@
           <section id="download-dashboard" class="download-dashboard is-idle" data-idle="true" aria-label="Débit des téléchargements">
             <div class="download-chart-panel">
               <div class="download-chart-heading"><span id="download-active-count" class="download-live-status"></span></div>
-              <div class="download-banner-brand" aria-hidden="true"><img id="download-banner-logo" src="/static/logo_etu_ai.svg" alt=""></div>
+              <div class="download-banner-brand" aria-hidden="true"><img id="download-banner-logo" src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt=""></div>
               <div id="download-speed-chart" role="img" aria-label="Graphique du débit réseau et de l’écriture disque pendant les téléchargements"></div>
               <div class="download-chart-legend"><span><i class="download-legend-network"></i> Réseau</span><span><i class="download-legend-disk"></i> Disque</span></div>
             </div>
@@ -672,7 +672,7 @@
 
       <div id="model-loading-overlay" class="model-loading-overlay" role="status" aria-live="polite" aria-hidden="true" hidden>
         <div class="model-loading-card">
-          <div class="model-loading-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div>
+          <div class="model-loading-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt=""></div>
           <strong>Réveil de l’IA locale</strong>
           <span id="model-loading-name">Chargement du modèle dans llama.cpp…</span>
           <div class="model-loading-progress" aria-hidden="true"><span></span></div>
@@ -681,7 +681,7 @@
       </div>
 
       <div id="power-transition-overlay" class="power-transition-overlay" role="status" aria-live="assertive" aria-hidden="true" hidden>
-        <div class="power-transition-orb" aria-hidden="true"><span class="power-transition-orb-glow"></span><img src="/static/logo_etu_ai.svg" alt=""></div>
+        <div class="power-transition-orb" aria-hidden="true"><span class="power-transition-orb-glow"></span><img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt=""></div>
         <span class="power-transition-fallback" data-svg-icon="restart" aria-hidden="true"></span>
         <p id="power-transition-label">Redémarrage d’ETU-AI…</p>
       </div>
@@ -689,7 +689,7 @@
       <div id="chat-messages" aria-live="off">
         <!-- Message de bienvenue -->
         <div class="chat-welcome">
-          <div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg" alt=""></div>
+          <div class="welcome-orb" aria-hidden="true"><img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt=""></div>
           <h2>Comment puis-je vous aider ?</h2>
           <p>Un assistant local pour apprendre, coder et explorer vos idées.</p>
           <div class="welcome-suggestions">
@@ -882,6 +882,7 @@
               <option value="fireworks">Fireworks AI</option><option value="perplexity">Perplexity</option>
               <option value="nvidia">NVIDIA NIM</option><option value="sambanova">SambaNova</option>
               <option value="deepinfra">DeepInfra</option><option value="github-models">GitHub Models</option>
+              <option value="maia-systems">MAIA Systems</option>
               <option value="openai-compatible">API compatible OpenAI (ancien réglage)</option>
               <option value="custom">Autre compatible OpenAI</option>
             </optgroup>
@@ -985,7 +986,7 @@
           </div>
           <p id="model-catalog-search-count" class="catalog-search-count" role="status" aria-live="polite"></p>
           <section id="catalog-local-section" class="catalog-section">
-            <div class="catalog-section-heading"><h4>Modèles installés</h4><button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary">Auto-sélection selon mon PC</button></div>
+            <div class="catalog-section-heading"><h4>Modèles installés</h4><div class="catalog-section-actions"><button type="button" id="btn-modal-autoselect" class="etu-btn etu-btn-secondary" title="Sélectionner un modèle adapté à ce PC">Choisir pour moi</button><button type="button" id="btn-open-models-folder" class="etu-btn etu-btn-secondary" aria-label="Ouvrir le dossier des modèles" title="Ouvrir le dossier des modèles"><span data-svg-icon="folder" aria-hidden="true"></span></button><button type="button" id="btn-scan-models-folder" class="etu-btn etu-btn-secondary" aria-label="Rechercher les modèles installés" title="Rechercher les modèles installés"><span data-svg-icon="update" aria-hidden="true"></span></button></div></div>
             <div class="local-model-columns" aria-hidden="true"><span>Modèle</span><span>Disque</span><span>RAM estimée</span><span>Quantification</span><span></span></div>
             <div id="catalog-local-list" class="catalog-model-list"></div>
             <p id="catalog-local-empty" class="catalog-empty" hidden>Aucun modèle local installé.</p>
@@ -1125,9 +1126,9 @@
   <script src="/static/vendor/marked-18.0.14.umd.js"></script>
   <script src="/static/vendor/highlight-11.12.0.min.js"></script>
   <script src="/static/vendor/echarts-6.1.0.min.js?v=6.1.0"></script>
-  <script src="/static/svg-manager.js?v=thinking-icon-1"></script>
+  <script src="/static/svg-manager.js?v=models-folder-icon-3"></script>
   <script src="/static/components.js?v=settings-library-2"></script>
-  <script src="/static/app.js?v=companion-chat-fix-5"></script>
+  <script src="/static/app.js?v=etu-ai-profile-white-20261126"></script>
   <script src="/static/wiki.js?v=10"></script>
   <script src="/static/etu-bridge.js?v=connection-ui-6"></script>
   <script src="/static/etu-remote.js?v=connection-ui-6"></script>

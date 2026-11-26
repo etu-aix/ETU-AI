@@ -18,8 +18,8 @@ Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.js
 Source: "..\release-payload\ai-server\config.json"; DestDir: "{app}\ai-server"; Flags: onlyifdoesntexist
 
 [Icons]
-Name: "{autodesktop}\ETU-AI"; Filename: "{app}\.venv\Scripts\pythonw.exe"; Parameters: """{app}\run_launcher.py"""; WorkingDir: "{app}"
-Name: "{group}\ETU-AI"; Filename: "{app}\.venv\Scripts\pythonw.exe"; Parameters: """{app}\run_launcher.py"""; WorkingDir: "{app}"
+Name: "{autodesktop}\ETU-AI"; Filename: "{app}\ETU-AI.exe"; WorkingDir: "{app}"
+Name: "{group}\ETU-AI"; Filename: "{app}\ETU-AI.exe"; WorkingDir: "{app}"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.venv"
