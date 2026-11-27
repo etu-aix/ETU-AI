@@ -70,6 +70,7 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("validate_release_signing_key(key, release_signing_public_keys())", (root / "tools" / "sign_release.py").read_text(encoding="utf-8"))
         self.assertIn("unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes", workflow)
         self.assertIn("Smoke test per-user offline package", workflow)
+        self.assertIn("The installer shipped its standard-user test harness.", workflow)
         self.assertIn("Smoke test with a standard Windows account", workflow)
         self.assertIn("New-LocalUser -Name $userName", workflow)
         self.assertIn("[LocalBatchLogonRight]::Grant($user.SID.Value)", workflow)
