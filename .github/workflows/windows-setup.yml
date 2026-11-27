@@ -13,13 +13,13 @@ jobs:
   setup:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12.10'
           architecture: x64
       - name: Install build tools
-        run: python -m pip install pyinstaller==6.22.3
+        run: python -m pip install setuptools==84.2.1 pyinstaller==6.22.3
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --version=6.7.1 --yes --no-progress
@@ -35,7 +35,7 @@ jobs:
           tar -xf release-source.tar -C release-payload
           if ($LASTEXITCODE -ne 0) { throw 'Extraction impossible' }
           Copy-Item -Recurse "$env:pythonLocation" release-payload/python
-          python -m pip install --no-deps --only-binary=:all: --target release-payload/python/Lib/site-packages -r requirements-windows.lock.txt
+          python -m pip install --no-deps --no-build-isolation --target release-payload/python/Lib/site-packages -r requirements-windows.lock.txt
           if ($LASTEXITCODE -ne 0) { throw 'Installation des dépendances dans le paquet impossible' }
           & release-payload/python/python.exe -m pip check
           if ($LASTEXITCODE -ne 0) { throw 'Le verrou des dépendances est incomplet ou incohérent.' }

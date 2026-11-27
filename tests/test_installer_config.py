@@ -28,7 +28,8 @@ class InstallerConfigTests(unittest.TestCase):
         setup = (root / "installer" / "setup.iss").read_text(encoding="utf-8")
         workflow = (root / ".github" / "workflows" / "windows-setup.yml").read_text(encoding="utf-8")
         self.assertNotIn("installer\\prepare.py", setup)
-        self.assertIn("pip install --no-deps --only-binary=:all: --target release-payload/python/Lib/site-packages", workflow)
+        self.assertIn("pip install --no-deps --no-build-isolation --target release-payload/python/Lib/site-packages", workflow)
+        self.assertNotIn("--only-binary=:all:", workflow)
         self.assertIn('Filename: "{app}\\ETU-AI.exe"', setup)
         self.assertIn("PrivilegesRequired=lowest", setup)
         self.assertNotIn("[Run]", setup)
@@ -39,11 +40,20 @@ class InstallerConfigTests(unittest.TestCase):
         workflow = (root / ".github" / "workflows" / "windows-setup.yml").read_text(encoding="utf-8")
         lock = (root / "requirements-windows.lock.txt").read_text(encoding="utf-8")
         self.assertIn("python-version: '3.12.10'", workflow)
+        self.assertIn("actions/checkout@v7", workflow)
+        self.assertIn("actions/setup-python@v7", workflow)
+        self.assertNotIn("actions/checkout@v4", workflow)
+        self.assertNotIn("actions/setup-python@v5", workflow)
         self.assertIn("pyinstaller==6.22.3", workflow)
+        self.assertIn("setuptools==84.2.1", workflow)
         self.assertIn("innosetup --version=6.7.1", workflow)
         self.assertIn("-r requirements-windows.lock.txt", workflow)
         for package in ("fastapi", "uvicorn", "httpx", "keyring", "pypdf", "pillow", "cryptography", "websockets", "ddgs", "pywebview", "pynput"):
             self.assertRegex(lock, rf"(?m)^{package}==[^\s]+$")
+        self.assertRegex(
+            lock,
+            r"(?m)^proxy_tools @ https://files\.pythonhosted\.org/.+proxy_tools-0\.1\.0\.tar\.gz#sha256=ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010$",
+        )
 
     def test_release_workflow_allows_optional_authenticode_and_uses_bundled_signer(self):
         root = Path(__file__).resolve().parents[1]
