@@ -16,10 +16,14 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 if (-not $localAppData) { throw 'The standard Windows user profile did not expose LocalApplicationData.' }
 $installRoot = Join-Path $localAppData 'Programs\ETU-AI-standard-user-smoke'
+$installerLog = Join-Path (Split-Path -Parent $LogPath) 'standard-user-installer.log'
 Write-Output "Running as $([Security.Principal.WindowsIdentity]::GetCurrent().Name); LocalApplicationData is '$localAppData'."
-$arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '"'
+$arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '" /LOG="' + $installerLog + '"'
 $install = Start-Process -FilePath $SetupPath -ArgumentList $arguments -Wait -PassThru
-if ($install.ExitCode -ne 0) { throw "Standard-user setup install failed: $($install.ExitCode)" }
+if ($install.ExitCode -ne 0) {
+  if (Test-Path $installerLog) { Get-Content $installerLog | Write-Output }
+  throw "Standard-user setup install failed: $($install.ExitCode)"
+}
 
 $launcherPath = Join-Path $installRoot 'ETU-AI.exe'
 $pythonPath = Join-Path $installRoot 'python\python.exe'

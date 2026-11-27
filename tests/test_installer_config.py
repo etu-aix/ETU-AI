@@ -79,6 +79,8 @@ class InstallerConfigTests(unittest.TestCase):
         standard_smoke = (root / "tools" / "windows_standard_user_smoke.ps1").read_text(encoding="utf-8")
         self.assertIn("WindowsBuiltInRole]::Administrator", standard_smoke)
         self.assertIn("Start-Transcript -Path $LogPath", standard_smoke)
+        self.assertIn("standard-user-installer.log", standard_smoke)
+        self.assertIn("/LOG=\"' + $installerLog + '\"", standard_smoke)
         self.assertIn("Standard Windows user installed ETU-AI", standard_smoke)
         self.assertIn("Block internet access for offline smoke test", workflow)
         self.assertIn("-Action Block -RemoteAddress Internet -Profile Any", workflow)
