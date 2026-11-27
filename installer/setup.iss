@@ -16,7 +16,7 @@ SetupIconFile=..\assets\etu-ai_logo.ico
 UninstallDisplayIcon={app}\ETU-AI.exe
 
 [Files]
-Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.json"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.json,tools\windows_standard_user_smoke.ps1"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\release-payload\ai-server\config.json"; DestDir: "{app}\ai-server"; Flags: onlyifdoesntexist
 
 [Icons]

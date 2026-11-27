@@ -18,7 +18,7 @@ class InstallerConfigTests(unittest.TestCase):
         recursive_payload = next(line for line in lines if "release-payload\\*" in line)
         config_seed = next(line for line in lines if "release-payload\\ai-server\\config.json" in line)
 
-        self.assertIn('Excludes: "ai-server\\config.json"', recursive_payload)
+        self.assertIn('Excludes: "ai-server\\config.json,tools\\windows_standard_user_smoke.ps1"', recursive_payload)
         self.assertIn('Flags: onlyifdoesntexist', config_seed)
         self.assertIn('Type: filesandordirs; Name: "{app}\\.venv"', script)
         self.assertNotIn('Name: "{app}\\storage"', script)
