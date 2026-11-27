@@ -70,6 +70,11 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("validate_release_signing_key(key, release_signing_public_keys())", (root / "tools" / "sign_release.py").read_text(encoding="utf-8"))
         self.assertIn("unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes", workflow)
         self.assertIn("Smoke test per-user offline package", workflow)
+        self.assertIn("Block internet access for offline smoke test", workflow)
+        self.assertIn("-Action Block -RemoteAddress Internet -Profile Any", workflow)
+        self.assertIn("The outbound firewall rule did not block internet access.", workflow)
+        self.assertIn("Remove offline smoke firewall rule", workflow)
+        self.assertIn("if: ${{ always() }}", workflow)
         self.assertIn("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-", workflow)
         self.assertIn("'/DAppVersion=0.0.0' \"/O$oldOutput\" installer/setup.iss", workflow)
         self.assertIn("$oldSetup.FullName", workflow)
@@ -84,6 +89,12 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8900/api/status", workflow)
         smoke = workflow.split("      - name: Smoke test per-user offline package", 1)[1]
         self.assertLess(smoke.index("$env:HTTPS_PROXY = 'http://127.0.0.1:9'"), smoke.index("Start-Process -FilePath $setup.FullName"))
+        firewall = workflow.index("      - name: Block internet access for offline smoke test")
+        cleanup = workflow.index("      - name: Remove offline smoke firewall rule")
+        signing = workflow.index("      - name: Check Ed25519 release key")
+        self.assertLess(firewall, workflow.index("      - name: Smoke test per-user offline package"))
+        self.assertLess(workflow.index("      - name: Smoke test per-user offline package"), cleanup)
+        self.assertLess(cleanup, signing)
 
     def test_companion_uses_the_shared_application_icon(self):
         root = Path(__file__).resolve().parents[1]

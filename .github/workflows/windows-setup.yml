@@ -104,6 +104,14 @@ jobs:
           $signature = Get-AuthenticodeSignature $setup.FullName
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)etu-aix') { throw 'Le setup ne porte pas une signature Authenticode valide pour etu-aix.' }
           Remove-Item -LiteralPath $pfxPath -Force
+      - name: Block internet access for offline smoke test
+        shell: pwsh
+        run: |
+          $disabledProfiles = Get-NetFirewallProfile | Where-Object { -not $_.Enabled }
+          if ($disabledProfiles) { throw 'Windows Firewall must be enabled to prove that the package runs without internet access.' }
+          New-NetFirewallRule -DisplayName 'ETU-AI offline package smoke test' -Direction Outbound -Action Block -RemoteAddress Internet -Profile Any | Out-Null
+          $internetReachable = Test-NetConnection -ComputerName '1.1.1.1' -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
+          if ($internetReachable) { throw 'The outbound firewall rule did not block internet access.' }
       - name: Smoke test per-user offline package
         shell: pwsh
         run: |
@@ -180,6 +188,10 @@ jobs:
               try { & taskkill.exe /PID $launcher.Id /T /F 2>$null | Out-Null } catch { }
             }
           }
+      - name: Remove offline smoke firewall rule
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-NetFirewallRule -DisplayName 'ETU-AI offline package smoke test' -ErrorAction SilentlyContinue
       - name: Check Ed25519 release key
         id: ed25519
         env:
