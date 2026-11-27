@@ -18,7 +18,14 @@ if (-not $localAppData) { throw 'The standard Windows user profile did not expos
 $installRoot = Join-Path $localAppData 'Programs\ETU-AI-standard-user-smoke'
 $installerLog = Join-Path (Split-Path -Parent $LogPath) 'standard-user-installer.log'
 Write-Output "Running as $([Security.Principal.WindowsIdentity]::GetCurrent().Name); LocalApplicationData is '$localAppData'."
-$arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '" /LOG="' + $installerLog + '"'
+$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 8900)
+try {
+  $portProbe.Start()
+  $portProbe.Stop()
+} catch {
+  throw 'TCP port 8900 is already in use; the standard-user smoke test requires an isolated runner.'
+}
+$arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR="' + $installRoot + '" /LOG="' + $installerLog + '"'
 $install = Start-Process -FilePath $SetupPath -ArgumentList $arguments -Wait -PassThru
 if ($install.ExitCode -ne 0) {
   if (Test-Path $installerLog) { Get-Content $installerLog | Write-Output }
@@ -35,6 +42,8 @@ if ((Get-Content -Raw $versionPath).Trim() -ne $ExpectedVersion) {
   throw 'The standard-user setup installed an unexpected application version.'
 }
 
+$baseUrl = 'http://127.0.0.1:8900'
+
 $env:PATH = Join-Path $env:SystemRoot 'System32'
 $launcher = $null
 $serverPid = 0
@@ -44,19 +53,19 @@ try {
   $ready = $false
   do {
     try {
-      $status = Invoke-RestMethod -Uri 'http://127.0.0.1:8900/api/status' -TimeoutSec 3
+      $status = Invoke-RestMethod -Uri "$baseUrl/api/status" -TimeoutSec 3
       if ($status.status -eq 'online') { $ready = $true; break }
     } catch { }
     Start-Sleep -Seconds 1
   } while ([DateTime]::UtcNow -lt $deadline)
   if (-not $ready) { throw 'ETU-AI.exe did not launch for a standard Windows user without network access.' }
-  $launchMode = Invoke-RestMethod -Uri 'http://127.0.0.1:8900/api/launch-mode' -TimeoutSec 3
+  $launchMode = Invoke-RestMethod -Uri "$baseUrl/api/launch-mode" -TimeoutSec 3
   $serverPid = [int]$launchMode.pid
-  Invoke-RestMethod -Uri 'http://127.0.0.1:8900/api/power/shutdown' -Method Post -Headers @{ Origin = 'http://127.0.0.1:8900' } -TimeoutSec 5 | Out-Null
+  Invoke-RestMethod -Uri "$baseUrl/api/power/shutdown" -Method Post -Headers @{ Origin = $baseUrl } -TimeoutSec 5 | Out-Null
   Write-Output 'Standard Windows user installed ETU-AI and launched the bundled app offline.'
 } finally {
   if ($serverPid -le 0) {
-    try { $serverPid = [int](Invoke-RestMethod -Uri 'http://127.0.0.1:8900/api/launch-mode' -TimeoutSec 2).pid } catch { }
+    try { $serverPid = [int](Invoke-RestMethod -Uri "$baseUrl/api/launch-mode" -TimeoutSec 2).pid } catch { }
   }
   if ($serverPid -gt 0) {
     $serverProcess = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
