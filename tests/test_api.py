@@ -1,5 +1,7 @@
 """Tests d'intégration des endpoints FastAPI de l'application ETU-AI."""
 import os
+import io
+import json
 import unittest
 from pathlib import Path
 import sys
@@ -161,15 +163,17 @@ class TestAPIServer(unittest.TestCase):
         installer = {"name": "ETU-AI-Setup-1.2.0.exe",
                      "url": "https://github.com/etu-aix/ETU-AI/releases/download/v1.2.0/ETU-AI-Setup-1.2.0.exe",
                      "size": 8, "digest": "sha256:" + hashlib.sha256(b"MZsetup!").hexdigest()}
-        release = {"version": "v1.2.0", "assets": [installer]}
+        sidecar = {"name": installer["name"] + ".manifest.json", "url": installer["url"] + ".manifest.json"}
+        release = {"version": "v1.2.0", "assets": [installer, sidecar]}
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / installer["name"]
             package.write_bytes(b"MZsetup!")
             manifest = create_manifest(package, "v1.2.0", installer["url"], key)
             with patch.object(api_server, "latest_app_release", return_value=release), \
                  patch.object(api_server, "select_app_installer", return_value=installer), \
-                 patch.object(api_server, "fetch_signed_installer_manifest", return_value=manifest), \
+                 patch("integration.updates.urlopen", return_value=io.BytesIO(json.dumps(manifest).encode())), \
                  patch.object(api_server, "RELEASE_SIGNING_PUBLIC_KEY", key.public_key().public_bytes_raw()), \
+                 patch("integration.updates.RELEASE_SIGNING_PUBLIC_KEY", key.public_key().public_bytes_raw()), \
                  patch.object(api_server, "download_verified_app_installer", return_value=package):
                 api_server._app_update_state = {"status": "downloading", "version": "v1.2.0"}
                 api_server._prepare_direct_app_update("v1.2.0")
