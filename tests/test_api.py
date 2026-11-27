@@ -67,6 +67,7 @@ class TestAPIServer(unittest.TestCase):
         self.assertEqual(response.json()["installed_version"], "v0.9.0")
         self.assertTrue(response.json()["update_available"])
         self.assertTrue(response.json()["installer_available"])
+        self.assertFalse(response.json()["direct_install_supported"])
         self.assertEqual(response.json()["installer"]["url"], installer["url"])
         self.assertEqual(response.json()["choice"], "")
 
@@ -119,6 +120,29 @@ class TestAPIServer(unittest.TestCase):
             with self.subTest(url=url):
                 response = method(url, headers={"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"})
                 self.assertEqual(response.status_code, 403)
+
+    def test_direct_update_requires_the_bundled_windows_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            python = root / "python" / "python.exe"
+            python.parent.mkdir()
+            python.touch()
+            with patch.object(api_server, "BASE_DIR", root), \
+                 patch.object(api_server.sys, "executable", str(python)):
+                self.assertFalse(api_server._packaged_windows_install())
+                (root / "ETU-AI.exe").touch()
+                self.assertEqual(api_server._packaged_windows_install(), os.name == "nt")
+                with patch.object(api_server.sys, "executable", str(root / "other-python.exe")):
+                    self.assertFalse(api_server._packaged_windows_install())
+
+        with patch.object(api_server, "installed_version", return_value="v1.0.0"):
+            response = self.client.post("/api/updates/app/prepare/v1.2.0",
+                                        headers={"Origin": "http://127.0.0.1:8900"})
+        self.assertEqual(response.status_code, 400)
+        with patch.object(api_server, "installed_version", return_value="v1.0.0"):
+            response = self.client.post("/api/updates/app/install/v1.2.0",
+                                        headers={"Origin": "http://127.0.0.1:8900"})
+        self.assertEqual(response.status_code, 400)
 
     def test_startup_setting_uses_the_bundled_launcher(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -209,6 +233,7 @@ class TestAPIServer(unittest.TestCase):
             try:
                 with patch.object(api_server, "require_local_admin"), \
                      patch.object(api_server, "installed_version", return_value="v1.0.0"), \
+                     patch.object(api_server, "_packaged_windows_install", return_value=True), \
                      patch.object(api_server, "RELEASE_SIGNING_PUBLIC_KEY", key.public_key().public_bytes_raw()), \
                      patch.object(api_server, "companion_pid_file", return_value=pid_file), \
                      patch.object(api_server.tempfile, "gettempdir", return_value=directory), \
