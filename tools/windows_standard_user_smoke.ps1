@@ -9,7 +9,10 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
   throw 'The installer smoke test must run as a standard, non-administrator user.'
 }
 
-$installRoot = Join-Path $env:LOCALAPPDATA 'Programs\ETU-AI-standard-user-smoke'
+$localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+if (-not $localAppData) { throw 'The standard Windows user profile did not expose LocalApplicationData.' }
+$installRoot = Join-Path $localAppData 'Programs\ETU-AI-standard-user-smoke'
+Write-Output "Running as $([Security.Principal.WindowsIdentity]::GetCurrent().Name); LocalApplicationData is '$localAppData'."
 $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '"'
 $install = Start-Process -FilePath $SetupPath -ArgumentList $arguments -Wait -PassThru
 if ($install.ExitCode -ne 0) { throw "Standard-user setup install failed: $($install.ExitCode)" }
