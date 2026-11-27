@@ -17,7 +17,7 @@ import time
 import urllib.request
 import webbrowser
 
-from beacon_address import beacon_port
+from beacon_address import beacon_port, companion_pid_file
 
 # PyInstaller's windowed bootloader sets these streams to None. Keep the
 # existing diagnostic prints harmless when users launch the GUI executable.
@@ -169,8 +169,10 @@ def start_companion() -> bool:
         if check.returncode:
             return False
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        env = os.environ.copy()
+        env["ETU_COMPANION_PID_FILE"] = str(companion_pid_file(ROOT_DIR))
         subprocess.Popen([python, str(ROOT_DIR / "companion.py")], cwd=str(ROOT_DIR),
-                         stdin=subprocess.DEVNULL, creationflags=flags, start_new_session=True)
+                         stdin=subprocess.DEVNULL, creationflags=flags, start_new_session=True, env=env)
         return True
     except (OSError, subprocess.TimeoutExpired):
         return False

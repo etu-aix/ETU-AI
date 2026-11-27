@@ -113,11 +113,19 @@ jobs:
           $env:no_proxy = $env:NO_PROXY
           $setup = Get-ChildItem installer/output/*.exe | Select-Object -First 1
           $installRoot = Join-Path $env:RUNNER_TEMP 'ETU-AI-offline-smoke'
+          $oldOutput = Join-Path $env:RUNNER_TEMP 'ETU-AI-older-installer'
+          New-Item -ItemType Directory -Force -Path $oldOutput | Out-Null
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          & $iscc '/DAppVersion=0.0.0' "--output-dir=$oldOutput" installer/setup.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Could not compile the previous-version installer fixture.' }
+          $oldSetup = Get-ChildItem $oldOutput/ETU-AI-Setup-0.0.0.exe | Select-Object -First 1
           $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '"'
-          $install = Start-Process -FilePath $setup.FullName -ArgumentList $arguments -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "Per-user smoke install failed: $($install.ExitCode)" }
+          $install = Start-Process -FilePath $oldSetup.FullName -ArgumentList $arguments -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Previous-version per-user smoke install failed: $($install.ExitCode)" }
           $python = Join-Path $installRoot 'python\python.exe'
           if (-not (Test-Path (Join-Path $installRoot 'ETU-AI.exe')) -or -not (Test-Path $python)) { throw 'The setup did not install the launcher and bundled Python.' }
+          $versionFile = Join-Path $installRoot 'VERSION'
+          [IO.File]::WriteAllText($versionFile, '0.0.0')
           $chatDb = Join-Path $installRoot 'storage\chats.db'
           $engineConfig = Join-Path $installRoot 'ai-server\config.json'
           $modelMarker = Join-Path $installRoot 'ai-server\models\offline-smoke.marker'
@@ -128,9 +136,9 @@ jobs:
           [IO.File]::WriteAllText($engineConfig, '{"beacon_port":12567}')
           [IO.File]::WriteAllText($modelMarker, 'existing-model-data')
           $upgrade = Start-Process -FilePath $setup.FullName -ArgumentList $arguments -Wait -PassThru
-          if ($upgrade.ExitCode -ne 0) { throw "In-place update smoke install failed: $($upgrade.ExitCode)" }
+          if ($upgrade.ExitCode -ne 0) { throw "Upgrade from the previous version failed: $($upgrade.ExitCode)" }
           & $python -c "import os,sqlite3; db=sqlite3.connect(os.environ['SMOKE_CHAT_DB']); assert db.execute('SELECT value FROM smoke').fetchone()[0] == 'existing-chat-data'; db.close()"
-          if ($LASTEXITCODE -ne 0 -or (Get-Content -Raw $engineConfig) -ne '{"beacon_port":12567}' -or [IO.File]::ReadAllText($modelMarker) -ne 'existing-model-data') { throw 'The in-place update changed existing user data, engine configuration, or model files.' }
+          if ($LASTEXITCODE -ne 0 -or (Get-Content -Raw $engineConfig) -ne '{"beacon_port":12567}' -or [IO.File]::ReadAllText($modelMarker) -ne 'existing-model-data' -or (Get-Content -Raw $versionFile).Trim() -ne $env:RELEASE_VERSION) { throw 'The previous-version update changed user data, engine configuration, models, or failed to update the version.' }
           $env:PATH = Join-Path $env:SystemRoot 'System32'
           Push-Location $installRoot
           try {

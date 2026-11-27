@@ -1,4 +1,5 @@
 """Tests d'intégration des endpoints FastAPI de l'application ETU-AI."""
+import os
 import unittest
 from pathlib import Path
 import sys
@@ -178,6 +179,53 @@ class TestAPIServer(unittest.TestCase):
             self.assertEqual(api_server._app_update_state["status"], "error")
             self.assertFalse(package.exists())
             self.assertIsNone(api_server._app_update_path)
+
+    @unittest.skipUnless(os.name == "nt", "Le lancement direct de l’installateur est réservé à Windows")
+    def test_direct_update_supervisor_receives_the_recorded_companion_pid(self):
+        import hashlib
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from tools.sign_release import create_manifest
+
+        key = Ed25519PrivateKey.generate()
+        payload = b"MZverified setup"
+        version = "v1.2.0"
+        installer_name = "ETU-AI-Setup-1.2.0.exe"
+        url = f"https://github.com/etu-aix/ETU-AI/releases/download/{version}/{installer_name}"
+        original_state = api_server._app_update_state
+        original_path = api_server._app_update_path
+        original_manifest = api_server._app_update_manifest
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            asset = temp / installer_name
+            asset.write_bytes(payload)
+            package = temp / "etu-app-installer-verified.exe"
+            package.write_bytes(payload)
+            manifest = create_manifest(asset, version, url, key)
+            pid_file = temp / "companion.pid"
+            pid_file.write_text("4242", encoding="ascii")
+            api_server._app_update_state = {"status": "ready", "version": version}
+            api_server._app_update_path = package
+            api_server._app_update_manifest = manifest
+            try:
+                with patch.object(api_server, "require_local_admin"), \
+                     patch.object(api_server, "installed_version", return_value="v1.0.0"), \
+                     patch.object(api_server, "RELEASE_SIGNING_PUBLIC_KEY", key.public_key().public_bytes_raw()), \
+                     patch.object(api_server, "companion_pid_file", return_value=pid_file), \
+                     patch.object(api_server.tempfile, "gettempdir", return_value=directory), \
+                     patch.object(api_server.subprocess, "Popen") as launch, \
+                     patch.object(api_server.threading, "Thread") as end_thread:
+                    response = api_server.install_direct_app_update(object(), version)
+
+                command = launch.call_args.args[0]
+                self.assertEqual(response, {"status": "installing"})
+                self.assertEqual(command[8], "4242")
+                self.assertEqual(command[11], str(api_server.BASE_DIR / "python" / "python.exe"))
+                self.assertEqual(command[12], str(pid_file))
+                end_thread.return_value.start.assert_called_once_with()
+            finally:
+                api_server._app_update_state = original_state
+                api_server._app_update_path = original_path
+                api_server._app_update_manifest = original_manifest
 
     def test_beacon_listener_fallback_handles_unavailable_command_output(self):
         from types import ModuleType, SimpleNamespace
