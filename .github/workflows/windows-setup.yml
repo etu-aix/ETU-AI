@@ -144,8 +144,8 @@ jobs:
           try {
             & $python -m pip check
             if ($LASTEXITCODE -ne 0) { throw 'The installed offline Python environment is incomplete.' }
-            & $python -c "import api_server, fastapi, cryptography, webview, pynput; from integration.updates import installed_version; assert installed_version().removeprefix('v') == '$env:RELEASE_VERSION'"
-            if ($LASTEXITCODE -ne 0) { throw 'The installed app cannot import its runtime without an external Python on PATH.' }
+            & $python -c "import api_server, fastapi, cryptography, webview, pynput; from integration.updates import installed_version; assert installed_version().removeprefix('v') == '$env:RELEASE_VERSION'; assert api_server._packaged_windows_install()"
+            if ($LASTEXITCODE -ne 0) { throw 'The installed app cannot import its runtime or enable direct updates without an external Python on PATH.' }
           } finally { Pop-Location }
           $launcherPath = Join-Path $installRoot 'ETU-AI.exe'
           $launcher = $null
