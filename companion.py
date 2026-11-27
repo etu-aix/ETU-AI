@@ -1,4 +1,5 @@
 """Desktop companion: a persistent webview and a configurable global shortcut."""
+import os
 import socket
 import json
 from pathlib import Path
@@ -9,6 +10,7 @@ import urllib.error
 import urllib.request
 
 from storage.db import StorageManager
+from beacon_address import companion_pid_file
 
 SHORTCUTS = {
     "ctrl-alt-space": "<ctrl>+<alt>+<space>",
@@ -100,6 +102,9 @@ def watch_server(companion):
 
 def main():
     show_on_start = "--show" in sys.argv[1:]
+    requested_pid_file = os.environ.get("ETU_COMPANION_PID_FILE")
+    expected_pid_file = companion_pid_file(Path(__file__).resolve().parent)
+    pid_file = expected_pid_file if requested_pid_file and Path(requested_pid_file).resolve() == expected_pid_file.resolve() else None
     # A second invocation must not register the same shortcut twice.
     lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -107,6 +112,11 @@ def main():
     except OSError:
         return 0
     try:
+        if pid_file:
+            try:
+                pid_file.write_text(str(os.getpid()), encoding="ascii")
+            except OSError:
+                pid_file = None
         import webview
         from pynput import keyboard
 
@@ -127,6 +137,12 @@ def main():
         webview.start(private_mode=False, icon=str(icon) if icon.is_file() else None)
     finally:
         lock.close()
+        if pid_file:
+            try:
+                if pid_file.read_text(encoding="ascii").strip() == str(os.getpid()):
+                    pid_file.unlink()
+            except OSError:
+                pass
     return 0
 
 

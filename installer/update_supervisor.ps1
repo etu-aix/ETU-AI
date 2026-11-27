@@ -1,8 +1,11 @@
 param(
   [int]$ServerPid,
   [int]$LauncherPid,
+  [int]$CompanionPid,
   [string]$Installer,
   [string]$AppLauncher,
+  [string]$AppPython,
+  [string]$CompanionPidFile,
   [string]$SupervisorFile,
   [string]$ExpectedSha256,
   [long]$ExpectedSize
@@ -11,9 +14,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $installerPath = [IO.Path]::GetFullPath($Installer)
+$companionPidFilePath = [IO.Path]::GetFullPath($CompanionPidFile)
 if (-not $tempRoot.EndsWith([IO.Path]::DirectorySeparatorChar)) { $tempRoot += [IO.Path]::DirectorySeparatorChar }
 if (-not $installerPath.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
     [IO.Path]::GetFileName($installerPath) -notlike 'etu-app-installer-*.exe' -or
+    -not $companionPidFilePath.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
     $ExpectedSha256 -notmatch '^[0-9a-f]{64}$' -or $ExpectedSize -le 0) {
   exit 2
 }
@@ -30,6 +35,22 @@ do {
 
 try {
   if ($alive) { throw 'ETU-AI did not shut down before the installer timeout.' }
+  if ($CompanionPid -gt 0) {
+    $candidate = Get-Process -Id $CompanionPid -ErrorAction SilentlyContinue
+    $expectedPython = [IO.Path]::GetFullPath($AppPython)
+    $isCompanion = $false
+    if ($candidate -and $candidate.Path) {
+      $isCompanion = [string]::Equals([IO.Path]::GetFullPath([string]$candidate.Path), $expectedPython, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if ($isCompanion) {
+      Stop-Process -Id $CompanionPid -Force -ErrorAction SilentlyContinue
+      $companionDeadline = [DateTime]::UtcNow.AddSeconds(10)
+      while ((Get-Process -Id $CompanionPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $companionDeadline) {
+        Start-Sleep -Milliseconds 200
+      }
+      if (Get-Process -Id $CompanionPid -ErrorAction SilentlyContinue) { throw 'The ETU-AI companion did not close before the installer.' }
+    }
+  }
   $sha256 = [Security.Cryptography.SHA256]::Create()
   $packageStream = $null
   try {
@@ -46,6 +67,7 @@ try {
   }
 } finally {
   # Relaunch the existing installation after success, cancellation, or failure.
+  Remove-Item -LiteralPath $companionPidFilePath -Force -ErrorAction SilentlyContinue
   try {
     if (Test-Path -LiteralPath $AppLauncher) {
       Start-Process -FilePath $AppLauncher -WorkingDirectory (Split-Path -Parent $AppLauncher)

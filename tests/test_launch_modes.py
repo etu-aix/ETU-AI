@@ -6,6 +6,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
+from beacon_address import companion_pid_file
+
 ROOT = Path(__file__).resolve().parents[1]
 AI_SERVER = ROOT / "ai-server"
 sys.path.insert(0, str(AI_SERVER))
@@ -15,6 +17,19 @@ from run_launcher import configure_launch_environment, start_server, start_compa
 
 
 class LaunchModeTests(unittest.TestCase):
+    def test_companion_pid_file_is_stable_and_scoped_to_install_root(self):
+        self.assertEqual(companion_pid_file(ROOT), companion_pid_file(ROOT.resolve()))
+        self.assertNotEqual(companion_pid_file(ROOT), companion_pid_file(ROOT.parent))
+        self.assertTrue(companion_pid_file(ROOT).name.startswith("etu-ai-companion-"))
+
+    def test_companion_receives_its_installation_pid_file(self):
+        with patch("run_launcher.Path.is_file", return_value=True), \
+             patch("run_launcher.subprocess.run") as probe, \
+             patch("run_launcher.subprocess.Popen") as launch:
+            probe.return_value.returncode = 0
+            self.assertTrue(start_companion())
+        self.assertEqual(launch.call_args.kwargs["env"]["ETU_COMPANION_PID_FILE"], str(companion_pid_file(ROOT)))
+
     def test_normal_and_local_keep_beacon_on_loopback(self):
         for mode in ("normal", "local"):
             with self.subTest(mode=mode), patch.dict(os.environ, {"ETU_LAUNCH_MODE": mode}):

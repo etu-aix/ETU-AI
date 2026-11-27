@@ -4,6 +4,7 @@ import os
 import hashlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +71,10 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes", workflow)
         self.assertIn("Smoke test per-user offline package", workflow)
         self.assertIn("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-", workflow)
+        self.assertIn("'/DAppVersion=0.0.0' \"/O$oldOutput\" installer/setup.iss", workflow)
+        self.assertIn("$oldSetup.FullName", workflow)
+        self.assertIn("Upgrade from the previous version failed", workflow)
+        self.assertIn("Get-Content -Raw $versionFile", workflow)
         self.assertIn("$env:PATH = Join-Path $env:SystemRoot 'System32'", workflow)
         self.assertIn("existing-chat-data", workflow)
         self.assertIn('{"beacon_port":12567}', workflow)
@@ -95,10 +100,16 @@ class InstallerConfigTests(unittest.TestCase):
 
         self.assertIn("[string]$ExpectedSha256", supervisor)
         self.assertIn("[long]$ExpectedSize", supervisor)
+        self.assertIn("[int]$CompanionPid", supervisor)
+        self.assertIn("Get-Process -Id $CompanionPid", supervisor)
+        self.assertIn("Stop-Process -Id $CompanionPid", supervisor)
+        self.assertIn("candidate.Path", supervisor)
         self.assertIn("[Security.Cryptography.SHA256]::Create()", supervisor)
         self.assertLess(supervisor.index("$sha256.ComputeHash($packageStream)"), supervisor.index("Start-Process -FilePath $installerPath"))
         self.assertLess(supervisor.index("Start-Process -FilePath $installerPath"), supervisor.index("$packageStream.Dispose()"))
         self.assertIn('manifest["sha256"], str(manifest["size"])', api)
+        self.assertIn("companion_pid_file(BASE_DIR)", api)
+        self.assertIn("str(companion_pid)", api)
 
     @unittest.skipUnless(os.name == "nt", "Le superviseur d’installation est un script Windows")
     def test_update_supervisor_rejects_a_package_changed_after_server_verification(self):
@@ -113,7 +124,8 @@ class InstallerConfigTests(unittest.TestCase):
             supervisor.write_text(supervisor_source.read_text(encoding="utf-8"), encoding="utf-8")
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(supervisor),
-                 "0", "0", str(installer), str(app_launcher), str(supervisor), "0" * 64, "3"],
+                 "0", "0", "0", str(installer), str(app_launcher), str(temp / "python.exe"),
+                 str(temp / "companion.pid"), str(supervisor), "0" * 64, "3"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False,
             )
@@ -140,7 +152,8 @@ class InstallerConfigTests(unittest.TestCase):
             supervisor.write_text((root / "installer" / "update_supervisor.ps1").read_text(encoding="utf-8"), encoding="utf-8")
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(supervisor),
-                 "0", "0", str(installer), str(temp / "ETU-AI.exe"), str(supervisor), expected_hash, str(expected_size)],
+                 "0", "0", "0", str(installer), str(temp / "ETU-AI.exe"), str(temp / "python.exe"),
+                 str(temp / "companion.pid"), str(supervisor), expected_hash, str(expected_size)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=30, check=False,
             )
@@ -148,6 +161,45 @@ class InstallerConfigTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(installer.exists())
             self.assertFalse(supervisor.exists())
+
+    @unittest.skipUnless(os.name == "nt", "Le superviseur d’installation est un script Windows")
+    def test_update_supervisor_closes_the_companion_before_running_setup(self):
+        root = Path(__file__).resolve().parents[1]
+        source_executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
+        if not source_executable.is_file():
+            self.skipTest("whoami.exe est absent de cette installation Windows")
+
+        with tempfile.TemporaryDirectory(prefix="etu-update-test-") as directory:
+            temp = Path(directory)
+            installer = temp / "etu-app-installer-valid.exe"
+            supervisor = temp / "update-supervisor.ps1"
+            companion_script = temp / "companion.py"
+            companion_script.write_text("import time; time.sleep(60)\n", encoding="utf-8")
+            shutil.copyfile(source_executable, installer)
+            expected_hash = hashlib.sha256(installer.read_bytes()).hexdigest()
+            expected_size = installer.stat().st_size
+            supervisor.write_text((root / "installer" / "update_supervisor.ps1").read_text(encoding="utf-8"), encoding="utf-8")
+            companion = subprocess.Popen(
+                [sys.executable, str(companion_script)], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            try:
+                result = subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(supervisor),
+                     "0", "0", str(companion.pid), str(installer), str(temp / "ETU-AI.exe"), sys.executable,
+                     str(temp / "companion.pid"), str(supervisor), expected_hash, str(expected_size)],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=30, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNotNone(companion.poll(), "The companion process must exit before setup starts.")
+                self.assertFalse(installer.exists())
+                self.assertFalse(supervisor.exists())
+            finally:
+                if companion.poll() is None:
+                    companion.terminate()
+                    companion.wait(timeout=10)
 
 
 if __name__ == "__main__":

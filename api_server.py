@@ -4,7 +4,7 @@ Expose les endpoints de chat SSE, de gestion des modèles Hugging Face, de persi
 du handshake avec etu-aix.alwaysdata.net et sert l'interface web statique.
 """
 
-from beacon_address import beacon_url, beacon_port
+from beacon_address import beacon_url, beacon_port, companion_pid_file
 import json
 import asyncio
 import httpx
@@ -458,11 +458,19 @@ def install_direct_app_update(request: Request, version: str):
             launcher_pid = os.environ.get("ETU_LAUNCHER_PID", "0")
             if not launcher_pid.isdigit():
                 launcher_pid = "0"
+            companion_pid = 0
+            try:
+                recorded_pid = companion_pid_file(BASE_DIR).read_text(encoding="ascii").strip()
+                if re.fullmatch(r"[1-9]\d{0,9}", recorded_pid):
+                    companion_pid = int(recorded_pid)
+            except OSError:
+                pass
             supervisor_source = BASE_DIR / "installer" / "update_supervisor.ps1"
             supervisor_path = Path(tempfile.gettempdir()) / f"etu-ai-update-{uuid4().hex}.ps1"
             supervisor_path.write_text(supervisor_source.read_text(encoding="utf-8"), encoding="utf-8")
             subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(supervisor_path),
-                              str(os.getpid()), launcher_pid, str(path), str(BASE_DIR / "ETU-AI.exe"), str(supervisor_path),
+                              str(os.getpid()), launcher_pid, str(companion_pid), str(path), str(BASE_DIR / "ETU-AI.exe"),
+                              str(BASE_DIR / "python" / "python.exe"), str(companion_pid_file(BASE_DIR)), str(supervisor_path),
                               manifest["sha256"], str(manifest["size"])],
                              cwd=str(BASE_DIR), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
