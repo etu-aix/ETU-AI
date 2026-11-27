@@ -48,7 +48,8 @@ class TestSignedUpdates(unittest.TestCase):
             ]
             with patch("integration.updates.RELEASE_SIGNING_PUBLIC_KEY", public), patch("integration.updates.urlopen", return_value=io.BytesIO(json.dumps(manifest).encode())) as fetch:
                 checked = fetch_signed_installer_manifest(assets, assets[0], "v1.2.0", "Windows")
-            self.assertEqual(checked["name"], package.name)
+            self.assertEqual(checked, manifest)
+            self.assertEqual(verify_release(checked, package, public, expected_version="v1.2.0")["name"], package.name)
             self.assertEqual(fetch.call_args.args[0].full_url, assets[1]["url"])
             with self.assertRaisesRegex(ValueError, "manifeste Ed25519"):
                 fetch_signed_installer_manifest(assets[:1], assets[0], "v1.2.0", "Windows")

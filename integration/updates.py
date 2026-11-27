@@ -189,7 +189,8 @@ def fetch_signed_installer_manifest(assets: list[dict], installer: dict, version
         manifest = json.loads(body)
     except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise ValueError("Impossible de lire le manifeste signé de cette release") from exc
-    return verify_published_installer(installer, manifest, version, system)
+    verify_published_installer(installer, manifest, version, system)
+    return manifest
 
 
 def verify_release_manifest(manifest: dict, public_key: bytes | tuple[bytes, ...], *, expected_version: str) -> dict:
