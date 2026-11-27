@@ -64,7 +64,7 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertGreaterEqual(workflow.count("SignerCertificate.Subject -notmatch '(?i)etu-aix'"), 2)
         self.assertIn("& release-payload/python/python.exe tools/sign_release.py", workflow)
         self.assertIn("tools/sign_release.py --check-key --private-key", workflow)
-        self.assertIn("--icon assets/etu-ai_logo.ico", workflow)
+        self.assertIn("--icon "$env:GITHUB_WORKSPACE/assets/etu-ai_logo.ico"", workflow)
         self.assertIn("signature-status.txt", workflow)
         self.assertIn("validate_release_signing_key(key, release_signing_public_keys())", (root / "tools" / "sign_release.py").read_text(encoding="utf-8"))
         self.assertIn("unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes", workflow)
