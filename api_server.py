@@ -99,6 +99,14 @@ _app_update_state: dict[str, Any] = {"status": "idle"}
 _app_update_path: Optional[Path] = None
 _app_update_manifest: Optional[dict[str, Any]] = None
 
+def _packaged_windows_install() -> bool:
+    """Allow the direct installer only from the bundled Windows runtime."""
+    bundled_python = BASE_DIR / "python" / "python.exe"
+    return (os.name == "nt" and (BASE_DIR / "ETU-AI.exe").is_file()
+            and bundled_python.is_file()
+            and Path(sys.executable).resolve() == bundled_python.resolve())
+
+
 app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
 app.state.etu_storage = storage
 app.include_router(wiki_router(wiki_service))
@@ -317,7 +325,7 @@ def get_app_release(request: Request):
         result["installed_version"] = current
         result["update_available"] = is_newer_version(result.get("version", ""), current)
         result["platform"] = platform.system()
-        result["direct_install_supported"] = result["platform"] == "Windows"
+        result["direct_install_supported"] = _packaged_windows_install()
         result["installer"] = select_app_installer(result.get("assets", []), result["platform"], result.get("version", ""))
         result["installer_available"] = result["installer"] is not None
         result["installer_authenticated"] = False
@@ -396,8 +404,8 @@ def _prepare_direct_app_update(version: str) -> None:
 @app.post("/api/updates/app/prepare/{version}")
 def prepare_direct_app_update(request: Request, version: str):
     require_local_admin(request)
-    if os.name != "nt":
-        raise HTTPException(status_code=400, detail="L’installation directe est disponible uniquement sous Windows.")
+    if not _packaged_windows_install():
+        raise HTTPException(status_code=400, detail="L’installation directe nécessite ETU-AI installé sous Windows.")
     if not re.fullmatch(r"v?\d+(?:\.\d+){1,3}", version):
         raise HTTPException(status_code=422, detail="Version de release invalide.")
     version = version if version.startswith("v") else f"v{version}"
@@ -431,7 +439,7 @@ def direct_app_update_progress(request: Request):
 def install_direct_app_update(request: Request, version: str):
     require_local_admin(request)
     global _app_update_path, _app_update_state, _app_update_manifest
-    if os.name != "nt" or not installed_version():
+    if not _packaged_windows_install() or not installed_version():
         raise HTTPException(status_code=400, detail="L’installation directe n’est pas disponible depuis une copie de développement.")
     with _app_update_lock:
         path, manifest = _app_update_path, _app_update_manifest
