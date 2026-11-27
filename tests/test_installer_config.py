@@ -75,6 +75,8 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("Remove-LocalUser -Name $userName", workflow)
         self.assertIn("Register-ScheduledTask", workflow)
         self.assertIn("-RunLevel Limited", workflow)
+        self.assertIn("lastResult=$($taskInfo.LastTaskResult)", workflow)
+        self.assertIn("logonType=$($principal.LogonType)", workflow)
         self.assertIn("Unregister-ScheduledTask", workflow)
         standard_smoke = (root / "tools" / "windows_standard_user_smoke.ps1").read_text(encoding="utf-8")
         self.assertIn("WindowsBuiltInRole]::Administrator", standard_smoke)
