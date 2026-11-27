@@ -104,6 +104,31 @@ jobs:
           $signature = Get-AuthenticodeSignature $setup.FullName
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)etu-aix') { throw 'Le setup ne porte pas une signature Authenticode valide pour etu-aix.' }
           Remove-Item -LiteralPath $pfxPath -Force
+      - name: Block internet access for offline smoke test
+        shell: pwsh
+        run: |
+          $disabledProfiles = Get-NetFirewallProfile | Where-Object { -not $_.Enabled }
+          if ($disabledProfiles) { throw 'Windows Firewall must be enabled to prove that the package runs without internet access.' }
+          & release-payload/python/python.exe -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()"
+          if ($LASTEXITCODE -ne 0) { throw 'The runner cannot reach the public test address before network isolation.' }
+          # Scope the rules to package executables so the Actions runner can report results and upload artifacts.
+          $setup = Get-ChildItem installer/output/ETU-AI-Setup-*.exe | Select-Object -First 1
+          $perUserRoot = Join-Path $env:RUNNER_TEMP 'ETU-AI-offline-smoke'
+          $standardRoot = Join-Path $env:RUNNER_TEMP 'ETU-AI-standard-user-smoke\installed'
+          $programs = @(
+            $setup.FullName,
+            (Join-Path $env:RUNNER_TEMP 'ETU-AI-older-installer\ETU-AI-Setup-0.0.0.exe'),
+            (Join-Path $perUserRoot 'ETU-AI.exe'),
+            (Join-Path $perUserRoot 'python\python.exe'),
+            (Join-Path $perUserRoot 'python\pythonw.exe'),
+            (Join-Path $standardRoot 'ETU-AI.exe'),
+            (Join-Path $standardRoot 'python\python.exe'),
+            (Join-Path $standardRoot 'python\pythonw.exe')
+          )
+          $rulePrefix = "ETU-AI offline package smoke test $env:GITHUB_RUN_ID"
+          foreach ($index in 0..($programs.Count - 1)) {
+            New-NetFirewallRule -DisplayName "$rulePrefix $index" -Direction Outbound -Action Block -RemoteAddress Internet -Profile Any -Program $programs[$index] | Out-Null
+          }
       - name: Smoke test per-user offline package
         shell: pwsh
         run: |
@@ -123,8 +148,12 @@ jobs:
           $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '"'
           $install = Start-Process -FilePath $oldSetup.FullName -ArgumentList $arguments -Wait -PassThru
           if ($install.ExitCode -ne 0) { throw "Previous-version per-user smoke install failed: $($install.ExitCode)" }
+          $smokeHarness = Join-Path $installRoot 'tools\windows_standard_user_smoke.ps1'
+          if (Test-Path $smokeHarness) { throw 'The installer shipped its standard-user test harness.' }
           $python = Join-Path $installRoot 'python\python.exe'
           if (-not (Test-Path (Join-Path $installRoot 'ETU-AI.exe')) -or -not (Test-Path $python)) { throw 'The setup did not install the launcher and bundled Python.' }
+          & $python -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()" *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'The bundled Python can still reach the public test address.' }
           $versionFile = Join-Path $installRoot 'VERSION'
           [IO.File]::WriteAllText($versionFile, '0.0.0')
           $chatDb = Join-Path $installRoot 'storage\chats.db'
@@ -180,6 +209,124 @@ jobs:
               try { & taskkill.exe /PID $launcher.Id /T /F 2>$null | Out-Null } catch { }
             }
           }
+      - name: Smoke test with a standard Windows account
+        shell: pwsh
+        run: |
+          $userName = "ETUSmoke$env:GITHUB_RUN_ID"
+          $passwordBytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+          $plainPassword = [Convert]::ToBase64String($passwordBytes) + 'aA1!'
+          $securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+          $user = $null
+          $taskName = "ETU-AI-StandardUserSmoke-$env:GITHUB_RUN_ID"
+          $taskRegistered = $false
+          try {
+            $user = New-LocalUser -Name $userName -Password $securePassword -AccountNeverExpires -PasswordNeverExpires
+            Add-Type -TypeDefinition @'
+              using System;
+              using System.ComponentModel;
+              using System.Runtime.InteropServices;
+              using System.Security.Principal;
+
+              public static class LocalBatchLogonRight {
+                [StructLayout(LayoutKind.Sequential)]
+                private struct LsaObjectAttributes {
+                  public int Length;
+                  public IntPtr RootDirectory;
+                  public IntPtr ObjectName;
+                  public uint Attributes;
+                  public IntPtr SecurityDescriptor;
+                  public IntPtr SecurityQualityOfService;
+                }
+
+                [StructLayout(LayoutKind.Sequential)]
+                private struct LsaUnicodeString {
+                  public ushort Length;
+                  public ushort MaximumLength;
+                  public IntPtr Buffer;
+                }
+
+                [DllImport("advapi32.dll")]
+                private static extern uint LsaOpenPolicy(IntPtr SystemName, ref LsaObjectAttributes ObjectAttributes, uint DesiredAccess, out IntPtr PolicyHandle);
+                [DllImport("advapi32.dll")]
+                private static extern uint LsaAddAccountRights(IntPtr PolicyHandle, byte[] AccountSid, ref LsaUnicodeString UserRights, uint CountOfRights);
+                [DllImport("advapi32.dll")]
+                private static extern uint LsaClose(IntPtr PolicyHandle);
+                [DllImport("advapi32.dll")]
+                private static extern uint LsaNtStatusToWinError(uint Status);
+
+                public static void Grant(string sidValue) {
+                  var sid = new SecurityIdentifier(sidValue);
+                  var sidBytes = new byte[sid.BinaryLength];
+                  sid.GetBinaryForm(sidBytes, 0);
+                  var right = "SeBatchLogonRight";
+                  var rightPointer = Marshal.StringToHGlobalUni(right);
+                  var policy = IntPtr.Zero;
+                  try {
+                    var attributes = new LsaObjectAttributes { Length = Marshal.SizeOf(typeof(LsaObjectAttributes)) };
+                    var status = LsaOpenPolicy(IntPtr.Zero, ref attributes, 0x10, out policy);
+                    if (status != 0) throw new Win32Exception((int)LsaNtStatusToWinError(status));
+                    var unicodeRight = new LsaUnicodeString {
+                      Length = (ushort)(right.Length * 2),
+                      MaximumLength = (ushort)(right.Length * 2),
+                      Buffer = rightPointer
+                    };
+                    status = LsaAddAccountRights(policy, sidBytes, ref unicodeRight, 1);
+                    if (status != 0) throw new Win32Exception((int)LsaNtStatusToWinError(status));
+                  } finally {
+                    if (policy != IntPtr.Zero) LsaClose(policy);
+                    Marshal.FreeHGlobal(rightPointer);
+                  }
+                }
+              }
+          '@
+            [LocalBatchLogonRight]::Grant($user.SID.Value)
+            $standardUserRoot = Join-Path $env:RUNNER_TEMP 'ETU-AI-standard-user-smoke'
+            New-Item -ItemType Directory -Force -Path $standardUserRoot | Out-Null
+            $acl = Get-Acl $standardUserRoot
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new("$env:COMPUTERNAME\$userName", 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+            $acl.SetAccessRule($rule)
+            Set-Acl -Path $standardUserRoot -AclObject $acl
+            $setup = Get-ChildItem installer/output/ETU-AI-Setup-*.exe | Select-Object -First 1
+            $smokeScript = Join-Path $env:GITHUB_WORKSPACE 'tools/windows_standard_user_smoke.ps1'
+            $logPath = Join-Path $standardUserRoot 'standard-user-smoke.log'
+            $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$smokeScript`" -SetupPath `"$($setup.FullName)`" -ExpectedVersion $env:RELEASE_VERSION -LogPath `"$logPath`""
+            $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'pwsh.exe') -Argument $arguments -WorkingDirectory $env:GITHUB_WORKSPACE
+            $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -StartWhenAvailable
+            Register-ScheduledTask -TaskName $taskName -Action $action -Settings $settings -User "$env:COMPUTERNAME\$userName" -Password $plainPassword -RunLevel Limited -Force | Out-Null
+            $taskRegistered = $true
+            $taskStartedAfter = [DateTime]::Now.AddSeconds(-2)
+            Start-ScheduledTask -TaskName $taskName
+            $deadline = [DateTime]::UtcNow.AddMinutes(3)
+            $taskInfo = $null
+            $task = $null
+            do {
+              Start-Sleep -Seconds 1
+              $task = Get-ScheduledTask -TaskName $taskName
+              $taskInfo = Get-ScheduledTaskInfo -TaskName $taskName
+              $taskDidStart = $taskInfo.LastRunTime -ge $taskStartedAfter
+            } while ((-not $taskDidStart -or $task.State -in @('Running', 'Queued')) -and [DateTime]::UtcNow -lt $deadline)
+            if (-not $taskDidStart) {
+              $principal = Get-ScheduledTask -TaskName $taskName | Select-Object -ExpandProperty Principal
+              throw "Windows Task Scheduler did not start the standard-user smoke test (state=$($task.State); lastRun=$($taskInfo.LastRunTime); lastResult=$($taskInfo.LastTaskResult); logonType=$($principal.LogonType); runLevel=$($principal.RunLevel))."
+            }
+            if ($task.State -in @('Running', 'Queued')) {
+              Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+              throw 'Standard-user offline install and launch smoke test exceeded 3 minutes.'
+            }
+            $taskResult = $taskInfo.LastTaskResult
+            if (Test-Path $logPath) { Get-Content $logPath }
+            if ($taskResult -ne 0) { throw "Standard-user offline install and launch smoke test failed: $taskResult" }
+          } finally {
+            if ($taskRegistered) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
+            if ($user) { Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue }
+            [Array]::Clear($passwordBytes, 0, $passwordBytes.Length)
+            $plainPassword = $null
+            $securePassword = $null
+          }
+      - name: Remove offline smoke firewall rule
+        if: ${{ always() }}
+        shell: pwsh
+        run: Get-NetFirewallRule -DisplayName "ETU-AI offline package smoke test $env:GITHUB_RUN_ID *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
       - name: Check Ed25519 release key
         id: ed25519
         env:

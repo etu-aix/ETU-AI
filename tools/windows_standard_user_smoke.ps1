@@ -1,0 +1,87 @@
+param(
+  [Parameter(Mandatory = $true)][string]$SetupPath,
+  [Parameter(Mandatory = $true)][string]$ExpectedVersion,
+  [Parameter(Mandatory = $true)][string]$LogPath
+)
+
+$ErrorActionPreference = 'Stop'
+Start-Transcript -Path $LogPath -Force | Out-Null
+$exitCode = 0
+try {
+$principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  throw 'The installer smoke test must run as a standard, non-administrator user.'
+}
+
+$localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+if (-not $localAppData) { throw 'The standard Windows user profile did not expose LocalApplicationData.' }
+# The runner grants this user a private test directory; its fixed path lets the firewall target the installed binaries.
+$installRoot = Join-Path (Split-Path -Parent $LogPath) 'installed'
+$installerLog = Join-Path (Split-Path -Parent $LogPath) 'standard-user-installer.log'
+Write-Output "Running as $([Security.Principal.WindowsIdentity]::GetCurrent().Name); LocalApplicationData is '$localAppData'."
+$portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 8900)
+try {
+  $portProbe.Start()
+  $portProbe.Stop()
+} catch {
+  throw 'TCP port 8900 is already in use; the standard-user smoke test requires an isolated runner.'
+}
+$arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /NOICONS /DIR="' + $installRoot + '" /LOG="' + $installerLog + '"'
+$install = Start-Process -FilePath $SetupPath -ArgumentList $arguments -Wait -PassThru
+if ($install.ExitCode -ne 0) {
+  if (Test-Path $installerLog) { Get-Content $installerLog | Write-Output }
+  throw "Standard-user setup install failed: $($install.ExitCode)"
+}
+
+$launcherPath = Join-Path $installRoot 'ETU-AI.exe'
+$pythonPath = Join-Path $installRoot 'python\python.exe'
+$versionPath = Join-Path $installRoot 'VERSION'
+if (-not (Test-Path $launcherPath) -or -not (Test-Path $pythonPath)) {
+  throw 'The standard-user setup did not install the launcher and bundled Python.'
+}
+& $pythonPath -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()" *> $null
+if ($LASTEXITCODE -eq 0) { throw 'The standard-user bundled Python can still reach the public test address.' }
+if ((Get-Content -Raw $versionPath).Trim() -ne $ExpectedVersion) {
+  throw 'The standard-user setup installed an unexpected application version.'
+}
+
+$baseUrl = 'http://127.0.0.1:8900'
+
+$env:PATH = Join-Path $env:SystemRoot 'System32'
+$launcher = $null
+$serverPid = 0
+try {
+  $launcher = Start-Process -FilePath $launcherPath -ArgumentList @('--mode', 'local') -WorkingDirectory $installRoot -WindowStyle Hidden -PassThru
+  $deadline = [DateTime]::UtcNow.AddSeconds(90)
+  $ready = $false
+  do {
+    try {
+      $status = Invoke-RestMethod -Uri "$baseUrl/api/status" -TimeoutSec 3
+      if ($status.status -eq 'online') { $ready = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 1
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if (-not $ready) { throw 'ETU-AI.exe did not launch for a standard Windows user without network access.' }
+  $launchMode = Invoke-RestMethod -Uri "$baseUrl/api/launch-mode" -TimeoutSec 3
+  $serverPid = [int]$launchMode.pid
+  Invoke-RestMethod -Uri "$baseUrl/api/power/shutdown" -Method Post -Headers @{ Origin = $baseUrl } -TimeoutSec 5 | Out-Null
+  Write-Output 'Standard Windows user installed ETU-AI and launched the bundled app offline.'
+} finally {
+  if ($serverPid -le 0) {
+    try { $serverPid = [int](Invoke-RestMethod -Uri "$baseUrl/api/launch-mode" -TimeoutSec 2).pid } catch { }
+  }
+  if ($serverPid -gt 0) {
+    $serverProcess = Get-Process -Id $serverPid -ErrorAction SilentlyContinue
+    if ($serverProcess -and -not $serverProcess.WaitForExit(10000)) { Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue }
+  }
+  if ($launcher -and (Get-Process -Id $launcher.Id -ErrorAction SilentlyContinue)) {
+    try { & taskkill.exe /PID $launcher.Id /T /F 2>$null | Out-Null } catch { }
+  }
+}
+} catch {
+  Write-Error $_
+  $exitCode = 1
+} finally {
+  Stop-Transcript | Out-Null
+}
+exit $exitCode
