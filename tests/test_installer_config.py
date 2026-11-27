@@ -71,7 +71,7 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes", workflow)
         self.assertIn("Smoke test per-user offline package", workflow)
         self.assertIn("/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-", workflow)
-        self.assertIn("'/DAppVersion=0.0.0' \"--output-dir=$oldOutput\" installer/setup.iss", workflow)
+        self.assertIn("'/DAppVersion=0.0.0' \"/O$oldOutput\" installer/setup.iss", workflow)
         self.assertIn("$oldSetup.FullName", workflow)
         self.assertIn("Upgrade from the previous version failed", workflow)
         self.assertIn("Get-Content -Raw $versionFile", workflow)
