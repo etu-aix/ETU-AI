@@ -72,6 +72,8 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("Smoke test per-user offline package", workflow)
         self.assertIn("Smoke test with a standard Windows account", workflow)
         self.assertIn("New-LocalUser -Name $userName", workflow)
+        self.assertIn("[LocalBatchLogonRight]::Grant($user.SID.Value)", workflow)
+        self.assertIn('var right = "SeBatchLogonRight";', workflow)
         self.assertIn("Remove-LocalUser -Name $userName", workflow)
         self.assertIn("Register-ScheduledTask", workflow)
         self.assertIn("-RunLevel Limited", workflow)
