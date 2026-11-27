@@ -116,7 +116,7 @@ jobs:
           $oldOutput = Join-Path $env:RUNNER_TEMP 'ETU-AI-older-installer'
           New-Item -ItemType Directory -Force -Path $oldOutput | Out-Null
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-          & $iscc '/DAppVersion=0.0.0' "--output-dir=$oldOutput" installer/setup.iss
+          & $iscc '/DAppVersion=0.0.0' "/O$oldOutput" installer/setup.iss
           if ($LASTEXITCODE -ne 0) { throw 'Could not compile the previous-version installer fixture.' }
           $oldSetup = Get-ChildItem $oldOutput/ETU-AI-Setup-0.0.0.exe | Select-Object -First 1
           $arguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $installRoot + '"'
