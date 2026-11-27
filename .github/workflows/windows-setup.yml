@@ -35,11 +35,11 @@ jobs:
           tar -xf release-source.tar -C release-payload
           if ($LASTEXITCODE -ne 0) { throw 'Extraction impossible' }
           Copy-Item -Recurse "$env:pythonLocation" release-payload/python
-          python -m pip install --no-deps --no-build-isolation --target release-payload/python/Lib/site-packages -r requirements-windows.lock.txt
+          python -m pip install --no-deps --no-build-isolation --upgrade --target release-payload/python/Lib/site-packages -r requirements-windows.lock.txt
           if ($LASTEXITCODE -ne 0) { throw 'Installation des dépendances dans le paquet impossible' }
           & release-payload/python/python.exe -m pip check
           if ($LASTEXITCODE -ne 0) { throw 'Le verrou des dépendances est incomplet ou incohérent.' }
-          & release-payload/python/python.exe -c "import fastapi, uvicorn, httpx, keyring, pypdf, PIL.Image, cryptography, websockets, ddgs, webview, pynput, clr_loader"
+          & release-payload/python/python.exe -c "import fastapi, uvicorn, httpx, keyring, pypdf, PIL.Image, cryptography, websockets, ddgs, lxml.etree, webview, pynput, clr_loader"
           if ($LASTEXITCODE -ne 0) { throw 'Le Python distribué ne charge pas toutes les dépendances, notamment les extensions natives.' }
           Set-Content -Encoding ascii release-payload/VERSION $env:RELEASE_VERSION
           "RELEASE_VERSION=$($env:RELEASE_VERSION.TrimStart('v'))" | Out-File -FilePath $env:GITHUB_ENV -Append

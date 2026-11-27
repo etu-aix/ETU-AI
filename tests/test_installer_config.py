@@ -28,7 +28,7 @@ class InstallerConfigTests(unittest.TestCase):
         setup = (root / "installer" / "setup.iss").read_text(encoding="utf-8")
         workflow = (root / ".github" / "workflows" / "windows-setup.yml").read_text(encoding="utf-8")
         self.assertNotIn("installer\\prepare.py", setup)
-        self.assertIn("pip install --no-deps --no-build-isolation --target release-payload/python/Lib/site-packages", workflow)
+        self.assertIn("pip install --no-deps --no-build-isolation --upgrade --target release-payload/python/Lib/site-packages", workflow)
         self.assertNotIn("--only-binary=:all:", workflow)
         self.assertIn('Filename: "{app}\\ETU-AI.exe"', setup)
         self.assertIn("PrivilegesRequired=lowest", setup)
@@ -48,7 +48,7 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("setuptools==84.2.1", workflow)
         self.assertIn("innosetup --version=6.7.1", workflow)
         self.assertIn("-r requirements-windows.lock.txt", workflow)
-        for package in ("fastapi", "uvicorn", "httpx", "keyring", "pypdf", "pillow", "cryptography", "websockets", "ddgs", "pywebview", "pynput"):
+        for package in ("fastapi", "uvicorn", "httpx", "keyring", "pypdf", "pillow", "cryptography", "websockets", "ddgs", "lxml", "pywebview", "pynput"):
             self.assertRegex(lock, rf"(?m)^{package}==[^\s]+$")
         self.assertRegex(
             lock,
