@@ -41,8 +41,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Le verrou des dépendances est incomplet ou incohérent.' }
           & release-payload/python/python.exe -c "import fastapi, uvicorn, httpx, keyring, pypdf, PIL.Image, cryptography, websockets, ddgs, lxml.etree, webview, pynput, clr_loader"
           if ($LASTEXITCODE -ne 0) { throw 'Le Python distribué ne charge pas toutes les dépendances, notamment les extensions natives.' }
-          Set-Content -Encoding ascii release-payload/VERSION $env:RELEASE_VERSION
-          "RELEASE_VERSION=$($env:RELEASE_VERSION.TrimStart('v'))" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $numericVersion = $env:RELEASE_VERSION.TrimStart('v')
+          Set-Content -Encoding ascii release-payload/VERSION $numericVersion
+          "RELEASE_VERSION=$numericVersion" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Run tests
         shell: pwsh
         run: |
