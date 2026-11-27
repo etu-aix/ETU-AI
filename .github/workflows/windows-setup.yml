@@ -109,9 +109,26 @@ jobs:
         run: |
           $disabledProfiles = Get-NetFirewallProfile | Where-Object { -not $_.Enabled }
           if ($disabledProfiles) { throw 'Windows Firewall must be enabled to prove that the package runs without internet access.' }
-          New-NetFirewallRule -DisplayName 'ETU-AI offline package smoke test' -Direction Outbound -Action Block -RemoteAddress Internet -Profile Any | Out-Null
-          $internetReachable = Test-NetConnection -ComputerName '1.1.1.1' -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue
-          if ($internetReachable) { throw 'The outbound firewall rule did not block internet access.' }
+          & release-payload/python/python.exe -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()"
+          if ($LASTEXITCODE -ne 0) { throw 'The runner cannot reach the public test address before network isolation.' }
+          # Scope the rules to package executables so the Actions runner can report results and upload artifacts.
+          $setup = Get-ChildItem installer/output/ETU-AI-Setup-*.exe | Select-Object -First 1
+          $perUserRoot = Join-Path $env:RUNNER_TEMP 'ETU-AI-offline-smoke'
+          $standardRoot = Join-Path $env:RUNNER_TEMP 'ETU-AI-standard-user-smoke\installed'
+          $programs = @(
+            $setup.FullName,
+            (Join-Path $env:RUNNER_TEMP 'ETU-AI-older-installer\ETU-AI-Setup-0.0.0.exe'),
+            (Join-Path $perUserRoot 'ETU-AI.exe'),
+            (Join-Path $perUserRoot 'python\python.exe'),
+            (Join-Path $perUserRoot 'python\pythonw.exe'),
+            (Join-Path $standardRoot 'ETU-AI.exe'),
+            (Join-Path $standardRoot 'python\python.exe'),
+            (Join-Path $standardRoot 'python\pythonw.exe')
+          )
+          $rulePrefix = "ETU-AI offline package smoke test $env:GITHUB_RUN_ID"
+          foreach ($index in 0..($programs.Count - 1)) {
+            New-NetFirewallRule -DisplayName "$rulePrefix $index" -Direction Outbound -Action Block -RemoteAddress Internet -Profile Any -Program $programs[$index] | Out-Null
+          }
       - name: Smoke test per-user offline package
         shell: pwsh
         run: |
@@ -133,6 +150,8 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "Previous-version per-user smoke install failed: $($install.ExitCode)" }
           $python = Join-Path $installRoot 'python\python.exe'
           if (-not (Test-Path (Join-Path $installRoot 'ETU-AI.exe')) -or -not (Test-Path $python)) { throw 'The setup did not install the launcher and bundled Python.' }
+          & $python -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()" *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'The bundled Python can still reach the public test address.' }
           $versionFile = Join-Path $installRoot 'VERSION'
           [IO.File]::WriteAllText($versionFile, '0.0.0')
           $chatDb = Join-Path $installRoot 'storage\chats.db'
@@ -241,7 +260,7 @@ jobs:
       - name: Remove offline smoke firewall rule
         if: ${{ always() }}
         shell: pwsh
-        run: Remove-NetFirewallRule -DisplayName 'ETU-AI offline package smoke test' -ErrorAction SilentlyContinue
+        run: Get-NetFirewallRule -DisplayName "ETU-AI offline package smoke test $env:GITHUB_RUN_ID *" -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
       - name: Check Ed25519 release key
         id: ed25519
         env:

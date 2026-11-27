@@ -15,7 +15,8 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 if (-not $localAppData) { throw 'The standard Windows user profile did not expose LocalApplicationData.' }
-$installRoot = Join-Path $localAppData 'Programs\ETU-AI-standard-user-smoke'
+# The runner grants this user a private test directory; its fixed path lets the firewall target the installed binaries.
+$installRoot = Join-Path (Split-Path -Parent $LogPath) 'installed'
 $installerLog = Join-Path (Split-Path -Parent $LogPath) 'standard-user-installer.log'
 Write-Output "Running as $([Security.Principal.WindowsIdentity]::GetCurrent().Name); LocalApplicationData is '$localAppData'."
 $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 8900)
@@ -38,6 +39,8 @@ $versionPath = Join-Path $installRoot 'VERSION'
 if (-not (Test-Path $launcherPath) -or -not (Test-Path $pythonPath)) {
   throw 'The standard-user setup did not install the launcher and bundled Python.'
 }
+& $pythonPath -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()" *> $null
+if ($LASTEXITCODE -eq 0) { throw 'The standard-user bundled Python can still reach the public test address.' }
 if ((Get-Content -Raw $versionPath).Trim() -ne $ExpectedVersion) {
   throw 'The standard-user setup installed an unexpected application version.'
 }
