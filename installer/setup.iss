@@ -12,6 +12,8 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=ETU-AI
+SetupIconFile=..\assets\etu-ai_logo.ico
+UninstallDisplayIcon={app}\ETU-AI.exe
 
 [Files]
 Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.json"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -26,17 +28,3 @@ Type: filesandordirs; Name: "{app}\.venv"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "ETU-AI"; Flags: uninsdeletevalue
-
-[Code]
-procedure CurStepChanged(CurStep: TSetupStep);
-var ResultCode: Integer;
-begin
-  if CurStep = ssPostInstall then begin
-    if not Exec(ExpandConstant('{app}\python\python.exe'),
-      '"' + ExpandConstant('{app}\installer\prepare.py') + '"',
-      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-      RaiseException('Impossible de préparer ETU-AI.')
-    else if ResultCode <> 0 then
-      RaiseException('La création de l’environnement ETU-AI a échoué. Vérifiez votre connexion Internet et relancez le programme d’installation.');
-  end;
-end;

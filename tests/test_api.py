@@ -109,6 +109,76 @@ class TestAPIServer(unittest.TestCase):
         self.assertIn("ETU-AI-Setup-0.9.1.exe", response.headers["content-disposition"])
         download.assert_called_once_with(installer, "v0.9.1")
 
+    def test_direct_update_actions_reject_non_local_origins(self):
+        for method, url in (
+            (self.client.post, "/api/updates/app/prepare/v1.2.0"),
+            (self.client.get, "/api/updates/app/progress"),
+            (self.client.post, "/api/updates/app/install/v1.2.0"),
+        ):
+            with self.subTest(url=url):
+                response = method(url, headers={"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"})
+                self.assertEqual(response.status_code, 403)
+
+    def test_startup_setting_uses_the_bundled_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            launcher = root / "ETU-AI.exe"
+            launcher.touch()
+            with patch.object(api_server, "BASE_DIR", root):
+                self.assertEqual(api_server._startup_command(), api_server.subprocess.list2cmdline([str(launcher), "--mode", "local"]))
+
+    def test_direct_update_keeps_only_a_fully_verified_installer(self):
+        import hashlib
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from tools.sign_release import create_manifest
+
+        key = Ed25519PrivateKey.generate()
+        installer = {"name": "ETU-AI-Setup-1.2.0.exe",
+                     "url": "https://github.com/etu-aix/ETU-AI/releases/download/v1.2.0/ETU-AI-Setup-1.2.0.exe",
+                     "size": 8, "digest": "sha256:" + hashlib.sha256(b"MZsetup!").hexdigest()}
+        release = {"version": "v1.2.0", "assets": [installer]}
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / installer["name"]
+            package.write_bytes(b"MZsetup!")
+            manifest = create_manifest(package, "v1.2.0", installer["url"], key)
+            with patch.object(api_server, "latest_app_release", return_value=release), \
+                 patch.object(api_server, "select_app_installer", return_value=installer), \
+                 patch.object(api_server, "fetch_signed_installer_manifest", return_value=manifest), \
+                 patch.object(api_server, "RELEASE_SIGNING_PUBLIC_KEY", key.public_key().public_bytes_raw()), \
+                 patch.object(api_server, "download_verified_app_installer", return_value=package):
+                api_server._app_update_state = {"status": "downloading", "version": "v1.2.0"}
+                api_server._prepare_direct_app_update("v1.2.0")
+            self.assertEqual(api_server._app_update_state["status"], "ready")
+            self.assertIs(api_server._app_update_path, package)
+            package.unlink()
+            api_server._app_update_path = None
+            api_server._app_update_manifest = None
+
+    def test_direct_update_discards_a_corrupted_installer(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from tools.sign_release import create_manifest
+
+        key = Ed25519PrivateKey.generate()
+        installer = {"name": "ETU-AI-Setup-1.2.0.exe",
+                     "url": "https://github.com/etu-aix/ETU-AI/releases/download/v1.2.0/ETU-AI-Setup-1.2.0.exe",
+                     "size": 8}
+        release = {"version": "v1.2.0", "assets": [installer]}
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / installer["name"]
+            package.write_bytes(b"MZsetup!")
+            manifest = create_manifest(package, "v1.2.0", installer["url"], key)
+            package.write_bytes(b"MZbroken")
+            with patch.object(api_server, "latest_app_release", return_value=release), \
+                 patch.object(api_server, "select_app_installer", return_value=installer), \
+                 patch.object(api_server, "fetch_signed_installer_manifest", return_value=manifest), \
+                 patch.object(api_server, "RELEASE_SIGNING_PUBLIC_KEY", key.public_key().public_bytes_raw()), \
+                 patch.object(api_server, "download_verified_app_installer", return_value=package):
+                api_server._app_update_state = {"status": "downloading", "version": "v1.2.0"}
+                api_server._prepare_direct_app_update("v1.2.0")
+            self.assertEqual(api_server._app_update_state["status"], "error")
+            self.assertFalse(package.exists())
+            self.assertIsNone(api_server._app_update_path)
+
     def test_beacon_listener_fallback_handles_unavailable_command_output(self):
         from types import ModuleType, SimpleNamespace
 

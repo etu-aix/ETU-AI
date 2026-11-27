@@ -17,6 +17,17 @@ import time
 import urllib.request
 import webbrowser
 
+from beacon_address import beacon_port
+
+# PyInstaller's windowed bootloader sets these streams to None. Keep the
+# existing diagnostic prints harmless when users launch the GUI executable.
+_null_stream = open(os.devnull, "w", encoding="utf-8") if getattr(sys, "frozen", False) else None
+if _null_stream is not None:
+    if sys.stdout is None:
+        sys.stdout = _null_stream
+    if sys.stderr is None:
+        sys.stderr = _null_stream
+
 # A frozen launcher lives beside the installed application files.  In source
 # mode, keep the existing script-relative behavior.
 ROOT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
@@ -43,7 +54,7 @@ def choose_launch_mode() -> str | None:
         options = (
             ("normal", "Normal — protections standard, services accessibles uniquement sur cet ordinateur."),
             ("local", "Local — autorise les origines ETU 2 sur localhost ; services limités à cet ordinateur."),
-            ("server", "Serveur — expose MAIA Beacon sur le réseau local au port 11343."),
+            ("server", f"Serveur — expose MAIA Beacon sur le réseau local au port {beacon_port()}."),
         )
         for row, (value, label) in enumerate(options, start=1):
             ttk.Radiobutton(frame, text=label, value=value, variable=mode).grid(row=row, column=0, sticky="w", pady=4)
@@ -111,10 +122,16 @@ def check_server_ready(url: str, timeout: int = 15) -> bool:
 def start_server(mode: str = "local") -> subprocess.Popen:
     """Démarre le serveur API FastAPI local."""
     env = configure_launch_environment(os.environ, mode)
+    env["ETU_LAUNCHER_PID"] = str(os.getpid())
     env["PYTHONPATH"] = str(ROOT_DIR) + os.pathsep + env.get("PYTHONPATH", "")
 
     # One process serves both the UI and ETU 2 bridge, sharing pairing state.
-    project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if os.name == "nt" and getattr(sys, "frozen", False):
+        project_python = ROOT_DIR / "python" / "python.exe"
+    else:
+        project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if os.name == "nt" and not project_python.is_file():
+            project_python = ROOT_DIR / "python" / "python.exe"
     if not project_python.is_file() and sys.prefix == sys.base_prefix:
         raise RuntimeError("Environnement virtuel introuvable. Créez .venv et installez requirements-app.txt avant de lancer ETU-AI.")
     cmd = [
@@ -123,17 +140,24 @@ def start_server(mode: str = "local") -> subprocess.Popen:
     ]
 
     print("[+] Lancement du serveur ETU-AI sur http://127.0.0.1:8900...")
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" and getattr(sys, "frozen", False) else 0
     process = subprocess.Popen(
         cmd,
         cwd=str(ROOT_DIR),
         env=env,
+        creationflags=flags,
     )
     return process
 
 
 def start_companion() -> bool:
     """Start the desktop process when its optional dependencies are installed."""
-    project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if os.name == "nt" and getattr(sys, "frozen", False):
+        project_python = ROOT_DIR / "python" / "python.exe"
+    else:
+        project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        if os.name == "nt" and not project_python.is_file():
+            project_python = ROOT_DIR / "python" / "python.exe"
     if not project_python.is_file() and sys.prefix == sys.base_prefix:
         return False
     python = str(project_python) if project_python.is_file() else sys.executable
@@ -166,7 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 60)
     print(f"[i] Mode sélectionné : {mode}")
     if mode == "server":
-        print("[!] L'API MAIA Beacon sera accessible sans authentification depuis les appareils pouvant joindre le port 11343.")
+        print(f"[!] L'API MAIA Beacon sera accessible sans authentification depuis les appareils pouvant joindre le port {beacon_port()}.")
 
     if check_server_ready(SERVER_URL, timeout=1):
         try:
@@ -203,9 +227,9 @@ def main(argv: list[str] | None = None) -> int:
                     if ipaddress.ip_address(address[4][0]).is_private
                     and not ipaddress.ip_address(address[4][0]).is_loopback
                 })
-                print("[!] MAIA Beacon expose son API sans authentification au réseau local, port 11343.")
+                print(f"[!] MAIA Beacon expose son API sans authentification au réseau local, port {beacon_port()}.")
                 for address in lan_ips:
-                    print(f"    http://{address}:11343")
+                    print(f"    http://{address}:{beacon_port()}")
             webbrowser.open(SERVER_URL)
         else:
             print("[!] Le serveur met plus de temps que prévu à démarrer.")

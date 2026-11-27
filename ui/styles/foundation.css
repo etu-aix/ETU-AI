@@ -160,6 +160,7 @@ header { background: var(--bg-primary); backdrop-filter: blur(16px); }
 .api-provider-mark img { display: block; width: 25px; height: 25px; object-fit: contain; }
 html[data-theme="dark"] .api-provider-nav-mark img,
 html[data-theme="dark"] .api-provider-mark img { filter: invert(1); }
+#api-provider-brand[data-provider="maia-systems"] .api-provider-mark img { filter: none; }
 .api-provider-nav-copy { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
 .api-provider-nav-state { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--border-color); }
 .api-provider-nav-state.is-configured { background: var(--success); }

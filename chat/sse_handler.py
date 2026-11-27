@@ -5,6 +5,7 @@ Intercepte les appels d'outils, émet des fragments HTML en temps réel et persi
 
 from collections.abc import AsyncGenerator
 import asyncio
+from beacon_address import beacon_url
 import json
 from typing import Any, Callable, Optional
 import httpx
@@ -26,16 +27,20 @@ class ChatStreamHandler:
         self,
         storage: Optional[StorageManager] = None,
         tool_executor: Optional[ToolExecutor] = None,
-        llama_url: str = "http://127.0.0.1:11343",
+        llama_url: Optional[str] = None,
         local_model_selector: Optional[Callable[[str, bool], Any]] = None,
         wiki=None,
     ):
         self.storage = storage or StorageManager()
         self.tool_executor = tool_executor or ToolExecutor()
-        self.llama_url = llama_url.rstrip("/")
+        self._llama_url = llama_url.rstrip("/") if llama_url else None
         self.local_model_selector = local_model_selector
         self.active_requests: dict[str, asyncio.Task] = {}
         self.wiki = wiki
+
+    @property
+    def llama_url(self) -> str:
+        return self._llama_url or beacon_url()
 
     def cancel(self, request_id: str) -> bool:
         task = self.active_requests.get(request_id)
@@ -681,7 +686,7 @@ class ChatStreamHandler:
                 f'</div>'
                 f'<div class="etu-card-body">'
                 f'<p class="etu-text">Le modèle d\'IA local est en cours d\'initialisation ou non démarré ({e}).</p>'
-                f'<p class="etu-text">Assurez-vous que <code>beacon.py</code> est actif sur le port 11343.</p>'
+                f'<p class="etu-text">Assurez-vous que <code>beacon.py</code> est actif sur le port configuré.</p>'
                 f'</div>'
                 f'</div>'
             )

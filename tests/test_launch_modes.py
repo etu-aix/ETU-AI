@@ -1,6 +1,7 @@
 """Network launch profiles keep normal mode private and opt in to exceptions."""
 import os
 from pathlib import Path
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -45,6 +46,21 @@ class LaunchModeTests(unittest.TestCase):
             start_server('local')
         self.assertEqual(launch.call_args.args[0][0],str(expected))
         self.assertEqual(launch.call_args.kwargs['env']['ETU_LAUNCH_MODE'],'local')
+
+    @unittest.skipUnless(os.name == 'nt', 'Python livré par l’installateur Windows')
+    def test_server_uses_bundled_python_when_no_venv_exists(self):
+        bundled = ROOT / 'python' / 'python.exe'
+        with patch('run_launcher.Path.is_file', side_effect=[False, True, True]), patch('run_launcher.subprocess.Popen') as launch:
+            start_server('local')
+        self.assertEqual(launch.call_args.args[0][0], str(bundled))
+
+    @unittest.skipUnless(os.name == 'nt', 'Lanceur compilé pour Windows')
+    def test_frozen_launcher_prefers_packaged_runtime_over_legacy_venv(self):
+        bundled = ROOT / 'python' / 'python.exe'
+        with patch('run_launcher.sys.frozen', True, create=True), patch('run_launcher.Path.is_file', return_value=True), patch('run_launcher.subprocess.Popen') as launch:
+            start_server('local')
+        self.assertEqual(launch.call_args.args[0][0], str(bundled))
+        self.assertEqual(launch.call_args.kwargs['creationflags'], subprocess.CREATE_NO_WINDOW)
 
     def test_server_retains_current_virtual_environment(self):
         with patch('run_launcher.Path.is_file',return_value=False), patch('run_launcher.sys.prefix', 'virtual-env'), patch('run_launcher.sys.base_prefix', 'system-python'), patch('run_launcher.subprocess.Popen') as launch:

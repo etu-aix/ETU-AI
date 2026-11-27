@@ -451,6 +451,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-settings-uninstall")?.addEventListener("click", () => showToast("La désinstallation sera disponible avec le programme d’installation de bureau.", "info"));
   document.getElementById("btn-settings-dependencies")?.addEventListener("click", () => showToast("La désinstallation des dépendances sera disponible avec le programme d’installation de bureau.", "info"));
   document.getElementById("btn-settings-reinstall-server")?.addEventListener("click", reinstallServerVariant);
+  document.getElementById("settings-beacon-port-form")?.addEventListener("submit", updateBeaconPort);
   document.getElementById("btn-settings-beacon-toggle")?.addEventListener("click", toggleBeaconPower);
   document.getElementById("btn-settings-beacon-sleep")?.addEventListener("click", sleepBeacon);
   document.getElementById("btn-settings-beacon-restart")?.addEventListener("click", restartBeacon);
@@ -516,6 +517,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   document.getElementById("btn-settings-update")?.addEventListener("click", () => {
+    if (["available", "ready"].includes(appUpdateActivity?.status) && appUpdateActivity.installerAuthenticated && appUpdateActivity.directInstallSupported) {
+      startDirectAppUpdate();
+      return;
+    }
     if (appUpdateActivity?.status === "available") {
       showDownloadsView();
       return;
@@ -670,17 +675,17 @@ function renderBeaconSettings(data) {
     summary.dataset.state = !data.enabled ? "disabled" : (isAsleep || data.status === "sleeping") ? "sleeping" : online ? "online" : "offline";
     const logo = document.getElementById("settings-beacon-logo");
     if (logo) {
-      logo.innerHTML = avatarMarkup(getActiveProfile().avatar);
+      logo.innerHTML = '<img src="/static/provider-icons/maia_neutre_vert.svg?v=maia-beacon-mark-2" alt="">';
       logo.dataset.state = summary.dataset.state;
     }
   }
   if (toggle) {
     const label = toggle.querySelector("span:last-child");
-    if (label) label.textContent = !data.enabled ? "Allumer" : isAsleep ? "Réveiller" : !online ? "Allumer" : "Éteindre";
-    toggle.disabled = beaconSettingsBusy || wakingOrSleeping || (!online && !data.enabled && !data.setup_completed);
+    if (label) label.textContent = data.external ? "Géré par une autre application" : !data.enabled ? "Allumer" : isAsleep ? "Réveiller" : !online ? "Allumer" : "Éteindre";
+    toggle.disabled = beaconSettingsBusy || data.external || wakingOrSleeping || (!online && !data.enabled && !data.setup_completed);
   }
-  if (sleep) sleep.disabled = beaconSettingsBusy || !data.enabled || !online || (powerStateKnown && data.power_state !== "awake");
-  if (restart) restart.disabled = beaconSettingsBusy || !data.enabled || !online || (powerStateKnown && data.power_state !== "awake");
+  if (sleep) sleep.disabled = beaconSettingsBusy || data.external || !data.enabled || !online || (powerStateKnown && data.power_state !== "awake");
+  if (restart) restart.disabled = beaconSettingsBusy || data.external || !data.enabled || !online || (powerStateKnown && data.power_state !== "awake");
   const contextMenu = getBeaconContextMenu();
   const contextTrigger = document.getElementById("settings-beacon-context-trigger");
   const contextStatus = document.getElementById("settings-beacon-context-status");
@@ -698,6 +703,10 @@ function renderBeaconSettings(data) {
     }
     if (contextTrigger) contextTrigger.disabled = beaconSettingsBusy || !hasContextSetting;
   }
+  const externalInfo = document.getElementById("settings-beacon-external-info");
+  if (externalInfo) externalInfo.textContent = data.external ? "Beacon externe : son application contrôle son démarrage et son arrêt." : "";
+  const portInput = document.getElementById("settings-beacon-port");
+  if (portInput && document.activeElement !== portInput) portInput.value = data.port || 11343;
   document.getElementById("settings-beacon-address").textContent = `${data.host || "127.0.0.1"}:${data.port || 11343}`;
   document.getElementById("settings-beacon-model").textContent = data.active_model || "Aucun";
   document.getElementById("settings-beacon-engine").textContent = data.active_engine || (data.active_model ? "Non communiqué" : "Aucun modèle chargé");
@@ -732,6 +741,34 @@ async function loadBeaconSettings() {
       summary.dataset.state = "offline";
     }
   }
+}
+
+async function saveBeaconPort(port, useExisting = false) {
+  const response = await fetch("/api/settings/beacon/port", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ port, use_existing: useExisting }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Port invalide.");
+  return data;
+}
+
+async function updateBeaconPort(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const status = document.getElementById("settings-beacon-port-status");
+  const button = form.querySelector("button");
+  button.disabled = true;
+  status.textContent = "Enregistrement…";
+  try {
+    const data = await saveBeaconPort(Number(document.getElementById("settings-beacon-port").value));
+    status.textContent = data.probe.state === "beacon"
+      ? "Port enregistré. Un service MAIA-Beacon compatible y répond déjà."
+      : "Port enregistré. Allumez MAIA-Beacon pour l’utiliser.";
+    await loadBeaconSettings();
+  } catch (error) {
+    status.textContent = error.message || "Impossible d’enregistrer le port.";
+  } finally { button.disabled = false; }
 }
 
 async function toggleBeaconPower() {
@@ -862,13 +899,17 @@ async function initApiSettings() {
   const providerLabels = { openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini", mistral: "Mistral", openrouter: "OpenRouter", groq: "Groq", together: "Together AI", deepseek: "DeepSeek", xai: "xAI", cerebras: "Cerebras", fireworks: "Fireworks AI", perplexity: "Perplexity", nvidia: "NVIDIA NIM", sambanova: "SambaNova", deepinfra: "DeepInfra", "github-models": "GitHub Models", "maia-systems": "MAIA Systems", "openai-compatible": "API compatible OpenAI", custom: "Fournisseur personnalisé" };
   const providerMarks = { openai: "✳", anthropic: "✹", gemini: "✦", mistral: "M", openrouter: "◈", groq: "G", together: "T", deepseek: "D", xai: "X", cerebras: "C", fireworks: "F", perplexity: "P", nvidia: "N", sambanova: "S", deepinfra: "DI", "github-models": "GH", "openai-compatible": "AI", custom: "＋" };
   const providerSvg = new Set(["openai", "anthropic", "gemini", "mistral", "openrouter", "groq", "together", "deepseek", "xai", "cerebras", "fireworks", "perplexity", "nvidia", "sambanova", "deepinfra", "github-models", "maia-systems"]);
-  const setProviderMark = (element, id) => {
+  const setProviderMark = (element, id, monochrome = false) => {
     element.replaceChildren();
     if (providerSvg.has(id)) {
       const image = document.createElement("img");
-      image.src = `/static/provider-icons/${id}.svg`;
+      const source = id === "maia-systems"
+        ? monochrome ? "maia-systems-mono.svg" : "maia_neutre_vert.svg"
+        : `${id}.svg`;
+      image.src = `/static/provider-icons/${source}?v=maia-provider-logo-1`;
       image.alt = "";
       image.setAttribute("aria-hidden", "true");
+      if (id === "maia-systems" && !monochrome) image.style.filter = "none";
       element.append(image);
     } else {
       element.textContent = providerMarks[id] || "AI";
@@ -883,7 +924,7 @@ async function initApiSettings() {
       button.type = "button";
       button.className = "api-provider-nav-item";
       button.setAttribute("aria-current", String(id === selected));
-      const mark = document.createElement("span"); mark.className = "api-provider-nav-mark"; setProviderMark(mark, id);
+      const mark = document.createElement("span"); mark.className = "api-provider-nav-mark"; setProviderMark(mark, id, true);
       const copy = document.createElement("span"); copy.className = "api-provider-nav-copy"; copy.textContent = id === "custom" ? "Personnalisé" : id === "openai-compatible" ? "Autre API compatible" : (preset.label || providerLabels[id] || id);
       const state = document.createElement("span"); state.className = "api-provider-nav-state";
       if (currentConfig.configured?.[id]?.has_api_key) state.classList.add("is-configured");
@@ -1561,6 +1602,41 @@ class WizardParticlesFX {
   }
 }
 
+function playWizardIntroduction() {
+  const overlay = document.getElementById("wizard-intro");
+  const card = document.querySelector("#wizard-container .wizard-card");
+  const target = document.querySelector("#wizard-step-1 .wizard-mascot");
+  if (!overlay || !card || !target || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const content = [...card.children].filter((node) => node !== overlay);
+  content.forEach((node) => { node.inert = true; });
+  overlay.hidden = false;
+  card.classList.add("wizard-intro-playing");
+  const skip = document.getElementById("wizard-intro-skip");
+  const logo = overlay.querySelector(".wizard-intro-logo");
+  let finished = false;
+  let timer;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    overlay.hidden = true;
+    card.classList.remove("wizard-intro-playing");
+    content.forEach((node) => { node.inert = false; });
+    if (document.activeElement === skip) document.querySelector("#wizard-step-1 h3")?.focus({ preventScroll: true });
+  };
+  skip.addEventListener("click", finish, { once: true });
+  timer = window.setTimeout(() => {
+    const from = logo.getBoundingClientRect();
+    const to = target.getBoundingClientRect();
+    overlay.classList.add("is-arriving");
+    const movement = logo.animate([
+      { transform: "translate(0, 0) scale(1)" },
+      { transform: `translate(${to.left + to.width / 2 - from.left - from.width / 2}px, ${to.top + to.height / 2 - from.top - from.height / 2}px) scale(${to.width / from.width})` },
+    ], { duration: 1050, easing: "cubic-bezier(.76, 0, .24, 1)", fill: "forwards" });
+    movement.finished.then(finish, finish);
+  }, 4100);
+}
+
 async function initSetupWizard() {
   const wizardContainer = document.getElementById("wizard-container");
   const appContainer = document.getElementById("app-container");
@@ -1578,15 +1654,85 @@ async function initSetupWizard() {
   // Les effets de particules étaient coûteux sur les machines visées par l'IA locale.
   // L'orbe CSS conserve un retour visuel sans boucle de rendu permanente.
 
+  const mascot = wizardContainer.querySelector(".step-hero .wizard-mascot");
+  if (mascot && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    wizardContainer.addEventListener("pointermove", (event) => {
+      if (event.pointerType !== "mouse") return;
+      const rect = mascot.getBoundingClientRect();
+      const dx = Math.max(-5, Math.min(5, (event.clientX - rect.left - rect.width / 2) / 80));
+      const dy = Math.max(-5, Math.min(5, (event.clientY - rect.top - rect.height / 2) / 80));
+      mascot.style.setProperty("--mascot-x", `${dx}px`);
+      mascot.style.setProperty("--mascot-y", `${dy}px`);
+    });
+    wizardContainer.addEventListener("pointerleave", () => {
+      mascot.style.removeProperty("--mascot-x");
+      mascot.style.removeProperty("--mascot-y");
+    });
+  }
+
+  const wizardPort = document.getElementById("wizard-beacon-port");
+  const detection = document.getElementById("wizard-beacon-detection");
+  const useBeaconButton = document.getElementById("btn-wizard-use-beacon");
+  let probeSequence = 0;
+  const inspectWizardPort = async () => {
+    const sequence = ++probeSequence;
+    useBeaconButton.hidden = true;
+    if (!wizardPort.reportValidity()) { detection.textContent = "Choisissez un port entre 1 et 65535."; return null; }
+    detection.textContent = "Vérification du port…";
+    try {
+      const response = await fetch(`/api/settings/beacon/probe?port=${encodeURIComponent(wizardPort.value)}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Vérification impossible.");
+      if (sequence !== probeSequence) return null;
+      const detected = Array.isArray(data.detected) ? data.detected : [];
+      const availableBeacon = data.state === "beacon" ? data : detected[0];
+      useBeaconButton.hidden = !availableBeacon;
+      useBeaconButton.dataset.port = availableBeacon ? String(availableBeacon.port) : "";
+      useBeaconButton.textContent = availableBeacon && Number(availableBeacon.port) !== Number(wizardPort.value)
+        ? `Utiliser le Beacon du port ${availableBeacon.port}` : "Utiliser ce Beacon";
+      detection.textContent = data.state === "beacon"
+        ? `Un service MAIA-Beacon répond sur le port ${data.port}. Utilisez-le ou choisissez un port libre pour une nouvelle installation. Les modèles doivent être disponibles dans les deux applications.`
+        : detected.length
+          ? `MAIA-Beacon détecté sur le port ${detected.map((item) => item.port).join(", ")}. Vous pouvez le sélectionner ou choisir un port libre.`
+        : data.state === "occupied"
+          ? `Le port ${data.port} est utilisé par un autre service. Choisissez un port libre.`
+          : data.state === "free" ? `Le port ${data.port} est libre pour votre installation.`
+            : `Impossible de vérifier le port ${data.port}. Réessayez ou choisissez un autre port.`;
+      return data;
+    } catch (error) { if (sequence === probeSequence) detection.textContent = error.message || "Vérification impossible."; return null; }
+  };
+  document.getElementById("btn-wizard-probe-port").addEventListener("click", inspectWizardPort);
+  wizardPort.addEventListener("input", () => { ++probeSequence; useBeaconButton.hidden = true; });
+  wizardPort.addEventListener("change", inspectWizardPort);
+  useBeaconButton.addEventListener("click", async () => {
+    useBeaconButton.disabled = true;
+    try {
+      if (useBeaconButton.dataset.port) wizardPort.value = useBeaconButton.dataset.port;
+      const probe = await inspectWizardPort();
+      if (!probe || probe.state !== "beacon") return;
+      await saveBeaconPort(Number(wizardPort.value), true);
+      const response = await fetch("/api/setup/defer", { method: "POST" });
+      if (!response.ok) throw new Error("Impossible d’ouvrir ETU-AI.");
+      openMainApp();
+    } catch (error) {
+      detection.textContent = error.message || "Impossible d’utiliser ce Beacon.";
+    } finally { useBeaconButton.disabled = false; }
+  });
+
   // Boutons de navigation du Wizard
   document.getElementById("btn-wizard-to-step2").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     if (button.disabled) return;
     button.disabled = true;
     button.setAttribute("aria-busy", "true");
-    showWizardStep(2);
     try {
+      const probe = await inspectWizardPort();
+      if (!probe || probe.state !== "free") return;
+      await saveBeaconPort(Number(wizardPort.value));
+      showWizardStep(2);
       await loadWizardModelSelection();
+    } catch (error) {
+      detection.textContent = error.message || "Impossible d’enregistrer le port.";
     } finally {
       button.disabled = false;
       button.removeAttribute("aria-busy");
@@ -1681,6 +1827,11 @@ async function initSetupWizard() {
     }
   });
 
+  document.getElementById("btn-wizard-retry-install").addEventListener("click", () => {
+    showWizardStep(1);
+    inspectWizardPort();
+  });
+
   document.getElementById("btn-wizard-finish").addEventListener("click", () => {
     openMainApp();
   });
@@ -1708,6 +1859,7 @@ async function initSetupWizard() {
 
     if (statusData.status === "running") {
       // Installation en cours en arrière-plan -> Affiche l'étape 3
+      loadInstallationMascot();
       wizardContainer.style.display = "flex";
       appContainer.style.display = "none";
       showWizardStep(3);
@@ -1716,10 +1868,17 @@ async function initSetupWizard() {
       return;
     }
 
+    try {
+      const response = await fetch("/api/settings/beacon", { cache: "no-store" });
+      if (response.ok) wizardPort.value = (await response.json()).port;
+      await inspectWizardPort();
+    } catch { detection.textContent = "Impossible de vérifier le port."; }
+
     // Premier démarrage absolu -> Étape 1
     wizardContainer.style.display = "flex";
     appContainer.style.display = "none";
     showWizardStep(1);
+    playWizardIntroduction();
     loadHardwareDiagnosis();
   } catch (err) {
     console.warn("Impossible de vérifier l'état du setup :", err);
@@ -1747,6 +1906,8 @@ function showWizardStep(stepNum) {
       heading.focus({ preventScroll: true });
     }
   }
+  const subtitle = document.querySelector("#wizard-container .wizard-subtitle");
+  if (subtitle) subtitle.textContent = { 1: "Je vous aide à démarrer", 2: "Trouvons votre modèle", 3: "Je prépare votre assistant", 4: "Connectons votre fournisseur" }[stepNum] || "Votre assistant, sur cet ordinateur";
   const label = document.getElementById("wizard-step-label");
   if (label) label.textContent = { 1: "Votre ordinateur", 2: "Modèles", 3: "Préparation", 4: "Fournisseur IA" }[stepNum] || "Installation";
   document.getElementById("wizard-container").scrollTop = 0;
@@ -2053,6 +2214,7 @@ function renderWizardModelCards(models, categoryFilter = "all") {
   });
 
   if (filtered.length === 0) {
+    if (counterEl) counterEl.textContent = wizardSelectedModels.size;
     container.innerHTML = `
       <div style="grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--text-muted);">
         <p>Aucun modèle trouvé dans cette catégorie.</p>
@@ -2147,11 +2309,38 @@ async function startWizardInstallation() {
   }
 
   const selectedModels = [...wizardSelectedModels.values()];
+  loadInstallationMascot();
 
   const startButton = document.getElementById("btn-wizard-start-install");
   if (startButton.disabled) return;
   startButton.disabled = true;
   startButton.setAttribute("aria-busy", "true");
+  document.getElementById("btn-wizard-retry-install").hidden = true;
+  document.getElementById("btn-wizard-open-during-install").style.display = "";
+  const cancel = document.getElementById("btn-wizard-cancel-install");
+  cancel.style.display = "";
+  cancel.disabled = false;
+  cancel.textContent = "Annuler l’installation";
+  document.getElementById("btn-wizard-finish").style.display = "none";
+  const installTitle = document.getElementById("install-title");
+  installTitle.textContent = "Configuration en cours";
+  installTitle.style.color = "";
+  const progressStatus = document.getElementById("wizard-progress-status");
+  progressStatus.style.color = "";
+  progressStatus.textContent = "Démarrage…";
+  document.getElementById("install-subtitle").textContent = "Je prépare votre installation…";
+  document.getElementById("wizard-progress-bar").style.width = "0%";
+  document.getElementById("wizard-progress-percent").textContent = "0 %";
+  const progressTrack = document.querySelector("#wizard-step-3 .wizard-progress-track");
+  progressTrack.setAttribute("aria-valuenow", "0");
+  progressTrack.dataset.state = "running";
+  document.querySelector("#wizard-step-3 .wizard-install-visual").dataset.state = "running";
+  document.querySelectorAll("#wizard-stepper .step-item").forEach((item, index) => {
+    item.classList.remove("running", "completed", "cancelled", "error");
+    item.removeAttribute("aria-current");
+    item.querySelector(".step-icon").textContent = String(index + 1);
+    item.querySelector(".step-state").textContent = "À venir";
+  });
   showWizardStep(3);
 
   // Ambiance Thinking Orb Installation
@@ -2183,6 +2372,38 @@ async function startWizardInstallation() {
   }
 }
 
+let installationMascotSvg = null;
+async function loadInstallationMascot() {
+  const mount = document.getElementById("wizard-install-mascot");
+  if (!mount) return;
+  if (!installationMascotSvg) {
+    try {
+      const response = await fetch("/static/setup-install-mascot.svg?v=setup-motion-1", { cache: "force-cache" });
+      if (!response.ok) throw new Error("Mascotte indisponible");
+      const parsed = new DOMParser().parseFromString(await response.text(), "image/svg+xml");
+      const svg = parsed.documentElement;
+      if (svg.localName !== "svg" || parsed.querySelector("parsererror")) throw new Error("SVG invalide");
+      svg.querySelectorAll("script,foreignObject").forEach((node) => node.remove());
+      svg.querySelectorAll("*").forEach((node) => {
+        for (const attr of [...node.attributes]) if (/^on/i.test(attr.name)) node.removeAttribute(attr.name);
+      });
+      installationMascotSvg = document.importNode(svg, true);
+    } catch (error) {
+      console.warn("Animation de la mascotte indisponible :", error);
+      return;
+    }
+  }
+  if (!mount.contains(installationMascotSvg)) mount.replaceChildren(installationMascotSvg);
+  setInstallationMascotMood("thinking");
+}
+
+function setInstallationMascotMood(mood) {
+  const svg = installationMascotSvg;
+  if (!svg) return;
+  for (const name of ["idle", "thinking", "curious", "speaking", "happy"]) svg.classList.remove(`mood-${name}`);
+  svg.classList.add(`mood-${mood}`);
+}
+
 function startPollingSetupProgress() {
   if (setupPollingInterval) clearInterval(setupPollingInterval);
   let pollingInFlight = false;
@@ -2210,21 +2431,18 @@ function startPollingSetupProgress() {
         progressTrack.dataset.state = data.status;
       }
       if (installVisual) installVisual.dataset.state = data.status === "running" ? "running" : data.status;
+      if (data.status === "running") {
+        const moods = ["thinking", "curious", "thinking", "speaking"];
+        setInstallationMascotMood(moods[data.current_step] || "thinking");
+      } else if (data.status === "completed") setInstallationMascotMood("happy");
 
-      // Réactivité de la Thinking Orb selon l'étape
-      if (data.current_step === 0 && wizardParticles) {
-        wizardParticles.setTheme("cyan");
-        if (installSub) installSub.textContent = "Compilation et calibrage du moteur d'inférence haute performance...";
-      } else if (data.current_step === 1 && wizardParticles) {
-        wizardParticles.setTheme("purple");
-        if (installSub) installSub.textContent = "Configuration de l'environnement superviseur MAIA-Beacon...";
-      } else if (data.current_step === 2 && wizardParticles) {
-        wizardParticles.setTheme("purple");
-        if (installSub) installSub.textContent = "Téléchargement & validation d'intégrité des poids de modèles...";
-      } else if (data.current_step === 3 && wizardParticles) {
-        wizardParticles.setTheme("emerald");
-        if (installSub) installSub.textContent = "Vérification en direct du service local sur le port 11343...";
-      }
+      const stepMessages = [
+        "Je prépare le moteur pour votre ordinateur.",
+        "Je configure MAIA-Beacon.",
+        "Je télécharge et vérifie vos modèles.",
+        "Je vérifie que le service et le modèle sont prêts.",
+      ];
+      if (installSub && data.status === "running") installSub.textContent = stepMessages[data.current_step] || "La préparation continue…";
 
       // Mise à jour du stepper réactif
       data.steps.forEach((step, idx) => {
@@ -2265,7 +2483,7 @@ function startPollingSetupProgress() {
       }
 
       // Si terminé avec succès
-      if (data.status === "completed" || (data.completed && data.beacon_online)) {
+      if (data.status === "completed") {
         clearInterval(setupPollingInterval);
         document.getElementById("btn-wizard-open-during-install").style.display = "none";
         document.getElementById("btn-wizard-cancel-install").style.display = "none";
@@ -2276,7 +2494,7 @@ function startPollingSetupProgress() {
           titleEl.style.color = "var(--success)";
         }
         if (statusText) {
-          statusText.textContent = "Serveur MAIA-Beacon actif sur le port 11343 !";
+          statusText.textContent = "MAIA-Beacon est prêt !";
           statusText.style.color = "var(--success)";
         }
         if (installSub) {
@@ -2293,8 +2511,14 @@ function startPollingSetupProgress() {
         }
         window.setTimeout(openMainApp, 1200);
       } else if (data.status === "error") {
+        setInstallationMascotMood("curious");
         clearInterval(setupPollingInterval);
+        document.getElementById("btn-wizard-retry-install").hidden = false;
+        const start = document.getElementById("btn-wizard-start-install");
+        start.disabled = false;
+        start.removeAttribute("aria-busy");
         if (wizardParticles) wizardParticles.setTheme("amber");
+        if (installSub) installSub.textContent = "Je n’ai pas pu terminer la préparation. Modifiez la configuration ou continuez plus tard.";
 
         const titleEl = document.getElementById("install-title");
         if (titleEl) {
@@ -2316,7 +2540,12 @@ function startPollingSetupProgress() {
         if (openBtn) openBtn.style.display = "none";
         if (cancelBtn) cancelBtn.style.display = "none";
       } else if (data.status === "cancelled") {
+        setInstallationMascotMood("idle");
         clearInterval(setupPollingInterval);
+        document.getElementById("btn-wizard-retry-install").hidden = false;
+        const start = document.getElementById("btn-wizard-start-install");
+        start.disabled = false;
+        start.removeAttribute("aria-busy");
         if (installSub) installSub.textContent = "L’installation a été arrêtée. Vos modèles locaux restent disponibles.";
         if (statusText) statusText.textContent = "Installation annulée";
         if (moodText) moodText.textContent = "Configuration reportée";
@@ -3764,14 +3993,23 @@ function renderAppUpdateActivity() {
   const status = document.getElementById("settings-app-update-status");
   const button = document.getElementById("btn-settings-update");
   const icon = document.getElementById("settings-app-update-icon");
+  const progress = document.getElementById("settings-app-update-progress");
   if (!title || !status || !button) return;
   const activity = appUpdateActivity;
   if (icon) icon.innerHTML = window.ETUSVG?.icon(activity?.status === "available" ? "update" : "download") || "";
   const version = activity?.version || (activity?.installedVersion !== "version inconnue" ? activity?.installedVersion : null);
   title.textContent = version ? `ETU-AI ${version}` : "ETU-AI";
   status.textContent = activity?.message || "Vérifiez si une version plus récente de l’application est disponible.";
-  button.disabled = activity?.status === "checking";
-  button.textContent = activity?.status === "available" ? "Mettre à jour"
+  if (progress) {
+    progress.hidden = activity?.status !== "downloading";
+    progress.value = Math.max(0, Math.min(100, Number(activity?.percentage) || 0));
+    progress.setAttribute("aria-label", `Téléchargement de la mise à jour : ${progress.value} %`);
+  }
+  button.disabled = ["checking", "downloading", "installing"].includes(activity?.status);
+  button.textContent = activity?.status === "available" ? (activity.installerAuthenticated && activity.directInstallSupported ? "Mettre à jour" : "Télécharger manuellement")
+    : activity?.status === "downloading" ? `Téléchargement… ${activity.percentage || 0} %`
+    : activity?.status === "ready" ? "Lancer l’installation"
+    : activity?.status === "installing" ? "Fermeture d’ETU-AI…"
     : activity?.status === "checking" ? "Recherche en cours…"
     : "Rechercher des mises à jour";
 }
@@ -3791,7 +4029,11 @@ async function checkAppUpdates() {
       } else if (data.update_available || (!data.installed_version && data.installer_available)) {
         appUpdateActivity = data.installer_available
           ? { status: "available", installedVersion, version: data.version, url: data.url, installer: data.installer,
-            message: `La version ${data.version} est disponible (installée : ${installedVersion}).` }
+            installerAuthenticated: Boolean(data.installer_authenticated),
+            directInstallSupported: Boolean(data.direct_install_supported),
+            releaseNotes: data.release_notes || "",
+            authenticationError: data.installer_authentication_error || "",
+            message: `La version ${data.version} est disponible (installée : ${installedVersion}).${data.installer_authenticated ? (data.direct_install_supported ? "" : " L’installation directe est réservée à Windows.") : " Le manifeste Ed25519 manque ou est invalide ; utilisez seulement le téléchargement manuel."}` }
           : { status: "package-unavailable", installedVersion, version: data.version,
             message: `La version ${data.version} est publiée, mais aucun installateur n’est disponible pour ${data.platform || "ce système"}.` };
       } else if (data.installed_version) {
@@ -3813,6 +4055,44 @@ async function checkAppUpdates() {
   return appUpdateCheckPromise;
 }
 
+async function startDirectAppUpdate() {
+  if (!appUpdateActivity?.installerAuthenticated || !appUpdateActivity.version) return;
+  if (appUpdateActivity.status === "ready") {
+    if (!window.confirm(`L’installateur ${appUpdateActivity.version} a été vérifié. ETU-AI va se fermer pour ouvrir l’installation. Continuer ?`)) return;
+    try {
+      const response = await fetch(`/api/updates/app/install/${encodeURIComponent(appUpdateActivity.version)}`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Impossible de lancer l’installation.");
+      appUpdateActivity = { ...appUpdateActivity, status: "installing", message: "Fermeture d’ETU-AI et ouverture de l’installateur…" };
+    } catch (error) {
+      appUpdateActivity = { ...appUpdateActivity, status: "error", message: error.message };
+    }
+    renderAppUpdateActivity();
+    return;
+  }
+  try {
+    const start = await fetch(`/api/updates/app/prepare/${encodeURIComponent(appUpdateActivity.version)}`, { method: "POST" });
+    const data = await start.json();
+    if (!start.ok) throw new Error(data.detail || "Impossible de préparer la mise à jour.");
+    appUpdateActivity = { ...appUpdateActivity, status: "downloading", percentage: 0, message: "Téléchargement de l’installateur authentifié…" };
+    renderAppUpdateActivity();
+    while (appUpdateActivity.status === "downloading") {
+      await new Promise(resolve => setTimeout(resolve, 700));
+      const response = await fetch("/api/updates/app/progress", { cache: "no-store" });
+      const progress = await response.json();
+      if (!response.ok) throw new Error(progress.detail || "Impossible de lire la progression.");
+      appUpdateActivity = { ...appUpdateActivity, status: progress.status, percentage: progress.percentage || 0,
+        message: progress.message || `Téléchargement de l’installateur : ${progress.percentage || 0} %` };
+      renderAppUpdateActivity();
+    }
+    if (appUpdateActivity.status === "ready") await startDirectAppUpdate();
+    else if (appUpdateActivity.status === "error") showToast(appUpdateActivity.message, "error");
+  } catch (error) {
+    appUpdateActivity = { ...appUpdateActivity, status: "error", message: error.message || "Échec du téléchargement." };
+    renderAppUpdateActivity();
+  }
+}
+
 function renderAppUpdateDownload(list) {
   if (!appUpdateActivity || !["available", "unknown"].includes(appUpdateActivity.status) || !appUpdateActivity.installer?.url) return;
   const row = document.createElement("article");
@@ -3821,12 +4101,21 @@ function renderAppUpdateDownload(list) {
   const status = document.createElement("span");
   status.textContent = appUpdateActivity.status === "available" ? "Mise à jour de l’application disponible" : "Version publiée";
   const detail = document.createElement("small");
-  detail.textContent = `${appUpdateActivity.message} Le SHA-256 publié par GitHub sera vérifié avant le téléchargement. Fermez ETU-AI avant de lancer l’installateur.`;
+  detail.textContent = `${appUpdateActivity.message} ${appUpdateActivity.installerAuthenticated ? "Le manifeste Ed25519 et le SHA-256 seront vérifiés avant l’installation." : "Cette ancienne release n’a pas de manifeste Ed25519 ; le téléchargement manuel vérifie seulement le SHA-256 publié par GitHub."}`;
   const link = document.createElement("a");
   link.className = "etu-btn etu-btn-primary";
   link.href = `/api/updates/app/download/${encodeURIComponent(appUpdateActivity.version)}`;
   link.textContent = "Télécharger l’installateur vérifié";
   row.append(heading, status, detail, link);
+  if (appUpdateActivity.releaseNotes) {
+    const notes = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Notes de version";
+    const content = document.createElement("p");
+    content.textContent = appUpdateActivity.releaseNotes;
+    notes.append(summary, content);
+    row.append(notes);
+  }
   list.prepend(row);
 }
 

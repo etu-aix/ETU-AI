@@ -4,6 +4,7 @@ Expose les endpoints de chat SSE, de gestion des modèles Hugging Face, de persi
 du handshake avec etu-aix.alwaysdata.net et sert l'interface web statique.
 """
 
+from beacon_address import beacon_url, beacon_port
 import json
 import asyncio
 import httpx
@@ -16,6 +17,7 @@ import platform
 import re
 import subprocess
 import threading
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -64,10 +66,10 @@ from wiki.api import router_for as wiki_router
 from tools.executor import ToolExecutor
 from integration.api import router as etu_router, LOCAL_ORIGINS, admin as require_local_admin
 from integration.bridge import bridge, ETU_ORIGINS, ALLOW_LOCALHOST_ORIGINS, LOCALHOST_ORIGIN_REGEX, is_etu_origin
-from integration.updates import latest_app_release, installed_version, is_newer_version, select_app_installer, download_verified_app_installer
+from integration.updates import latest_app_release, installed_version, is_newer_version, select_app_installer, download_verified_app_installer, fetch_signed_installer_manifest, verify_release, RELEASE_SIGNING_PUBLIC_KEY, RELEASE_SIGNING_PUBLIC_KEY_ROTATION_KEYS
 from companion import SHORTCUTS, DEFAULT_SHORTCUT
 
-from setup_wizard import wizard_manager
+from setup_wizard import wizard_manager, probe_beacon_port, discover_beacon_ports
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,10 @@ wiki_service = WikiService(BASE_DIR / "storage" / "wiki", storage, busy=lambda: 
 stream_handler.wiki = wiki_service
 _active_chat_conversations: set[str] = set()
 _model_activation_lock = threading.Lock()
+_app_update_lock = threading.Lock()
+_app_update_state: dict[str, Any] = {"status": "idle"}
+_app_update_path: Optional[Path] = None
+_app_update_manifest: Optional[dict[str, Any]] = None
 
 app = FastAPI(title="ETU-AI Core Server", version="1.0.0")
 app.state.etu_storage = storage
@@ -277,7 +283,7 @@ def get_launch_mode():
         "mode": mode,
         "pid": os.getpid(),
         "beacon_host": "0.0.0.0" if mode == "server" else "127.0.0.1",
-        "beacon_port": 11343,
+        "beacon_port": beacon_port(),
         "localhost_origins_allowed": ALLOW_LOCALHOST_ORIGINS,
     }
 
@@ -311,8 +317,18 @@ def get_app_release(request: Request):
         result["installed_version"] = current
         result["update_available"] = is_newer_version(result.get("version", ""), current)
         result["platform"] = platform.system()
+        result["direct_install_supported"] = result["platform"] == "Windows"
         result["installer"] = select_app_installer(result.get("assets", []), result["platform"], result.get("version", ""))
         result["installer_available"] = result["installer"] is not None
+        result["installer_authenticated"] = False
+        result["installer_authentication_error"] = "Aucun installateur n’est disponible."
+        if result["installer"]:
+            try:
+                fetch_signed_installer_manifest(result.get("assets", []), result["installer"], result["version"], result["platform"])
+                result["installer_authenticated"] = True
+                result["installer_authentication_error"] = ""
+            except ValueError as exc:
+                result["installer_authentication_error"] = str(exc)
         result["choice"] = storage.get_setting("app_update_choice_" + result.get("version", ""), "")
         return result
     except ValueError as exc:
@@ -344,6 +360,120 @@ def download_app_release(request: Request, version: str):
     )
 
 
+def _prepare_direct_app_update(version: str) -> None:
+    global _app_update_state, _app_update_path, _app_update_manifest
+    path = None
+    try:
+        release = latest_app_release()
+        if release.get("version") != version:
+            raise ValueError("Cette version n’est plus la dernière release publiée.")
+        installer = select_app_installer(release.get("assets", []), platform.system(), version)
+        if not installer:
+            raise ValueError("Aucun installateur n’est publié pour ce système.")
+        manifest = fetch_signed_installer_manifest(release.get("assets", []), installer, version, platform.system())
+
+        def progress(downloaded: int, total: int) -> None:
+            with _app_update_lock:
+                _app_update_state.update(downloaded_bytes=downloaded, total_bytes=total,
+                                         percentage=round(downloaded * 100 / total) if total else 0)
+
+        path = download_verified_app_installer(installer, version, on_progress=progress)
+        verify_release(manifest, path, (RELEASE_SIGNING_PUBLIC_KEY, *RELEASE_SIGNING_PUBLIC_KEY_ROTATION_KEYS), expected_version=version)
+        with _app_update_lock:
+            _app_update_path = path
+            _app_update_manifest = manifest
+            _app_update_state.update(status="ready", percentage=100, message="Installateur téléchargé et authentifié.",
+                                     filename=installer["name"])
+    except Exception as exc:
+        if path:
+            path.unlink(missing_ok=True)
+        with _app_update_lock:
+            _app_update_path = None
+            _app_update_manifest = None
+            _app_update_state.update(status="error", message=str(exc))
+
+
+@app.post("/api/updates/app/prepare/{version}")
+def prepare_direct_app_update(request: Request, version: str):
+    require_local_admin(request)
+    if os.name != "nt":
+        raise HTTPException(status_code=400, detail="L’installation directe est disponible uniquement sous Windows.")
+    if not re.fullmatch(r"v?\d+(?:\.\d+){1,3}", version):
+        raise HTTPException(status_code=422, detail="Version de release invalide.")
+    version = version if version.startswith("v") else f"v{version}"
+    current = installed_version()
+    if not current:
+        raise HTTPException(status_code=400, detail="L’installation directe n’est pas disponible depuis une copie de développement.")
+    if not is_newer_version(version, current):
+        raise HTTPException(status_code=409, detail="Cette release n’est pas plus récente que la version installée.")
+    global _app_update_state, _app_update_path, _app_update_manifest
+    with _app_update_lock:
+        if _app_update_state.get("status") == "downloading":
+            raise HTTPException(status_code=409, detail="Un téléchargement de mise à jour est déjà en cours.")
+        if _app_update_path:
+            _app_update_path.unlink(missing_ok=True)
+        _app_update_path = None
+        _app_update_manifest = None
+        _app_update_state = {"status": "downloading", "version": version, "downloaded_bytes": 0,
+                             "total_bytes": 0, "percentage": 0, "message": "Vérification du manifeste signé…"}
+    threading.Thread(target=_prepare_direct_app_update, args=(version,), daemon=True).start()
+    return {"status": "downloading", "version": version}
+
+
+@app.get("/api/updates/app/progress")
+def direct_app_update_progress(request: Request):
+    require_local_admin(request)
+    with _app_update_lock:
+        return {key: value for key, value in _app_update_state.items() if key != "manifest"}
+
+
+@app.post("/api/updates/app/install/{version}")
+def install_direct_app_update(request: Request, version: str):
+    require_local_admin(request)
+    global _app_update_path, _app_update_state, _app_update_manifest
+    if os.name != "nt" or not installed_version():
+        raise HTTPException(status_code=400, detail="L’installation directe n’est pas disponible depuis une copie de développement.")
+    with _app_update_lock:
+        path, manifest = _app_update_path, _app_update_manifest
+        if _app_update_state.get("status") != "ready" or _app_update_state.get("version") != version or not path or not manifest:
+            raise HTTPException(status_code=409, detail="Téléchargez et vérifiez d’abord l’installateur.")
+        expected_path = Path(tempfile.gettempdir()).resolve()
+        if path.parent.resolve() != expected_path or not path.name.startswith("etu-app-installer-"):
+            raise HTTPException(status_code=403, detail="Fichier d’installation temporaire invalide.")
+        try:
+            verify_release(manifest, path, (RELEASE_SIGNING_PUBLIC_KEY, *RELEASE_SIGNING_PUBLIC_KEY_ROTATION_KEYS), expected_version=version)
+        except (OSError, ValueError) as exc:
+            path.unlink(missing_ok=True)
+            _app_update_path = None
+            _app_update_manifest = None
+            _app_update_state = {"status": "error", "message": "Le paquet vérifié a changé. Téléchargez-le à nouveau."}
+            raise HTTPException(status_code=400, detail=_app_update_state["message"]) from exc
+        with path.open("rb") as package:
+            if not package.read(2) == b"MZ":
+                path.unlink(missing_ok=True)
+                _app_update_path = None
+                _app_update_state = {"status": "error", "message": "Installateur Windows invalide."}
+                raise HTTPException(status_code=400, detail="Installateur Windows invalide.")
+        try:
+            launcher_pid = os.environ.get("ETU_LAUNCHER_PID", "0")
+            if not launcher_pid.isdigit():
+                launcher_pid = "0"
+            supervisor_source = BASE_DIR / "installer" / "update_supervisor.ps1"
+            supervisor_path = Path(tempfile.gettempdir()) / f"etu-ai-update-{uuid4().hex}.ps1"
+            supervisor_path.write_text(supervisor_source.read_text(encoding="utf-8"), encoding="utf-8")
+            subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(supervisor_path),
+                              str(os.getpid()), launcher_pid, str(path), str(BASE_DIR / "ETU-AI.exe"), str(supervisor_path),
+                              manifest["sha256"], str(manifest["size"])],
+                             cwd=str(BASE_DIR), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError as exc:
+            supervisor_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Impossible de préparer l’installation : {exc}") from exc
+        _app_update_state["status"] = "installing"
+    threading.Thread(target=_end_app, daemon=True).start()
+    return {"status": "installing"}
+
+
 class UpdateChoiceRequest(BaseModel):
     version: str = Field(pattern=r"^v?\d+(?:\.\d+){1,3}$", max_length=128)
     choice: Literal["open", "later"]
@@ -357,6 +487,9 @@ def set_update_choice(request: Request, body: UpdateChoiceRequest):
 
 
 def _startup_command() -> str:
+    launcher = BASE_DIR / "ETU-AI.exe"
+    if launcher.is_file():
+        return subprocess.list2cmdline([str(launcher), "--mode", "local"])
     python = BASE_DIR / ".venv" / "Scripts" / "pythonw.exe"
     if not python.is_file():
         raise ValueError("Environnement Windows introuvable. Installez ETU-AI avant d’activer cette option.")
@@ -629,6 +762,11 @@ class HardwarePreferenceRequest(BaseModel):
 
 class BeaconEnabledRequest(BaseModel):
     enabled: bool
+
+
+class BeaconPortRequest(BaseModel):
+    port: int = Field(ge=1, le=65535, strict=True)
+    use_existing: bool = False
 
 
 class BeaconContextRequest(BaseModel):
@@ -1324,7 +1462,7 @@ def uninstall_model_projector(filename: str):
         raise HTTPException(status_code=409, detail="Arrêtez la génération avant de désinstaller ce projecteur.")
 
     try:
-        status_url = "http://127.0.0.1:11343/api/status"
+        status_url = beacon_url() + "/api/status"
         with urllib.request.urlopen(status_url, timeout=2) as response:
             beacon_status = json.loads(response.read().decode("utf-8"))
         if beacon_status.get("status") == "running" and beacon_status.get("active_mmproj") == filename:
@@ -1366,14 +1504,14 @@ def uninstall_model(filename: str):
     model_name = filename[:-5]
     beacon_status = None
     try:
-        with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=2) as response:
+        with urllib.request.urlopen(beacon_url() + "/api/status", timeout=2) as response:
             beacon_status = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, OSError, ValueError):
         pass
     if beacon_status and beacon_status.get("active_model") == model_name and beacon_status.get("status") == "running":
         try:
             stop = urllib.request.Request(
-                "http://127.0.0.1:11343/api/stop", data=b"{}",
+                beacon_url() + "/api/stop", data=b"{}",
                 headers={"Content-Type": "application/json"}, method="POST",
             )
             with urllib.request.urlopen(stop, timeout=15):
@@ -1467,7 +1605,7 @@ def activate_local_model_for_chat(model_name: str, needs_vision: bool = False) -
                 if not wizard_manager.is_beacon_online():
                     raise RuntimeError("MAIA-Beacon ne répond pas")
 
-            status_url = "http://127.0.0.1:11343/api/status"
+            status_url = beacon_url() + "/api/status"
             with urllib.request.urlopen(status_url, timeout=3) as response:
                 current = json.loads(response.read().decode("utf-8"))
             if not _beacon_has_model(current, clean_model):
@@ -1501,7 +1639,7 @@ def activate_local_model_for_chat(model_name: str, needs_vision: bool = False) -
                 "mmproj": mmproj or "__etu_no_mmproj__.gguf",
             }
             req = urllib.request.Request(
-                "http://127.0.0.1:11343/api/select", data=json.dumps(selection).encode("utf-8"),
+                beacon_url() + "/api/select", data=json.dumps(selection).encode("utf-8"),
                 headers={"Content-Type": "application/json"}, method="POST",
             )
             with urllib.request.urlopen(req, timeout=10) as response:
@@ -1629,7 +1767,7 @@ def get_beacon_settings() -> dict[str, Any]:
     beacon_status: dict[str, Any] = {}
     if online:
         try:
-            with urllib.request.urlopen("http://127.0.0.1:11343/api/status", timeout=2) as response:
+            with urllib.request.urlopen(beacon_url() + "/api/status", timeout=2) as response:
                 beacon_status = json.loads(response.read().decode("utf-8"))
         except Exception:
             beacon_status = {}
@@ -1639,6 +1777,7 @@ def get_beacon_settings() -> dict[str, Any]:
     return {
         "enabled": enabled,
         "online": online,
+        "external": wizard_manager.is_external_beacon(),
         "setup_completed": wizard_manager.is_completed(),
         "status": beacon_status.get("status", "offline" if not online else "unknown"),
         "active_model": beacon_status.get("active_model"),
@@ -1672,6 +1811,54 @@ def update_beacon_enabled(request: Request, req: BeaconEnabledRequest):
     return get_beacon_settings()
 
 
+@app.get("/api/settings/beacon/probe")
+def probe_beacon(request: Request, port: int = 11343):
+    require_local_admin(request)
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=422, detail="Le port doit être compris entre 1 et 65535.")
+    result = probe_beacon_port(port)
+    result["detected"] = discover_beacon_ports(exclude_port=port)
+    return result
+
+
+@app.put("/api/settings/beacon/port")
+def update_beacon_port(request: Request, req: BeaconPortRequest):
+    require_local_admin(request)
+    old_port = beacon_port()
+    if (req.port != old_port or req.use_existing) and (wizard_manager.status in {"running", "finalizing"} or _active_inference_requests or _active_chat_conversations):
+        raise HTTPException(status_code=409, detail="Attendez la fin de l’installation et des générations avant de changer de port.")
+    if req.port == old_port:
+        probe = probe_beacon_port(old_port)
+        if req.use_existing:
+            if probe["state"] != "beacon":
+                raise HTTPException(status_code=409, detail="Le Beacon ne répond plus. Vérifiez le port et réessayez.")
+            process = wizard_manager.beacon_process
+            storage.set_setting("beacon_external", not (process and process.poll() is None))
+            storage.set_setting("beacon_enabled", True)
+        return {"port": old_port, "probe": probe}
+    process = wizard_manager.beacon_process
+    if process and process.poll() is None:
+        raise HTTPException(status_code=409, detail="Éteignez d’abord MAIA-Beacon dans les paramètres, puis changez le port.")
+    probe = probe_beacon_port(req.port)
+    if req.use_existing and probe["state"] != "beacon":
+        raise HTTPException(status_code=409, detail="Le Beacon ne répond plus. Vérifiez le port et réessayez.")
+    if probe["state"] not in {"free", "beacon"}:
+        raise HTTPException(status_code=409, detail="Ce port est occupé ou sa disponibilité ne peut pas être vérifiée. Choisissez un autre port.")
+    config_path = AI_SERVER_DIR / "config.json"
+    config = {**DEFAULT_CONFIG, **read_json(config_path)}
+    if config.get("llama_port") == req.port:
+        raise HTTPException(status_code=409, detail="Ce port est réservé au moteur llama-server.")
+    config["beacon_port"] = req.port
+    try:
+        atomic_json(config_path, config)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Impossible d’enregistrer le port.") from exc
+    storage.set_setting("beacon_external", probe["state"] == "beacon")
+    if req.use_existing:
+        storage.set_setting("beacon_enabled", True)
+    return {"port": req.port, "probe": probe}
+
+
 @app.put("/api/settings/beacon/context")
 def update_beacon_context(request: Request, req: BeaconContextRequest):
     require_local_admin(request)
@@ -1688,6 +1875,8 @@ def update_beacon_context(request: Request, req: BeaconContextRequest):
 @app.post("/api/settings/beacon/restart")
 def restart_beacon(request: Request):
     require_local_admin(request)
+    if wizard_manager.is_external_beacon():
+        raise HTTPException(status_code=409, detail="Ce Beacon est géré par une autre application ; redémarrez-le depuis celle-ci.")
     if not wizard_manager.is_beacon_enabled():
         raise HTTPException(status_code=409, detail="MAIA-Beacon est désactivé. Réactivez-le pour le redémarrer.")
     if not wizard_manager.is_completed() and not wizard_manager.is_beacon_online():
@@ -2376,7 +2565,7 @@ def server_status():
     model_state = "offline"
     if beacon_online:
         try:
-            req_b = urllib.request.Request("http://127.0.0.1:11343/api/status")
+            req_b = urllib.request.Request(beacon_url() + "/api/status")
             with urllib.request.urlopen(req_b, timeout=2) as resp:
                 bdata = json.loads(resp.read().decode("utf-8"))
                 active_model = bdata.get("active_model")

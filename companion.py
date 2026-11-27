@@ -1,6 +1,7 @@
 """Desktop companion: a persistent webview and a configurable global shortcut."""
 import socket
 import json
+from pathlib import Path
 import sys
 import threading
 import time
@@ -122,7 +123,8 @@ def main():
         window.events.moved += companion.moved
         threading.Thread(target=listen_for_shortcut, args=(companion, keyboard), daemon=True).start()
         threading.Thread(target=watch_server, args=(companion,), daemon=True).start()
-        webview.start(private_mode=False)
+        icon = Path(__file__).resolve().parent / "assets" / "etu-ai_logo.ico"
+        webview.start(private_mode=False, icon=str(icon) if icon.is_file() else None)
     finally:
         lock.close()
     return 0

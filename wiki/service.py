@@ -1,4 +1,5 @@
 """Knowledge policy, settings, model tools and resource-aware orchestration."""
+from beacon_address import beacon_url
 import asyncio
 import ctypes
 import json
@@ -554,7 +555,7 @@ class WikiService:
                 if not model:
                     raise ValueError("Aucun modèle local d’extraction configuré")
                 async with httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False) as client:
-                    response = await client.get("http://127.0.0.1:11343/api/status")
+                    response = await client.get(beacon_url() + "/api/status")
                     response.raise_for_status()
                     status = response.json()
                     if status.get("status") != "running" or status.get("active_model") != model:
@@ -562,7 +563,7 @@ class WikiService:
                         self.queue.last_activity = time.monotonic()
                         raise Deferred("Le modèle local choisi doit être chargé dans Beacon avant les tâches Wiki")
                     check()
-                    response = await client.post("http://127.0.0.1:11343/v1/chat/completions", json={"model": model, "stream": False, "temperature": 0, "max_tokens": 700, "messages": [{"role": "system", "content": EXTRACTION_PROMPT}, {"role": "user", "content": text}]})
+                    response = await client.post(beacon_url() + "/v1/chat/completions", json={"model": model, "stream": False, "temperature": 0, "max_tokens": 700, "messages": [{"role": "system", "content": EXTRACTION_PROMPT}, {"role": "user", "content": text}]})
                     response.raise_for_status()
                     raw = response.json()["choices"][0]["message"]["content"]
                     data = json.loads(raw.removeprefix("```json").removesuffix("```").strip())

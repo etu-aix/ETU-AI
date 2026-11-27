@@ -305,6 +305,7 @@
 .settings-update-copy { flex: 1; min-width: 150px; }
 .settings-update-copy strong { font-size: 1.28rem; font-weight: 620; }
 .settings-update-copy p { margin: 7px 0 0; color: var(--text-muted); font-size: .94rem; line-height: 1.5; }
+.settings-update-copy progress { display: block; width: min(100%, 360px); height: 8px; margin-top: 10px; accent-color: var(--accent-color); }
 .settings-update-banner #btn-settings-update { flex: 0 0 auto; min-height: 46px; padding-inline: 20px; }
 .settings-consent-card { padding: 18px 20px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-secondary); }
 .settings-consent-card .etu-connection-checkbox { max-width: 760px; }

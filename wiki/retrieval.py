@@ -1,5 +1,6 @@
 """Replaceable, bounded lexical/hybrid retrieval without ML runtime dependencies."""
 import json
+from beacon_address import beacon_url
 import math
 import re
 from typing import Protocol
@@ -20,9 +21,9 @@ class Retriever(Protocol):
 
 class LocalEmbeddings:
     """Use only the model already resident in Beacon; never load/download a model."""
-    def __init__(self, model, base_url="http://127.0.0.1:11343"):
+    def __init__(self, model, base_url=None):
         self.model = model
-        self.base_url = base_url
+        self.base_url = base_url or beacon_url()
 
     def embed(self, text):
         with httpx.Client(timeout=3, trust_env=False, follow_redirects=False) as client:

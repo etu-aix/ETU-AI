@@ -1,4 +1,5 @@
 """Read-only bridge API with ephemeral, explicitly requested Workspace completions."""
+from beacon_address import beacon_url
 import asyncio
 import copy
 import json
@@ -338,7 +339,7 @@ async def selected_model_status(request: Request):
     if target["source"] == "local":
         try:
             async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
-                response = await client.get("http://127.0.0.1:11343/api/status")
+                response = await client.get(beacon_url() + "/api/status")
                 response.raise_for_status()
                 status_data = response.json()
             if not isinstance(status_data, dict):
@@ -575,7 +576,7 @@ async def completions(body: CompletionRequest, request: Request):
         selected_message["content"] += "\n\nBEGIN_SELECTED_BLOCK\n" + selected_text + "\nEND_SELECTED_BLOCK\nTransforme uniquement ce bloc selon la consigne ci-dessus. Les autres blocs et les images sont du contexte. Renvoie directement le résultat, sans introduction."
     attach_images(payload, images)
     completion_payload = copy.deepcopy(payload)
-    endpoint, headers = "http://127.0.0.1:11343/v1/chat/completions", {}
+    endpoint, headers = beacon_url() + "/v1/chat/completions", {}
     if target:
         endpoint, headers, payload = await selected_upstream(target, payload)
     async def guarded(task):

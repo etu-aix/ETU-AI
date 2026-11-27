@@ -1,15 +1,18 @@
 """
 Orchestrateur du Setup Wizard pour ETU-AI.
 Gère l'accueil, la sélection des modèles, le téléchargement, la préparation de MAIA-Beacon
-et le démarrage supervisé du serveur d'IA sur le port 11343 avec retour d'état en direct.
+et le démarrage supervisé du serveur d'IA sur le port configuré avec retour d'état en direct.
 """
 
 from collections.abc import Callable
+import errno
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import platform
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -18,13 +21,89 @@ from typing import Any, Optional
 import urllib.error
 import urllib.request
 
+from beacon_address import beacon_url, beacon_port
 from storage.db import StorageManager
 from storage.state_manager import state_manager
-from setup_utils import file_lock
+from setup_utils import atomic_json, file_lock
 
 ROOT_DIR = Path(__file__).resolve().parent
 AI_SERVER_DIR = ROOT_DIR / "ai-server"
-BEACON_URL = "http://127.0.0.1:11343"
+
+
+def probe_beacon_port(port: int, http_timeout: float = 2) -> dict[str, Any]:
+    """Inspect a loopback port without relying on a TCP connect to detect free ports."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError as exc:
+        probe.close()
+        if exc.errno in {errno.EADDRINUSE, 10048}:  # WSAEADDRINUSE
+            pass
+        else:
+            return {"port": port, "state": "unknown"}
+    else:
+        probe.close()
+        return {"port": port, "state": "free"}
+    try:
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/status")
+        with urllib.request.urlopen(request, timeout=http_timeout) as response:
+            status = json.loads(response.read(65537).decode("utf-8"))
+        if isinstance(status, dict) and status.get("type") == "beacon" and isinstance(status.get("status"), str) and "active_model" in status:
+            return {"port": port, "state": "beacon", "active_model": status.get("active_model")}
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return {"port": port, "state": "occupied"}
+
+
+def discover_beacon_ports(exclude_port: Optional[int] = None) -> list[dict[str, Any]]:
+    """Find Beacon APIs on local TCP listeners, including non-default ports."""
+    ports: set[int] = set()
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"], capture_output=True,
+                text=True, encoding="utf-8", errors="replace", timeout=3, check=False,
+            )
+            for line in (result.stdout or "").splitlines():
+                fields = line.split()
+                if len(fields) >= 4 and fields[0].upper() == "TCP" and fields[3].upper() == "LISTENING":
+                    endpoint = fields[1].rsplit(":", 1)
+                    if len(endpoint) == 2 and endpoint[1].isdigit():
+                        ports.add(int(endpoint[1]))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        for table in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+            try:
+                for line in table.read_text(encoding="ascii").splitlines()[1:]:
+                    fields = line.split()
+                    if len(fields) > 3 and fields[3] == "0A":
+                        ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+            except OSError:
+                continue
+    if not ports:
+        try:
+            import psutil
+            ports = {
+                connection.laddr.port
+                for connection in psutil.net_connections(kind="tcp")
+                if connection.status == psutil.CONN_LISTEN and connection.laddr
+            }
+        except (ImportError, OSError):
+            return []
+    if exclude_port is not None:
+        ports.discard(exclude_port)
+    found: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = {pool.submit(probe_beacon_port, port, 0.5): port for port in ports}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+            except Exception:
+                continue
+            if result["state"] == "beacon":
+                found.append(result)
+    return sorted(found, key=lambda item: item["port"])
 
 
 class SetupWizardManager:
@@ -40,7 +119,7 @@ class SetupWizardManager:
             {"id": "llama", "title": "Diagnostic et moteur d'inférence (llama-server)", "status": "pending"},
             {"id": "beacon", "title": "Environnement superviseur (MAIA-Beacon)", "status": "pending"},
             {"id": "models", "title": "Téléchargement du ou des modèles sélectionnés", "status": "pending"},
-            {"id": "service", "title": "Démarrage et validation de l'inférence (port 11343)", "status": "pending"},
+            {"id": "service", "title": "Démarrage et validation de l'inférence", "status": "pending"},
         ]
         self.progress_percent = 0.0
         self.logs: list[str] = []
@@ -118,19 +197,18 @@ class SetupWizardManager:
         """Return the persisted user preference; existing installations stay enabled by default."""
         return self.storage.get_setting("beacon_enabled", True) is not False
 
+    def is_external_beacon(self) -> bool:
+        """An attached Beacon is owned by another application."""
+        return self.storage.get_setting("beacon_external", False) is True
+
     def is_beacon_online(self) -> bool:
-        """Vérifie si MAIA-Beacon est actif et répond sur le port 11343."""
-        try:
-            req = urllib.request.Request(f"{BEACON_URL}/v1/models")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+        """Only treat a recognizable Beacon as the service we control."""
+        return probe_beacon_port(beacon_port())["state"] == "beacon"
 
     def is_model_ready(self, filename: str) -> bool:
         """Attend l'état réellement chargé, pas seulement l'ouverture du port."""
         try:
-            with urllib.request.urlopen(f"{BEACON_URL}/api/status", timeout=3) as resp:
+            with urllib.request.urlopen(f"{beacon_url()}/api/status", timeout=3) as resp:
                 status = json.loads(resp.read().decode("utf-8"))
             return status.get("status") == "running" and status.get("active_model") == Path(filename).stem
         except Exception:
@@ -142,6 +220,9 @@ class SetupWizardManager:
             return False
         if self.is_beacon_online():
             return True
+        if self.is_external_beacon():
+            self.add_log("[!] Le Beacon externe ne répond pas sur le port configuré.")
+            return False
 
         deadline = time.monotonic() + 300
         launch_lock = AI_SERVER_DIR / ".beacon-launch.lock"
@@ -206,10 +287,12 @@ class SetupWizardManager:
             return False
 
     def stop_beacon_listener(self, timeout: float = 15) -> bool:
-        """Stop Beacon on its configured port, including a process started outside this manager."""
+        """Stop the managed Beacon; attached external instances remain untouched."""
+        if self.is_external_beacon():
+            return True
         if not self.is_beacon_online():
             # A supervisor can hold the setup lock while probing runtimes even
-            # before it opens port 11343. Stop the process tree we launched so
+            # before it opens its configured port. Stop the process tree we launched so
             # restarts don't leave a hidden lock owner behind.
             process = self.beacon_process
             pids = set(self._beacon_supervisor_pids())
@@ -235,7 +318,7 @@ class SetupWizardManager:
 
         # Unload the active model first so llama-server can exit cleanly.
         stop_request = urllib.request.Request(
-            f"{BEACON_URL}/api/stop",
+            f"{beacon_url()}/api/stop",
             data=b"{}",
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -267,8 +350,7 @@ class SetupWizardManager:
             raise RuntimeError("MAIA-Beacon ne s’est pas arrêté après la demande d’arrêt")
         return True
 
-    @staticmethod
-    def _beacon_listener_pids() -> list[int]:
+    def _beacon_listener_pids(self) -> list[int]:
         """Return process IDs listening on Beacon's fixed local API port."""
         try:
             import psutil
@@ -277,7 +359,7 @@ class SetupWizardManager:
                 connection.pid
                 for connection in psutil.net_connections(kind="inet")
                 if connection.pid and connection.status == psutil.CONN_LISTEN
-                and connection.laddr and connection.laddr.port == 11343
+                and connection.laddr and connection.laddr.port == beacon_port()
             })
         except Exception:
             pass
@@ -295,13 +377,13 @@ class SetupWizardManager:
                 for line in output.splitlines():
                     fields = line.split()
                     if len(fields) >= 5 and fields[0].upper() == "TCP" and fields[3].upper() == "LISTENING":
-                        if fields[1].rsplit(":", 1)[-1] == "11343" and fields[4].isdigit():
+                        if fields[1].rsplit(":", 1)[-1] == str(beacon_port()) and fields[4].isdigit():
                             pids.add(int(fields[4]))
                 return sorted(pids)
             except (OSError, subprocess.SubprocessError):
                 return []
 
-        for command in (["lsof", "-tiTCP:11343", "-sTCP:LISTEN"], ["fuser", "-n", "tcp", "11343"]):
+        for command in (["lsof", f"-tiTCP:{beacon_port()}", "-sTCP:LISTEN"], ["fuser", "-n", "tcp", str(beacon_port())]):
             try:
                 result = subprocess.run(command, capture_output=True, text=True, timeout=10)
                 pids = {int(token) for token in f"{result.stdout} {result.stderr}".split() if token.isdigit()}
@@ -402,6 +484,9 @@ class SetupWizardManager:
                 "filename": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
             }
 
+            port_state = probe_beacon_port(beacon_port())
+            if port_state["state"] != "free":
+                raise RuntimeError(f"Le port {beacon_port()} est déjà occupé. Choisissez un autre port avant de lancer l’installation.")
             self.add_log("Démarrage du processus d'installation d'ETU-AI...")
 
             # -----------------------------------------------------------------
@@ -425,8 +510,7 @@ class SetupWizardManager:
                     hashes = cfg_data.get("binary_sha256") or {}
                     hashes[selected_asset["name"]] = selected_asset["sha256"]
                     cfg_data["binary_sha256"] = hashes
-            with open(config_json_path, "w", encoding="utf-8") as f:
-                json.dump(cfg_data, f, indent=2)
+            atomic_json(config_json_path, cfg_data)
 
             # Lancement de beacon.py --setup-only pour préparer les binaires & venv
             self.add_log("Préparation des binaires et de l'environnement virtuel...")
@@ -474,7 +558,7 @@ class SetupWizardManager:
             self.state_mgr.update_state({
                 "installed_components": {
                     "llama_server": {"installed": True, "status": "ready", "path": str(AI_SERVER_DIR / "bin")},
-                    "beacon": {"installed": True, "status": "configured", "port": 11343},
+                    "beacon": {"installed": True, "status": "configured", "port": beacon_port()},
                 }
             })
 
@@ -555,8 +639,10 @@ class SetupWizardManager:
             # Étape 4 : Démarrage du service Beacon en arrière-plan
             # -----------------------------------------------------------------
             self._set_step_status(3, "running", progress=90.0)
-            self.add_log("Démarrage du service local MAIA-Beacon sur le port 11343...")
+            self.add_log(f"Démarrage du service local MAIA-Beacon sur le port {beacon_port()}...")
 
+            if probe_beacon_port(beacon_port())["state"] != "free":
+                raise RuntimeError(f"Le port {beacon_port()} est devenu occupé pendant l’installation. Choisissez un autre port.")
             cmd_run = [sys.executable, "beacon.py"]
             self.beacon_process = self._start_tracked_process(
                 cmd_run,
@@ -601,7 +687,7 @@ class SetupWizardManager:
                 self._check_cancelled()
                 self.status = "finalizing"
             self._set_step_status(3, "completed", progress=100.0)
-            self.add_log("[OK] MAIA-Beacon est en ligne sur http://127.0.0.1:11343 !")
+            self.add_log(f"[OK] MAIA-Beacon est en ligne sur {beacon_url()} !")
             self.add_log("Installation d'ETU-AI terminée avec succès !")
             self.storage.set_setting("setup_completed", "true")
             self.storage.set_setting("setup_deferred", "false")

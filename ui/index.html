@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ETU-AI | Assistant Étudiant Autonome</title>
-  <link rel="stylesheet" href="/static/style.css?v=chat-code-tools-4">
+  <link rel="stylesheet" href="/static/style.css?v=maia-provider-color-2">
   <link rel="stylesheet" href="/static/styles/settings.css?v=models-folder-icon-3">
   <link rel="stylesheet" href="/static/styles/components.css?v=server-icons-3">
   <link rel="stylesheet" href="/static/styles/workshop.css?v=workshop-3">
@@ -103,9 +103,21 @@
   <!-- ======================================================================= -->
   <div id="wizard-container" class="wizard-screen active" role="region" aria-label="Installation ETU-AI">
     <div class="wizard-card">
+      <div id="wizard-intro" class="wizard-intro" hidden aria-label="Présentation d’ETU-AI">
+        <div class="wizard-intro-glow" aria-hidden="true"></div>
+        <div class="wizard-intro-scene">
+          <img class="wizard-intro-logo" src="/static/setup-mascot.svg?v=setup-assistant-7" alt="">
+          <div class="wizard-intro-copy">
+            <p>Bonjour, moi c’est</p>
+            <strong>ETU-AI<span>.</span></strong>
+            <p class="wizard-intro-message">Je suis là pour vous accompagner.</p>
+          </div>
+        </div>
+        <button type="button" id="wizard-intro-skip" class="wizard-intro-skip">Passer l’introduction</button>
+      </div>
       <div class="wizard-header">
         <div class="brand">
-          <img class="wizard-brand-logo" src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt="" width="32" height="32">
+          <img class="wizard-brand-logo" src="/static/setup-mascot.svg?v=setup-assistant-7" alt="" width="32" height="32">
           <div class="brand-text">
             <h1>ETU-AI</h1>
             <p class="wizard-subtitle">Votre assistant, sur cet ordinateur</p>
@@ -121,14 +133,26 @@
       <!-- Étape 1 : Présentation & Matériel -->
       <div id="wizard-step-1" class="wizard-step active">
         <div class="wizard-content">
-          <div class="step-hero">
-            <div class="step-hero-text">
-              <h3>Commençons simplement.</h3>
-              <p class="etu-text">
-                Choisissez un modèle local ou connectez un fournisseur IA. Vous pourrez aussi terminer la configuration plus tard.
-              </p>
+          <div class="step-hero wizard-welcome">
+            <div class="wizard-welcome-portrait" aria-hidden="true">
+              <img class="wizard-mascot" src="/static/setup-mascot.svg?v=setup-assistant-7" alt="">
             </div>
+            <div class="step-hero-text wizard-welcome-copy">
+              <p class="wizard-welcome-kicker">Votre assistant, à vos côtés</p>
+              <h3 class="wizard-welcome-title"><span>Bonjour,</span> <span>moi c’est</span> <span>ETU-AI.</span></h3>
+              <p class="wizard-welcome-intro"><span>Je suis là pour vous aider à apprendre,</span> <span>créer et avancer à votre rythme.</span></p>
+              <p class="wizard-welcome-next">Préparons votre espace ensemble.</p>
+            </div>
+          </div>
 
+          <div class="wizard-port-control">
+            <p class="wizard-beacon-detection" id="wizard-beacon-detection" role="status" aria-live="polite">Vérification du service local…</p>
+            <label for="wizard-beacon-port">Port de MAIA-Beacon</label>
+            <div class="wizard-port-row">
+              <input id="wizard-beacon-port" type="number" min="1" max="65535" step="1" value="11343" required aria-describedby="wizard-beacon-detection">
+              <button id="btn-wizard-probe-port" type="button" class="etu-btn etu-btn-secondary">Vérifier</button>
+              <button id="btn-wizard-use-beacon" type="button" class="etu-btn etu-btn-secondary" hidden>Utiliser ce Beacon</button>
+            </div>
           </div>
 
           <div class="etu-card hw-card hw-card-interactive">
@@ -197,7 +221,7 @@
               <p class="etu-text">Choisissez un modèle adapté à votre ordinateur. Les fichiers déjà présents seront réutilisés.</p>
             </div>
             <div class="model-selection-counter" id="model-selection-counter">
-              <span class="count-badge" id="selected-models-count">1</span> modèle(s) sélectionné(s)
+              <span class="count-badge" id="selected-models-count">0</span> modèle(s) sélectionné(s)
             </div>
           </div>
 
@@ -281,7 +305,7 @@
           <div class="master-orb-container wizard-install-heading">
             <div class="wizard-install-visual" data-state="running" aria-hidden="true">
               <span class="wizard-install-ring"></span>
-              <span class="wizard-install-core">ETU</span>
+              <div class="wizard-install-mascot" id="wizard-install-mascot"></div>
             </div>
             <div class="master-orb-caption">
               <h3 id="install-title">Configuration en cours</h3>
@@ -329,7 +353,7 @@
             <div class="step-item" id="step-item-3">
               <div class="step-circle"><span class="step-icon">4</span></div>
               <div class="step-text">
-                <strong>Démarrage du service (port 11343)</strong>
+                <strong>Démarrage du service</strong>
                 <span>Validation de l'inférence en direct</span>
               </div>
               <span class="step-state">À venir</span>
@@ -340,6 +364,7 @@
             <summary class="terminal-header">Afficher les détails techniques</summary>
             <div class="terminal-body" id="wizard-logs-box">
               <div class="terminal-line">[i] Initialisation du Setup Wizard ETU-AI...</div>
+            </div>
           </details>
         </div>
 
@@ -347,6 +372,7 @@
           <div class="wizard-install-actions">
             <button id="btn-wizard-open-during-install" class="etu-btn etu-btn-secondary" type="button">Continuer dans ETU-AI</button>
             <button id="btn-wizard-cancel-install" class="etu-btn etu-btn-secondary" type="button">Annuler l'installation</button>
+            <button id="btn-wizard-retry-install" class="etu-btn etu-btn-secondary" type="button" hidden>Modifier la configuration</button>
           </div>
           <button id="btn-wizard-finish" class="etu-btn etu-btn-primary btn-large btn-glow-interactive pulse-finish" style="display: none;">
             Accéder à l'interface de discussion &rarr;
@@ -528,6 +554,15 @@
                   <span id="settings-beacon-context-status" class="sr-only" role="status" aria-live="polite"></span>
                 </dd></div>
               </dl>
+              <form id="settings-beacon-port-form" class="settings-beacon-port-form">
+                <label for="settings-beacon-port">Port de MAIA-Beacon</label>
+                <div class="wizard-port-row">
+                  <input id="settings-beacon-port" type="number" min="1" max="65535" step="1" required aria-describedby="settings-beacon-port-status">
+                  <button type="submit" class="etu-btn etu-btn-secondary">Enregistrer</button>
+                </div>
+                <p id="settings-beacon-external-info"></p>
+                <p id="settings-beacon-port-status" role="status" aria-live="polite"></p>
+              </form>
               <div class="settings-beacon-controls" role="group" aria-label="Actions MAIA-Beacon">
                 <button id="btn-settings-beacon-toggle" class="etu-btn etu-btn-secondary" type="button"><span data-svg-icon="power" aria-hidden="true"></span><span>Éteindre</span></button>
                 <button id="btn-settings-beacon-sleep" class="etu-btn etu-btn-secondary" type="button"><span data-svg-icon="clock" aria-hidden="true"></span><span>Mettre en veille</span></button>
@@ -607,7 +642,7 @@
                   <img src="/static/logo_etu_ai.svg?v=etu-ai-logo-20261126" alt="">
                   <span id="settings-app-update-icon" class="settings-update-check" data-svg-icon="download"></span>
                 </span>
-                <div class="settings-update-copy"><strong id="settings-app-update-title">ETU-AI</strong><p id="settings-app-update-status">Vérification des mises à jour de l’application…</p></div>
+                <div class="settings-update-copy"><strong id="settings-app-update-title">ETU-AI</strong><p id="settings-app-update-status">Vérification des mises à jour de l’application…</p><progress id="settings-app-update-progress" max="100" value="0" hidden aria-label="Progression du téléchargement de la mise à jour"></progress></div>
                 <button id="btn-settings-update" class="etu-btn etu-btn-primary" type="button">Rechercher des mises à jour</button>
               </div>
             </section>
@@ -1128,7 +1163,7 @@
   <script src="/static/vendor/echarts-6.1.0.min.js?v=6.1.0"></script>
   <script src="/static/svg-manager.js?v=models-folder-icon-3"></script>
   <script src="/static/components.js?v=settings-library-2"></script>
-  <script src="/static/app.js?v=etu-ai-profile-white-20261126"></script>
+  <script src="/static/app.js?v=maia-provider-color-2"></script>
   <script src="/static/wiki.js?v=10"></script>
   <script src="/static/etu-bridge.js?v=connection-ui-6"></script>
   <script src="/static/etu-remote.js?v=connection-ui-6"></script>

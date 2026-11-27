@@ -19,6 +19,15 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 RELEASES_URL = "https://github.com/etu-aix/ETU-AI/releases/latest"
 GITHUB_LATEST_API = "https://api.github.com/repos/etu-aix/ETU-AI/releases/latest"
+# Raw Ed25519 public key whose private half is kept only in the release secret.
+RELEASE_SIGNING_PUBLIC_KEY = base64.b64decode("qcUmvreKLqUGwSUnw9duFfuq/k9NH8woTbhiP1KT80Y=")
+# During rotation, ship a client that trusts both keys before switching the
+# GitHub private-key secret. Remove retired keys only after old clients age out.
+RELEASE_SIGNING_PUBLIC_KEY_ROTATION_KEYS: tuple[bytes, ...] = ()
+
+
+def release_signing_public_keys() -> tuple[bytes, ...]:
+    return tuple(dict.fromkeys((RELEASE_SIGNING_PUBLIC_KEY, *RELEASE_SIGNING_PUBLIC_KEY_ROTATION_KEYS)))
 
 
 def latest_app_release() -> dict:
@@ -51,7 +60,9 @@ def latest_app_release() -> dict:
             continue
         assets.append({"name": name, "url": download_url[:2048], "size": item.get("size") if isinstance(item.get("size"), int) else None,
                        "digest": item.get("digest") if isinstance(item.get("digest"), str) else None})
-    return {"status": "available", "version": tag, "url": RELEASES_URL, "assets": assets}
+    notes = data.get("body") if isinstance(data.get("body"), str) else ""
+    return {"status": "available", "version": tag, "url": RELEASES_URL,
+            "release_notes": notes[:10000], "assets": assets}
 
 
 def select_app_installer(assets: list[dict], system: str, version: str) -> dict | None:
@@ -69,7 +80,8 @@ def select_app_installer(assets: list[dict], system: str, version: str) -> dict 
     return None
 
 
-def download_verified_app_installer(asset: dict, version: str, *, max_bytes: int = 2 * 1024 * 1024 * 1024) -> Path:
+def download_verified_app_installer(asset: dict, version: str, *, max_bytes: int = 2 * 1024 * 1024 * 1024,
+                                   on_progress=None) -> Path:
     """Download a GitHub release installer to a temporary file and verify its published digest."""
     if not isinstance(asset, dict):
         raise ValueError("Installateur GitHub invalide")
@@ -109,6 +121,8 @@ def download_verified_app_installer(asset: dict, version: str, *, max_bytes: int
                         raise ValueError("Installateur téléchargé plus volumineux que la taille publiée par GitHub")
                     checksum.update(block)
                     output.write(block)
+                    if on_progress:
+                        on_progress(total, size)
         if total != size:
             raise ValueError("Taille de l’installateur différente de celle annoncée par GitHub")
         if checksum.hexdigest() != expected_hash:
@@ -141,36 +155,87 @@ def is_newer_version(remote: str, installed: str | None) -> bool:
     return latest is not None and current is not None and latest > current
 
 
-def verify_release_manifest(manifest: dict, public_key: bytes, *, expected_version: str) -> dict:
+def verify_published_installer(asset: dict, manifest: dict, version: str, system: str) -> dict:
+    """Require the pinned Ed25519 signature and bind it to GitHub asset metadata."""
+    platform_name = {"Windows": "windows", "Darwin": "macos", "Linux": "linux"}.get(system)
+    if not platform_name or not isinstance(asset, dict):
+        raise ValueError("Plateforme de mise à jour non prise en charge")
+    payload = verify_release_manifest(manifest, release_signing_public_keys(), expected_version=version)
+    if (payload["name"] != asset.get("name") or payload["url"] != asset.get("url")
+            or payload["platform"] != platform_name or payload["size"] != asset.get("size")):
+        raise ValueError("Le manifeste signé ne correspond pas à l’installateur publié")
+    digest = asset.get("digest")
+    if isinstance(digest, str) and re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+        if payload["sha256"] != digest.removeprefix("sha256:").lower():
+            raise ValueError("Le SHA-256 signé ne correspond pas au digest GitHub")
+    return payload
+
+
+def fetch_signed_installer_manifest(assets: list[dict], installer: dict, version: str, system: str) -> dict:
+    """Fetch and authenticate the release sidecar for this exact installer."""
+    manifest_name = installer.get("name", "") + ".manifest.json"
+    sidecar = next((item for item in assets if item.get("name") == manifest_name), None)
+    if not sidecar or not isinstance(sidecar.get("url"), str):
+        raise ValueError("Cette release ne contient pas de manifeste Ed25519 signé")
+    expected_url = installer.get("url", "").removesuffix(installer.get("name", "")) + manifest_name
+    if sidecar["url"] != expected_url:
+        raise ValueError("URL du manifeste invalide")
+    try:
+        request = Request(sidecar["url"], headers={"User-Agent": "ETU-AI"})
+        with urlopen(request, timeout=10) as response:
+            body = response.read(16 * 1024 + 1)
+        if len(body) > 16 * 1024:
+            raise ValueError("Manifeste trop volumineux")
+        manifest = json.loads(body)
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Impossible de lire le manifeste signé de cette release") from exc
+    return verify_published_installer(installer, manifest, version, system)
+
+
+def verify_release_manifest(manifest: dict, public_key: bytes | tuple[bytes, ...], *, expected_version: str) -> dict:
     """Authenticate the URL and hash before making any network request."""
     if not isinstance(manifest, dict):
         raise ValueError("Manifest signé incomplet")
-    required = {"version", "url", "sha256", "signature"}
-    if set(manifest) != required or any(not isinstance(manifest[k], str) for k in required):
+    required = {"version", "name", "platform", "url", "size", "sha256", "signature"}
+    if (set(manifest) != required or any(not isinstance(manifest[k], str) for k in required - {"size"})
+            or not isinstance(manifest["size"], int) or isinstance(manifest["size"], bool) or manifest["size"] <= 0):
         raise ValueError("Manifest signé incomplet")
-    payload = {key: manifest[key] for key in ("version", "url", "sha256")}
+    payload = {key: manifest[key] for key in ("version", "name", "platform", "url", "size", "sha256")}
     if payload["version"] != expected_version:
         raise ValueError("Version de mise à jour inattendue")
     parsed = urlsplit(payload["url"])
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("URL de mise à jour HTTPS requise")
-    if not re.fullmatch(r"[0-9a-f]{64}", payload["sha256"]):
+    if (not re.fullmatch(r"[0-9a-f]{64}", payload["sha256"])
+            or payload["platform"] not in {"windows", "macos", "linux"}
+            or Path(payload["name"]).name != payload["name"]
+            or payload["name"] not in parsed.path):
         raise ValueError("SHA256 invalide")
     try:
         signed = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         signature = base64.b64decode(manifest["signature"], validate=True)
-        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, signed)
-    except (ValueError, InvalidSignature) as exc:
+    except ValueError as exc:
         raise ValueError("Signature de mise à jour invalide") from exc
+    keys = (public_key,) if isinstance(public_key, bytes) else tuple(public_key)
+    for key in keys:
+        try:
+            Ed25519PublicKey.from_public_bytes(key).verify(signature, signed)
+            break
+        except (ValueError, InvalidSignature):
+            continue
+    else:
+        raise ValueError("Signature de mise à jour invalide")
     return payload
 
 
-def verify_release(manifest: dict, package: Path, public_key: bytes, *, expected_version: str) -> dict:
+def verify_release(manifest: dict, package: Path, public_key: bytes | tuple[bytes, ...], *, expected_version: str) -> dict:
     payload = verify_release_manifest(manifest, public_key, expected_version=expected_version)
     checksum = hashlib.sha256()
     with Path(package).open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             checksum.update(chunk)
+    if Path(package).stat().st_size != payload["size"]:
+        raise ValueError("Taille du paquet invalide")
     if checksum.hexdigest() != payload["sha256"]:
         raise ValueError("Intégrité du paquet invalide")
     return payload
@@ -194,7 +259,7 @@ def download_verified_release(manifest: dict, destination: Path, public_key: byt
                     if not block:
                         break
                     total += len(block)
-                    if total > max_bytes:
+                    if total > min(max_bytes, payload["size"]):
                         raise ValueError("Paquet de mise à jour trop volumineux")
                     output.write(block)
         verify_release(manifest, temp_path, public_key, expected_version=expected_version)

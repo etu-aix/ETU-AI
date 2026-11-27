@@ -15,7 +15,7 @@ class AppReleaseTests(unittest.TestCase):
         github_asset = {"name": "ETU-AI-Setup-2.0.0.exe", "browser_download_url": "https://github.com/etu-aix/ETU-AI/releases/download/v2.0.0/ETU-AI-Setup-2.0.0.exe", "size": 1024, "digest": "sha256:" + "a" * 64}
         response = io.BytesIO(json.dumps({"tag_name": "v2.0.0", "html_url": "https://evil.example", "assets": [github_asset]}).encode())
         with patch("integration.updates.urlopen", return_value=response) as request:
-            self.assertEqual(latest_app_release(), {"status": "available", "version": "v2.0.0", "url": RELEASES_URL,
+            self.assertEqual(latest_app_release(), {"status": "available", "version": "v2.0.0", "url": RELEASES_URL, "release_notes": "",
                 "assets": [{"name": github_asset["name"], "url": github_asset["browser_download_url"], "size": 1024, "digest": github_asset["digest"]}]})
         self.assertEqual(request.call_args.args[0].full_url, GITHUB_LATEST_API)
 

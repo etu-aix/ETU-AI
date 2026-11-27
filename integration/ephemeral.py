@@ -3,6 +3,7 @@
 No conversation, message, attachment or request is written to storage.
 Only existing model settings and the credential vault are read.
 """
+from beacon_address import beacon_url
 import base64
 import binascii
 import json
@@ -30,7 +31,7 @@ def selected_model(storage):
         if not config.get("model") or not config.get("base_url") or config.get("type", "openai") not in {"openai", "anthropic", "gemini", "chatgpt"}:
             raise HTTPException(503, "Configuration du modèle sélectionné invalide")
         return {"model": config["model"], "source": "cloud", "provider": provider_id, "type": config.get("type", "openai"), "base_url": config["base_url"].rstrip("/")}
-    return {"model": storage.get_setting("selected_model") or "local", "source": "local", "provider": "", "type": "openai", "base_url": "http://127.0.0.1:11343/v1"}
+    return {"model": storage.get_setting("selected_model") or "local", "source": "local", "provider": "", "type": "openai", "base_url": beacon_url() + "/v1"}
 
 
 def selected_profile_public(storage):
@@ -97,7 +98,7 @@ async def require_local_vision(target, images):
         return
     try:
         async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-            response = await client.get("http://127.0.0.1:11343/api/status")
+            response = await client.get(beacon_url() + "/api/status")
             response.raise_for_status()
             status = response.json()
     except (httpx.HTTPError, ValueError) as exc:
