@@ -49,7 +49,7 @@ jobs:
           & release-payload/python/python.exe -m unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes -v
           if ($LASTEXITCODE -ne 0) { throw 'Les tests API, versions, signatures, installation et lancement ont échoué.' }
       - name: Build ETU-AI launcher
-        run: pyinstaller --onefile --noconsole --icon assets/etu-ai_logo.ico --name ETU-AI --distpath release-payload --workpath .tmp/pyinstaller --specpath .tmp/pyinstaller run_launcher.py
+        run: pyinstaller --onefile --noconsole --icon "$env:GITHUB_WORKSPACE/assets/etu-ai_logo.ico" --name ETU-AI --distpath release-payload --workpath .tmp/pyinstaller --specpath .tmp/pyinstaller run_launcher.py
       - name: Check signing configuration
         id: signing
         env:
