@@ -1,9 +1,13 @@
 param(
   [Parameter(Mandatory = $true)][string]$SetupPath,
-  [Parameter(Mandatory = $true)][string]$ExpectedVersion
+  [Parameter(Mandatory = $true)][string]$ExpectedVersion,
+  [Parameter(Mandatory = $true)][string]$LogPath
 )
 
 $ErrorActionPreference = 'Stop'
+Start-Transcript -Path $LogPath -Force | Out-Null
+$exitCode = 0
+try {
 $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
 if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   throw 'The installer smoke test must run as a standard, non-administrator user.'
@@ -58,3 +62,10 @@ try {
     try { & taskkill.exe /PID $launcher.Id /T /F 2>$null | Out-Null } catch { }
   }
 }
+} catch {
+  Write-Error $_
+  $exitCode = 1
+} finally {
+  Stop-Transcript | Out-Null
+}
+exit $exitCode
