@@ -4,11 +4,12 @@ param(
   [int]$CompanionPid,
   [string]$Installer,
   [string]$AppLauncher,
-  [string]$AppPython,
+  [string]$AppCompanion,
   [string]$CompanionPidFile,
   [string]$SupervisorFile,
   [string]$ExpectedSha256,
-  [long]$ExpectedSize
+  [long]$ExpectedSize,
+  [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,6 +22,16 @@ if (-not $installerPath.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreC
     -not $companionPidFilePath.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or
     $ExpectedSha256 -notmatch '^[0-9a-f]{64}$' -or $ExpectedSize -le 0) {
   exit 2
+}
+$installDir = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($AppLauncher))
+$statusFile = Join-Path $installDir 'storage\app-update-status.json'
+function Write-UpdateStatus([string]$status, [string]$message) {
+  $statusDir = Split-Path -Parent $statusFile
+  [IO.Directory]::CreateDirectory($statusDir) | Out-Null
+  $temporaryStatus = "$statusFile.tmp"
+  @{ status = $status; version = $Version; message = $message } |
+    ConvertTo-Json -Compress | Set-Content -LiteralPath $temporaryStatus -Encoding UTF8
+  Move-Item -LiteralPath $temporaryStatus -Destination $statusFile -Force
 }
 
 $deadline = [DateTime]::UtcNow.AddSeconds(90)
@@ -37,10 +48,10 @@ try {
   if ($alive) { throw 'ETU-AI did not shut down before the installer timeout.' }
   if ($CompanionPid -gt 0) {
     $candidate = Get-Process -Id $CompanionPid -ErrorAction SilentlyContinue
-    $expectedPython = [IO.Path]::GetFullPath($AppPython)
+    $expectedCompanion = [IO.Path]::GetFullPath($AppCompanion)
     $isCompanion = $false
     if ($candidate -and $candidate.Path) {
-      $isCompanion = [string]::Equals([IO.Path]::GetFullPath([string]$candidate.Path), $expectedPython, [StringComparison]::OrdinalIgnoreCase)
+      $isCompanion = [string]::Equals([IO.Path]::GetFullPath([string]$candidate.Path), $expectedCompanion, [StringComparison]::OrdinalIgnoreCase)
     }
     if ($isCompanion) {
       Stop-Process -Id $CompanionPid -Force -ErrorAction SilentlyContinue
@@ -59,18 +70,23 @@ try {
     if ($packageStream.Length -ne $ExpectedSize) { throw 'Installer size changed after authentication.' }
     $actualSha256 = [BitConverter]::ToString($sha256.ComputeHash($packageStream)).Replace('-', '').ToLowerInvariant()
     if ($actualSha256 -ne $ExpectedSha256) { throw 'Installer hash changed after authentication.' }
-    $setup = Start-Process -FilePath $installerPath -PassThru -Wait
+    Write-UpdateStatus 'installing' 'Mise à jour en cours…'
+    $setup = Start-Process -FilePath $installerPath -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$installDir`"") -WindowStyle Hidden -PassThru -Wait
     if ($setup.ExitCode -ne 0) { throw "Installer exited with code $($setup.ExitCode)." }
+    Write-UpdateStatus 'completed' 'Mise à jour terminée.'
   } finally {
     if ($packageStream) { $packageStream.Dispose() }
     $sha256.Dispose()
   }
+} catch {
+  Write-UpdateStatus 'error' "Échec de la mise à jour : $($_.Exception.Message)"
+  throw
 } finally {
   # Relaunch the existing installation after success, cancellation, or failure.
   Remove-Item -LiteralPath $companionPidFilePath -Force -ErrorAction SilentlyContinue
   try {
     if (Test-Path -LiteralPath $AppLauncher) {
-      Start-Process -FilePath $AppLauncher -WorkingDirectory (Split-Path -Parent $AppLauncher)
+      Start-Process -FilePath $AppLauncher -ArgumentList '--downloads' -WorkingDirectory $installDir -WindowStyle Hidden
     }
   } catch { }
   Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue

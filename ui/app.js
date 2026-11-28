@@ -3807,13 +3807,17 @@ function updateDownloadNavigation(tasks = [], serverInstall = null) {
   const downloading = tasks.filter(task => task.status === "downloading");
   const queued = tasks.filter(task => task.status === "queued").length;
   const serverRunning = serverInstall?.status === "running";
-  const running = downloading.length + Number(serverRunning);
+  const appDownloading = appUpdateActivity?.status === "downloading";
+  const appInstalling = appUpdateActivity?.status === "installing";
+  const running = downloading.length + Number(serverRunning) + Number(appDownloading) + Number(appInstalling);
   const serverHasDownloadSize = serverRunning && serverInstall?.phase === "downloading" && Number(serverInstall.total_bytes) > 0;
-  const indeterminate = Boolean((serverRunning && !serverHasDownloadSize) || downloading.some(task => !(Number(task.total_bytes) > 0)));
+  const indeterminate = Boolean(appInstalling || (serverRunning && !serverHasDownloadSize) || downloading.some(task => !(Number(task.total_bytes) > 0)) || (appDownloading && !(Number(appUpdateActivity.totalBytes) > 0)));
   const total = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.total_bytes) || 0), 0)
-    + (serverHasDownloadSize ? Number(serverInstall.total_bytes) || 0 : 0);
+    + (serverHasDownloadSize ? Number(serverInstall.total_bytes) || 0 : 0)
+    + (appDownloading ? Number(appUpdateActivity.totalBytes) || 0 : 0);
   const received = downloading.reduce((sum, task) => sum + Math.max(0, Number(task.downloaded_bytes) || 0), 0)
-    + (serverHasDownloadSize ? Number(serverInstall.downloaded_bytes) || 0 : 0);
+    + (serverHasDownloadSize ? Number(serverInstall.downloaded_bytes) || 0 : 0)
+    + (appDownloading ? Number(appUpdateActivity.downloadedBytes) || 0 : 0);
   const percentage = total ? Math.min(100, Math.round(received / total * 100)) : 0;
   button.classList.toggle("is-downloading", running > 0);
   button.classList.toggle("is-download-indeterminate", running > 0 && indeterminate);
@@ -3844,7 +3848,7 @@ function renderDownloadManager(tasks, serverInstall = null) {
     for (const key of dismissedDownloadEntries) if (key.startsWith("server:")) dismissedDownloadEntries.delete(key);
     if (dismissedDownloadEntries.size !== previousSize) localStorage.setItem("etu-dismissed-downloads", JSON.stringify([...dismissedDownloadEntries]));
   }
-  const activeCount = active.length + Number(serverIsActive);
+  const activeCount = active.length + Number(serverIsActive) + Number(["downloading", "installing"].includes(appUpdateActivity?.status));
   summary.textContent = activeCount
     ? `${activeCount} transfert${activeCount > 1 ? "s" : ""} à traiter`
     : "";
@@ -4008,13 +4012,14 @@ function renderAppUpdateActivity() {
   button.disabled = ["checking", "downloading", "installing"].includes(activity?.status);
   button.textContent = activity?.status === "available" ? (activity.installerAuthenticated && activity.directInstallSupported ? "Mettre à jour" : "Télécharger manuellement")
     : activity?.status === "downloading" ? `Téléchargement… ${activity.percentage || 0} %`
-    : activity?.status === "ready" ? "Lancer l’installation"
-    : activity?.status === "installing" ? "Fermeture d’ETU-AI…"
+    : activity?.status === "ready" ? "Appliquer la mise à jour"
+    : activity?.status === "installing" ? "Mise à jour en cours…"
     : activity?.status === "checking" ? "Recherche en cours…"
     : "Rechercher des mises à jour";
 }
 
 async function checkAppUpdates() {
+  if (["downloading", "ready", "installing"].includes(appUpdateActivity?.status)) return;
   if (appUpdateCheckPromise) return appUpdateCheckPromise;
   appUpdateActivity = { ...(appUpdateActivity || {}), status: "checking", message: "Recherche d’une mise à jour de l’application sur GitHub…" };
   renderAppUpdateActivity();
@@ -4058,32 +4063,37 @@ async function checkAppUpdates() {
 async function startDirectAppUpdate() {
   if (!appUpdateActivity?.installerAuthenticated || !appUpdateActivity.version) return;
   if (appUpdateActivity.status === "ready") {
-    if (!window.confirm(`L’installateur ${appUpdateActivity.version} a été vérifié. ETU-AI va se fermer pour ouvrir l’installation. Continuer ?`)) return;
+    if (!window.confirm(`ETU-AI va redémarrer pour appliquer la version ${appUpdateActivity.version}. Continuer ?`)) return;
     try {
       const response = await fetch(`/api/updates/app/install/${encodeURIComponent(appUpdateActivity.version)}`, { method: "POST" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || "Impossible de lancer l’installation.");
-      appUpdateActivity = { ...appUpdateActivity, status: "installing", message: "Fermeture d’ETU-AI et ouverture de l’installateur…" };
+      appUpdateActivity = { ...appUpdateActivity, status: "installing", message: "ETU-AI redémarre pour appliquer la mise à jour…" };
     } catch (error) {
       appUpdateActivity = { ...appUpdateActivity, status: "error", message: error.message };
     }
     renderAppUpdateActivity();
+    refreshDownloadManager();
     return;
   }
   try {
+    showDownloadsView();
     const start = await fetch(`/api/updates/app/prepare/${encodeURIComponent(appUpdateActivity.version)}`, { method: "POST" });
     const data = await start.json();
     if (!start.ok) throw new Error(data.detail || "Impossible de préparer la mise à jour.");
-    appUpdateActivity = { ...appUpdateActivity, status: "downloading", percentage: 0, message: "Téléchargement de l’installateur authentifié…" };
+    appUpdateActivity = { ...appUpdateActivity, status: "downloading", percentage: 0, downloadedBytes: 0, totalBytes: 0, message: "Téléchargement de la mise à jour…" };
     renderAppUpdateActivity();
+    refreshDownloadManager();
     while (appUpdateActivity.status === "downloading") {
       await new Promise(resolve => setTimeout(resolve, 700));
       const response = await fetch("/api/updates/app/progress", { cache: "no-store" });
       const progress = await response.json();
       if (!response.ok) throw new Error(progress.detail || "Impossible de lire la progression.");
       appUpdateActivity = { ...appUpdateActivity, status: progress.status, percentage: progress.percentage || 0,
-        message: progress.message || `Téléchargement de l’installateur : ${progress.percentage || 0} %` };
+        downloadedBytes: progress.downloaded_bytes || 0, totalBytes: progress.total_bytes || 0,
+        message: progress.message || `Téléchargement de la mise à jour : ${progress.percentage || 0} %` };
       renderAppUpdateActivity();
+      refreshDownloadManager();
     }
     if (appUpdateActivity.status === "ready") await startDirectAppUpdate();
     else if (appUpdateActivity.status === "error") showToast(appUpdateActivity.message, "error");
@@ -4094,19 +4104,41 @@ async function startDirectAppUpdate() {
 }
 
 function renderAppUpdateDownload(list) {
-  if (!appUpdateActivity || !["available", "unknown"].includes(appUpdateActivity.status) || !appUpdateActivity.installer?.url) return;
+  if (!appUpdateActivity || !["available", "unknown", "downloading", "ready", "installing", "completed", "error"].includes(appUpdateActivity.status)) return;
+  if (["available", "unknown"].includes(appUpdateActivity.status) && !appUpdateActivity.installer?.url) return;
   const row = document.createElement("article");
   row.className = "download-manager-item download-manager-item--update";
-  const heading = createDownloadHeading(`ETU-AI ${appUpdateActivity.version}`, { kind: "update" });
+  const heading = createDownloadHeading(`ETU-AI ${appUpdateActivity.version || ""}`, { kind: "update" });
   const status = document.createElement("span");
-  status.textContent = appUpdateActivity.status === "available" ? "Mise à jour de l’application disponible" : "Version publiée";
+  status.textContent = {
+    available: "Mise à jour disponible", unknown: "Version publiée", downloading: "Téléchargement en cours",
+    ready: "Prête à appliquer", installing: "Installation en cours", completed: "Mise à jour terminée", error: "Échec de la mise à jour",
+  }[appUpdateActivity.status];
   const detail = document.createElement("small");
-  detail.textContent = `${appUpdateActivity.message} ${appUpdateActivity.installerAuthenticated ? "Le manifeste Ed25519 et le SHA-256 seront vérifiés avant l’installation." : "Cette ancienne release n’a pas de manifeste Ed25519 ; le téléchargement manuel vérifie seulement le SHA-256 publié par GitHub."}`;
-  const link = document.createElement("a");
-  link.className = "etu-btn etu-btn-primary";
-  link.href = `/api/updates/app/download/${encodeURIComponent(appUpdateActivity.version)}`;
-  link.textContent = "Télécharger l’installateur vérifié";
-  row.append(heading, status, detail, link);
+  detail.textContent = appUpdateActivity.message || "";
+  row.append(heading, status);
+  if (["downloading", "installing"].includes(appUpdateActivity.status)) {
+    const progress = document.createElement("progress");
+    progress.max = 100;
+    if (appUpdateActivity.status === "downloading" && appUpdateActivity.totalBytes) progress.value = appUpdateActivity.percentage || 0;
+    progress.setAttribute("aria-label", appUpdateActivity.status === "installing" ? "Application de la mise à jour ETU-AI" : `Téléchargement de la mise à jour ETU-AI : ${appUpdateActivity.percentage || 0} %`);
+    row.append(progress);
+  }
+  row.append(detail);
+  if (["available", "ready"].includes(appUpdateActivity.status) && appUpdateActivity.installerAuthenticated && appUpdateActivity.directInstallSupported) {
+    const update = document.createElement("button");
+    update.type = "button";
+    update.className = "etu-btn etu-btn-primary";
+    update.textContent = appUpdateActivity.status === "ready" ? "Appliquer la mise à jour" : "Mettre à jour";
+    update.addEventListener("click", startDirectAppUpdate);
+    row.append(update);
+  } else if (["available", "unknown"].includes(appUpdateActivity.status)) {
+    const link = document.createElement("a");
+    link.className = "etu-btn etu-btn-primary";
+    link.href = `/api/updates/app/download/${encodeURIComponent(appUpdateActivity.version)}`;
+    link.textContent = "Télécharger l’installateur vérifié";
+    row.append(link);
+  }
   if (appUpdateActivity.releaseNotes) {
     const notes = document.createElement("details");
     const summary = document.createElement("summary");
@@ -4168,6 +4200,20 @@ async function refreshDownloadManager() {
       const serverResponse = await fetch("/api/maintenance/server/progress", { cache: "no-store" });
       if (serverResponse.ok) serverInstall = await serverResponse.json();
     } catch (_) { /* Le suivi des téléchargements de modèles reste disponible. */ }
+    try {
+      const updateResponse = await fetch("/api/updates/app/progress", { cache: "no-store" });
+      if (updateResponse.ok) {
+        const update = await updateResponse.json();
+        if (update.status !== "idle" && update.version &&
+            (!["completed", "error"].includes(update.status) || !["available", "unknown"].includes(appUpdateActivity?.status)) &&
+            (!appUpdateActivity?.version || appUpdateActivity.version === update.version)) {
+          appUpdateActivity = { ...appUpdateActivity, status: update.status, version: update.version,
+            percentage: update.percentage || 0, downloadedBytes: update.downloaded_bytes || 0,
+            totalBytes: update.total_bytes || 0, message: update.message || "" };
+          renderAppUpdateActivity();
+        }
+      }
+    } catch (_) { /* Le suivi des autres téléchargements reste disponible. */ }
     recordDownloadSample(tasks, serverInstall);
     for (const task of tasks) {
       const previous = seenDownloadStatuses.get(task.task_id);
@@ -4178,11 +4224,15 @@ async function refreshDownloadManager() {
     }
     renderDownloadManager(tasks, serverInstall);
   } catch (_) {
-    updateDownloadNavigation();
-    const summary = document.getElementById("download-summary");
-    const list = document.getElementById("download-manager-list");
-    if (summary) summary.textContent = "Suivi temporairement indisponible";
-    if (list) list.innerHTML = '<p class="download-empty">Le gestionnaire se reconnectera au serveur.</p>';
+    if (appUpdateActivity?.status === "installing") {
+      renderDownloadManager([], null);
+    } else {
+      updateDownloadNavigation();
+      const summary = document.getElementById("download-summary");
+      const list = document.getElementById("download-manager-list");
+      if (summary) summary.textContent = "Suivi temporairement indisponible";
+      if (list) list.innerHTML = '<p class="download-empty">Le gestionnaire se reconnectera au serveur.</p>';
+    }
   } finally {
     downloadRefreshInFlight = false;
   }

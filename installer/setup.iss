@@ -4,6 +4,7 @@ AppName=ETU-AI
 AppVersion={#AppVersion}
 DefaultDirName={localappdata}\Programs\ETU-AI
 DefaultGroupName=ETU-AI
+UsePreviousTasks=yes
 PrivilegesRequired=lowest
 OutputDir=output
 OutputBaseFilename=ETU-AI-Setup-{#AppVersion}
@@ -16,12 +17,18 @@ SetupIconFile=..\assets\etu-ai_logo.ico
 UninstallDisplayIcon={app}\ETU-AI.exe
 
 [Files]
-Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.json,tools\windows_standard_user_smoke.ps1"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release-payload\*"; DestDir: "{app}"; Excludes: "ai-server\config.json,tools\windows_standard_user_smoke.ps1,tools\build_companion.ps1"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\release-payload\ai-server\config.json"; DestDir: "{app}\ai-server"; Flags: onlyifdoesntexist
 
+[Tasks]
+Name: "desktopicon"; Description: "Créer un raccourci sur le bureau"; GroupDescription: "Raccourcis :"
+
 [Icons]
-Name: "{autodesktop}\ETU-AI"; Filename: "{app}\ETU-AI.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\ETU-AI"; Filename: "{app}\ETU-AI.exe"; WorkingDir: "{app}"; IconFilename: "{app}\ETU-AI.exe"; Tasks: desktopicon
 Name: "{group}\ETU-AI"; Filename: "{app}\ETU-AI.exe"; WorkingDir: "{app}"
+
+[Run]
+Filename: "{app}\ETU-AI.exe"; Description: "Lancer ETU-AI"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\.venv"

@@ -51,6 +51,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Les tests API, versions, signatures, installation et lancement ont échoué.' }
       - name: Build ETU-AI launcher
         run: pyinstaller --onefile --noconsole --icon "$env:GITHUB_WORKSPACE/assets/etu-ai_logo.ico" --name ETU-AI --distpath release-payload --workpath .tmp/pyinstaller --specpath .tmp/pyinstaller run_launcher.py
+      - name: Build ETU-AI companion
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'release-payload\python\Lib\site-packages'
+          pyinstaller --onefile --noconsole --icon "$env:GITHUB_WORKSPACE/assets/etu-ai_logo.ico" --name ETU-AI-Companion --collect-all webview --collect-submodules pynput --paths release-payload/python/Lib/site-packages --distpath release-payload --workpath .tmp/pyinstaller-companion --specpath .tmp/pyinstaller-companion companion.py
+          if ($LASTEXITCODE -ne 0) { throw 'Compilation du compagnon impossible' }
+          if (-not (Test-Path -LiteralPath 'release-payload/ETU-AI-Companion.exe')) { throw 'Le build du compagnon n’a pas produit ETU-AI-Companion.exe.' }
       - name: Check signing configuration
         id: signing
         env:
@@ -73,12 +80,14 @@ jobs:
           $sdkBin = Get-ChildItem "$env:ProgramFiles(x86)\Windows Kits\10\bin" -Directory | Sort-Object Name -Descending | Select-Object -First 1
           $signtool = Join-Path $sdkBin.FullName 'x64\signtool.exe'
           if (-not (Test-Path $signtool)) { throw 'SignTool introuvable' }
-          & $signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $pfxPath /p $env:SIGNING_PASSWORD /d 'ETU-AI' release-payload/ETU-AI.exe
-          if ($LASTEXITCODE -ne 0) { throw 'La signature de ETU-AI.exe a échoué' }
-          & $signtool verify /pa /v release-payload/ETU-AI.exe
-          if ($LASTEXITCODE -ne 0) { throw 'La vérification de ETU-AI.exe a échoué' }
-          $signature = Get-AuthenticodeSignature release-payload/ETU-AI.exe
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)etu-aix') { throw 'ETU-AI.exe ne porte pas une signature Authenticode valide pour etu-aix.' }
+          foreach ($executable in Get-ChildItem release-payload/*.exe) {
+            & $signtool sign /fd SHA256 /td SHA256 /tr https://timestamp.digicert.com /f $pfxPath /p $env:SIGNING_PASSWORD /d $executable.BaseName $executable.FullName
+            if ($LASTEXITCODE -ne 0) { throw "La signature de $($executable.Name) a échoué" }
+            & $signtool verify /pa /v $executable.FullName
+            if ($LASTEXITCODE -ne 0) { throw "La vérification de $($executable.Name) a échoué" }
+            $signature = Get-AuthenticodeSignature $executable.FullName
+            if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(?i)etu-aix') { throw "$($executable.Name) ne porte pas une signature Authenticode valide pour etu-aix." }
+          }
           Remove-Item -LiteralPath $pfxPath -Force
       - name: Build setup
         shell: pwsh
@@ -119,9 +128,11 @@ jobs:
             $setup.FullName,
             (Join-Path $env:RUNNER_TEMP 'ETU-AI-older-installer\ETU-AI-Setup-0.0.0.exe'),
             (Join-Path $perUserRoot 'ETU-AI.exe'),
+            (Join-Path $perUserRoot 'ETU-AI-Companion.exe'),
             (Join-Path $perUserRoot 'python\python.exe'),
             (Join-Path $perUserRoot 'python\pythonw.exe'),
             (Join-Path $standardRoot 'ETU-AI.exe'),
+            (Join-Path $standardRoot 'ETU-AI-Companion.exe'),
             (Join-Path $standardRoot 'python\python.exe'),
             (Join-Path $standardRoot 'python\pythonw.exe')
           )
@@ -151,7 +162,7 @@ jobs:
           $smokeHarness = Join-Path $installRoot 'tools\windows_standard_user_smoke.ps1'
           if (Test-Path $smokeHarness) { throw 'The installer shipped its standard-user test harness.' }
           $python = Join-Path $installRoot 'python\python.exe'
-          if (-not (Test-Path (Join-Path $installRoot 'ETU-AI.exe')) -or -not (Test-Path $python)) { throw 'The setup did not install the launcher and bundled Python.' }
+          if (-not (Test-Path (Join-Path $installRoot 'ETU-AI.exe')) -or -not (Test-Path (Join-Path $installRoot 'ETU-AI-Companion.exe')) -or -not (Test-Path $python)) { throw 'The setup did not install the launcher, companion, and bundled Python.' }
           & $python -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()" *> $null
           if ($LASTEXITCODE -eq 0) { throw 'The bundled Python can still reach the public test address.' }
           $versionFile = Join-Path $installRoot 'VERSION'

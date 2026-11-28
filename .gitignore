@@ -27,5 +27,8 @@ logs/
 *.log
 *.lock
 *state*.json
+/storage/launch-mode.json
+/storage/app-update-status.json
+/ETU-AI-Companion.exe
 *beta/
 ROADMAP.md

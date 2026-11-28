@@ -4,7 +4,7 @@ import socket
 import sys
 import time
 
-from run_launcher import LAUNCH_MODES, start_server
+from run_launcher import LAUNCH_MODES, save_launch_mode, start_server
 
 
 def ports_available() -> bool:
@@ -26,6 +26,7 @@ def main() -> int:
     mode = sys.argv[1] if len(sys.argv) == 2 else ""
     if mode not in LAUNCH_MODES:
         return 2
+    save_launch_mode(mode)
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline and not ports_available():
         time.sleep(0.25)
