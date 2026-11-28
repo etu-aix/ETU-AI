@@ -57,7 +57,7 @@ jobs:
           $env:PYTHONPATH = Join-Path $env:GITHUB_WORKSPACE 'release-payload\python\Lib\site-packages'
           pyinstaller --onefile --noconsole --icon "$env:GITHUB_WORKSPACE/assets/etu-ai_logo.ico" --name ETU-AI-Companion --collect-all webview --collect-submodules pynput --paths release-payload/python/Lib/site-packages --distpath release-payload --workpath .tmp/pyinstaller-companion --specpath .tmp/pyinstaller-companion companion.py
           if ($LASTEXITCODE -ne 0) { throw 'Compilation du compagnon impossible' }
-          if (-not (Test-Path -LiteralPath 'release-payload/ETU-AI-Companion.exe')) { throw 'Le build du compagnon n’a pas produit ETU-AI-Companion.exe.' }
+          if (-not (Test-Path -LiteralPath 'release-payload/ETU-AI-Companion.exe')) { throw 'Le build du compagnon ne produit pas ETU-AI-Companion.exe.' }
       - name: Check signing configuration
         id: signing
         env:
