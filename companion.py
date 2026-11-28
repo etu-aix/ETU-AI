@@ -12,6 +12,8 @@ import urllib.request
 from storage.db import StorageManager
 from beacon_address import companion_pid_file
 
+ROOT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+
 SHORTCUTS = {
     "ctrl-alt-space": "<ctrl>+<alt>+<space>",
     "ctrl-shift-space": "<ctrl>+<shift>+<space>",
@@ -103,7 +105,7 @@ def watch_server(companion):
 def main():
     show_on_start = "--show" in sys.argv[1:]
     requested_pid_file = os.environ.get("ETU_COMPANION_PID_FILE")
-    expected_pid_file = companion_pid_file(Path(__file__).resolve().parent)
+    expected_pid_file = companion_pid_file(ROOT_DIR)
     pid_file = expected_pid_file if requested_pid_file and Path(requested_pid_file).resolve() == expected_pid_file.resolve() else None
     # A second invocation must not register the same shortcut twice.
     lock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -120,7 +122,7 @@ def main():
         import webview
         from pynput import keyboard
 
-        storage = StorageManager()
+        storage = StorageManager(ROOT_DIR / "storage" / "chats.db")
         position = storage.get_setting("companion_position", {})
         options = {}
         if isinstance(position, dict) and type(position.get("x")) is int and type(position.get("y")) is int:
@@ -133,7 +135,13 @@ def main():
         window.events.moved += companion.moved
         threading.Thread(target=listen_for_shortcut, args=(companion, keyboard), daemon=True).start()
         threading.Thread(target=watch_server, args=(companion,), daemon=True).start()
-        icon = Path(__file__).resolve().parent / "assets" / "etu-ai_logo.ico"
+        icon = ROOT_DIR / "assets" / "etu-ai_logo.ico"
+        if os.name == "nt":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ETU-AI")
+            except (AttributeError, OSError):
+                pass
         webview.start(private_mode=False, icon=str(icon) if icon.is_file() else None)
     finally:
         lock.close()

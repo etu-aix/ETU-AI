@@ -123,6 +123,17 @@ class TestAPIServer(unittest.TestCase):
                 response = method(url, headers={"Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"})
                 self.assertEqual(response.status_code, 403)
 
+    def test_direct_update_progress_restores_result_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status_file = Path(directory) / "app-update-status.json"
+            status_file.write_text(json.dumps({"status": "completed", "version": "v1.2.0", "message": "Mise à jour terminée."}), encoding="utf-8")
+            with patch.object(api_server, "_app_update_status_file", status_file), \
+                 patch.object(api_server, "_app_update_state", {"status": "idle"}):
+                response = self.client.get("/api/updates/app/progress", headers={"Origin": "http://127.0.0.1:8900"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["status"], "completed")
+            self.assertEqual(response.json()["version"], "v1.2.0")
+
     def test_direct_update_requires_the_bundled_windows_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -248,8 +259,9 @@ class TestAPIServer(unittest.TestCase):
                 command = launch.call_args.args[0]
                 self.assertEqual(response, {"status": "installing"})
                 self.assertEqual(command[8], "4242")
-                self.assertEqual(command[11], str(api_server.BASE_DIR / "python" / "python.exe"))
+                self.assertEqual(command[11], str(api_server.BASE_DIR / "ETU-AI-Companion.exe"))
                 self.assertEqual(command[12], str(pid_file))
+                self.assertEqual(command[-1], version)
                 end_thread.return_value.start.assert_called_once_with()
             finally:
                 api_server._app_update_state = original_state

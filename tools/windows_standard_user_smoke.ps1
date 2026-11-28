@@ -34,10 +34,11 @@ if ($install.ExitCode -ne 0) {
 }
 
 $launcherPath = Join-Path $installRoot 'ETU-AI.exe'
+$companionPath = Join-Path $installRoot 'ETU-AI-Companion.exe'
 $pythonPath = Join-Path $installRoot 'python\python.exe'
 $versionPath = Join-Path $installRoot 'VERSION'
-if (-not (Test-Path $launcherPath) -or -not (Test-Path $pythonPath)) {
-  throw 'The standard-user setup did not install the launcher and bundled Python.'
+if (-not (Test-Path $launcherPath) -or -not (Test-Path $companionPath) -or -not (Test-Path $pythonPath)) {
+  throw 'The standard-user setup did not install the launcher, companion, and bundled Python.'
 }
 & $pythonPath -c "import socket; socket.create_connection(('1.1.1.1', 443), timeout=5).close()" *> $null
 if ($LASTEXITCODE -eq 0) { throw 'The standard-user bundled Python can still reach the public test address.' }

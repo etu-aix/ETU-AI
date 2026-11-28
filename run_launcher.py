@@ -34,61 +34,24 @@ ROOT_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False
 SERVER_URL = "http://127.0.0.1:8900"
 BRIDGE_URL = "http://127.0.0.1:8901"
 LAUNCH_MODES = ("normal", "local", "server")
+LAUNCH_MODE_FILE = ROOT_DIR / "storage" / "launch-mode.json"
 
 
-def choose_launch_mode() -> str | None:
-    """Show a small mode picker; local mode supports ETU 2 development on localhost."""
+def saved_launch_mode() -> str:
+    """Return the last selected launch mode, defaulting safely to normal."""
     try:
-        import tkinter as tk
-        from tkinter import ttk
+        mode = json.loads(LAUNCH_MODE_FILE.read_text(encoding="utf-8")).get("mode")
+        return mode if mode in LAUNCH_MODES else "normal"
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return "normal"
 
-        root = tk.Tk()
-        root.title("Mode de lancement ETU-AI")
-        root.resizable(False, False)
-        root.attributes("-topmost", True)
-        mode = tk.StringVar(value="local")
-        result: dict[str, str | None] = {"mode": None}
-        frame = ttk.Frame(root, padding=18)
-        frame.grid(sticky="nsew")
-        ttk.Label(frame, text="Choisissez le mode de lancement", font=("Segoe UI", 12, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 12))
-        options = (
-            ("normal", "Normal — protections standard, services accessibles uniquement sur cet ordinateur."),
-            ("local", "Local — autorise les origines ETU 2 sur localhost ; services limités à cet ordinateur."),
-            ("server", f"Serveur — expose MAIA Beacon sur le réseau local au port {beacon_port()}."),
-        )
-        for row, (value, label) in enumerate(options, start=1):
-            ttk.Radiobutton(frame, text=label, value=value, variable=mode).grid(row=row, column=0, sticky="w", pady=4)
-        warning = ttk.Label(
-            frame,
-            text="Attention : l’API Beacon n’a pas d’authentification. Les appareils pouvant joindre votre réseau local pourront l’utiliser.",
-            wraplength=510,
-            foreground="#9a3412",
-        )
-        warning.grid(row=4, column=0, sticky="w", pady=(8, 10))
-        warning.grid_remove()
 
-        def update_warning(*_args: object) -> None:
-            if mode.get() == "server":
-                warning.grid()
-            else:
-                warning.grid_remove()
-
-        mode.trace_add("write", update_warning)
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=5, column=0, sticky="e")
-        ttk.Button(buttons, text="Annuler", command=root.destroy).grid(row=0, column=0, padx=(0, 8))
-
-        def launch() -> None:
-            result["mode"] = mode.get()
-            root.destroy()
-
-        ttk.Button(buttons, text="Lancer ETU-AI", command=launch).grid(row=0, column=1)
-        root.protocol("WM_DELETE_WINDOW", root.destroy)
-        root.mainloop()
-        return result["mode"]
-    except Exception as exc:
-        print(f"[!] Sélecteur graphique indisponible ({exc}). Le mode local sera utilisé.")
-        return "local"
+def save_launch_mode(mode: str) -> None:
+    """Remember the mode chosen from settings for the next launcher start."""
+    if mode not in LAUNCH_MODES:
+        raise ValueError(f"Mode de lancement inconnu : {mode}")
+    LAUNCH_MODE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LAUNCH_MODE_FILE.write_text(json.dumps({"mode": mode}), encoding="utf-8")
 
 
 def configure_launch_environment(env: dict[str, str], mode: str) -> dict[str, str]:
@@ -152,12 +115,22 @@ def start_server(mode: str = "local") -> subprocess.Popen:
 
 def start_companion() -> bool:
     """Start the desktop process when its optional dependencies are installed."""
+    companion_executable = ROOT_DIR / "ETU-AI-Companion.exe"
+    if os.name == "nt" and companion_executable.is_file():
+        env = os.environ.copy()
+        env["ETU_COMPANION_PID_FILE"] = str(companion_pid_file(ROOT_DIR))
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if getattr(sys, "frozen", False) else 0
+            subprocess.Popen([str(companion_executable)], cwd=str(ROOT_DIR), stdin=subprocess.DEVNULL,
+                             creationflags=flags, start_new_session=True, env=env)
+            return True
+        except OSError:
+            return False
     if os.name == "nt" and getattr(sys, "frozen", False):
+        return False
+    project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if os.name == "nt" and not project_python.is_file():
         project_python = ROOT_DIR / "python" / "python.exe"
-    else:
-        project_python = ROOT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        if os.name == "nt" and not project_python.is_file():
-            project_python = ROOT_DIR / "python" / "python.exe"
     if not project_python.is_file() and sys.prefix == sys.base_prefix:
         return False
     python = str(project_python) if project_python.is_file() else sys.executable
@@ -180,12 +153,11 @@ def start_companion() -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Démarre ETU-AI avec un profil réseau explicite.")
-    parser.add_argument("--mode", choices=LAUNCH_MODES, help="local (défaut), normal ou server")
+    parser.add_argument("--mode", choices=LAUNCH_MODES, help="normal (défaut), local ou server")
+    parser.add_argument("--downloads", action="store_true", help="ouvre le suivi des téléchargements")
     args = parser.parse_args(argv)
-    mode = args.mode or choose_launch_mode()
-    if mode is None:
-        print("[i] Lancement annulé.")
-        return 0
+    mode = args.mode or saved_launch_mode()
+    browser_url = SERVER_URL + ("/#/downloads" if args.downloads else "")
 
     print("=" * 60)
     print("           ETU-AI | Assistant Étudiant Autonome           ")
@@ -195,18 +167,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[!] L'API MAIA Beacon sera accessible sans authentification depuis les appareils pouvant joindre le port {beacon_port()}.")
 
     if check_server_ready(SERVER_URL, timeout=1):
-        try:
-            with urllib.request.urlopen(f"{SERVER_URL}/api/launch-mode", timeout=2) as response:
-                running_mode = json.load(response).get("mode")
-        except Exception:
-            running_mode = None
-        if running_mode == mode:
-            print("[OK] ETU-AI est déjà lancé dans ce mode. Ouverture du navigateur.")
-            start_companion()
-            webbrowser.open(SERVER_URL)
-            return 0
-        print(f"[!] ETU-AI répond déjà en mode {running_mode or 'inconnu'} ; arrêt manuel requis avant de passer en mode {mode}.")
-        return 1
+        print("[OK] ETU-AI est déjà lancé. Ouverture du navigateur.")
+        webbrowser.open(browser_url)
+        return 0
 
     # 1. Démarrer le serveur
     try:
@@ -232,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[!] MAIA Beacon expose son API sans authentification au réseau local, port {beacon_port()}.")
                 for address in lan_ips:
                     print(f"    http://{address}:{beacon_port()}")
-            webbrowser.open(SERVER_URL)
+            webbrowser.open(browser_url)
         else:
             print("[!] Le serveur met plus de temps que prévu à démarrer.")
             print(f"    Vous pouvez ouvrir manuellement : {SERVER_URL}")

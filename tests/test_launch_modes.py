@@ -13,10 +13,21 @@ AI_SERVER = ROOT / "ai-server"
 sys.path.insert(0, str(AI_SERVER))
 
 import configs
-from run_launcher import configure_launch_environment, start_server, start_companion
+from run_launcher import configure_launch_environment, main, start_server, start_companion
 
 
 class LaunchModeTests(unittest.TestCase):
+    def test_second_launcher_only_opens_browser_even_with_another_saved_mode(self):
+        with patch("run_launcher.saved_launch_mode", return_value="server"), \
+             patch("run_launcher.check_server_ready", return_value=True), \
+             patch("run_launcher.start_server") as start, \
+             patch("run_launcher.start_companion") as companion, \
+             patch("run_launcher.webbrowser.open") as browser:
+            self.assertEqual(main(["--downloads"]), 0)
+        start.assert_not_called()
+        companion.assert_not_called()
+        browser.assert_called_once_with("http://127.0.0.1:8900/#/downloads")
+
     def test_companion_pid_file_is_stable_and_scoped_to_install_root(self):
         self.assertEqual(companion_pid_file(ROOT), companion_pid_file(ROOT.resolve()))
         self.assertNotEqual(companion_pid_file(ROOT), companion_pid_file(ROOT.parent))
@@ -29,6 +40,27 @@ class LaunchModeTests(unittest.TestCase):
             probe.return_value.returncode = 0
             self.assertTrue(start_companion())
         self.assertEqual(launch.call_args.kwargs["env"]["ETU_COMPANION_PID_FILE"], str(companion_pid_file(ROOT)))
+
+    @unittest.skipUnless(os.name == "nt", "Le compagnon empaqueté est réservé à Windows")
+    def test_frozen_launcher_starts_branded_companion(self):
+        with patch("run_launcher.sys.frozen", True, create=True), \
+             patch("run_launcher.Path.is_file", return_value=True), \
+             patch("run_launcher.subprocess.run") as probe, \
+             patch("run_launcher.subprocess.Popen") as launch:
+            self.assertTrue(start_companion())
+        self.assertEqual(launch.call_args.args[0], [str(ROOT / "ETU-AI-Companion.exe")])
+        self.assertEqual(launch.call_args.kwargs["env"]["ETU_COMPANION_PID_FILE"], str(companion_pid_file(ROOT)))
+        probe.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "Le compagnon empaqueté est réservé à Windows")
+    def test_source_launcher_prefers_built_companion(self):
+        with patch("run_launcher.sys.frozen", False, create=True), \
+             patch("run_launcher.Path.is_file", return_value=True), \
+             patch("run_launcher.subprocess.run") as probe, \
+             patch("run_launcher.subprocess.Popen") as launch:
+            self.assertTrue(start_companion())
+        self.assertEqual(launch.call_args.args[0], [str(ROOT / "ETU-AI-Companion.exe")])
+        probe.assert_not_called()
 
     def test_normal_and_local_keep_beacon_on_loopback(self):
         for mode in ("normal", "local"):

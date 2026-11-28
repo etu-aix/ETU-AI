@@ -98,6 +98,7 @@ _app_update_lock = threading.Lock()
 _app_update_state: dict[str, Any] = {"status": "idle"}
 _app_update_path: Optional[Path] = None
 _app_update_manifest: Optional[dict[str, Any]] = None
+_app_update_status_file = BASE_DIR / "storage" / "app-update-status.json"
 
 def _packaged_windows_install() -> bool:
     """Allow the direct installer only from the bundled Windows runtime."""
@@ -418,6 +419,7 @@ def prepare_direct_app_update(request: Request, version: str):
     with _app_update_lock:
         if _app_update_state.get("status") == "downloading":
             raise HTTPException(status_code=409, detail="Un téléchargement de mise à jour est déjà en cours.")
+        _app_update_status_file.unlink(missing_ok=True)
         if _app_update_path:
             _app_update_path.unlink(missing_ok=True)
         _app_update_path = None
@@ -432,6 +434,13 @@ def prepare_direct_app_update(request: Request, version: str):
 def direct_app_update_progress(request: Request):
     require_local_admin(request)
     with _app_update_lock:
+        if _app_update_state.get("status") == "idle" and _app_update_status_file.is_file():
+            try:
+                recorded = json.loads(_app_update_status_file.read_text(encoding="utf-8-sig"))
+                if recorded.get("status") in {"installing", "completed", "error"}:
+                    return {key: recorded.get(key, "") for key in ("status", "version", "message")}
+            except (OSError, ValueError, AttributeError):
+                pass
         return {key: value for key, value in _app_update_state.items() if key != "manifest"}
 
 
@@ -478,8 +487,8 @@ def install_direct_app_update(request: Request, version: str):
             supervisor_path.write_text(supervisor_source.read_text(encoding="utf-8"), encoding="utf-8")
             subprocess.Popen(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(supervisor_path),
                               str(os.getpid()), launcher_pid, str(companion_pid), str(path), str(BASE_DIR / "ETU-AI.exe"),
-                              str(BASE_DIR / "python" / "python.exe"), str(companion_pid_file(BASE_DIR)), str(supervisor_path),
-                              manifest["sha256"], str(manifest["size"])],
+                              str(BASE_DIR / "ETU-AI-Companion.exe"), str(companion_pid_file(BASE_DIR)), str(supervisor_path),
+                              manifest["sha256"], str(manifest["size"]), version],
                              cwd=str(BASE_DIR), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except OSError as exc:

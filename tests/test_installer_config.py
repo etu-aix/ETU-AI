@@ -18,7 +18,7 @@ class InstallerConfigTests(unittest.TestCase):
         recursive_payload = next(line for line in lines if "release-payload\\*" in line)
         config_seed = next(line for line in lines if "release-payload\\ai-server\\config.json" in line)
 
-        self.assertIn('Excludes: "ai-server\\config.json,tools\\windows_standard_user_smoke.ps1"', recursive_payload)
+        self.assertIn('Excludes: "ai-server\\config.json,tools\\windows_standard_user_smoke.ps1,tools\\build_companion.ps1"', recursive_payload)
         self.assertIn('Flags: onlyifdoesntexist', config_seed)
         self.assertIn('Type: filesandordirs; Name: "{app}\\.venv"', script)
         self.assertNotIn('Name: "{app}\\storage"', script)
@@ -33,7 +33,10 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertNotIn("--only-binary=:all:", workflow)
         self.assertIn('Filename: "{app}\\ETU-AI.exe"', setup)
         self.assertIn("PrivilegesRequired=lowest", setup)
-        self.assertNotIn("[Run]", setup)
+        self.assertIn('Name: "desktopicon"; Description:', setup)
+        self.assertIn('IconFilename: "{app}\\ETU-AI.exe"; Tasks: desktopicon', setup)
+        self.assertIn("UsePreviousTasks=yes", setup)
+        self.assertIn('Description: "Lancer ETU-AI"; Flags: nowait postinstall skipifsilent', setup)
         self.assertIn("SetupIconFile=..\\assets\\etu-ai_logo.ico", setup)
 
     def test_windows_build_uses_exact_runtime_dependency_versions(self):
@@ -66,6 +69,9 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("& release-payload/python/python.exe tools/sign_release.py", workflow)
         self.assertIn("tools/sign_release.py --check-key --private-key", workflow)
         self.assertIn('--icon "$env:GITHUB_WORKSPACE/assets/etu-ai_logo.ico"', workflow)
+        self.assertIn('--name ETU-AI-Companion --collect-all webview --collect-submodules pynput', workflow)
+        self.assertIn("release-payload/ETU-AI-Companion.exe", workflow)
+        self.assertIn("ETU-AI-Companion.exe", (root / "tools" / "windows_standard_user_smoke.ps1").read_text(encoding="utf-8"))
         self.assertIn("signature-status.txt", workflow)
         self.assertIn("validate_release_signing_key(key, release_signing_public_keys())", (root / "tools" / "sign_release.py").read_text(encoding="utf-8"))
         self.assertIn("unittest tests.test_api tests.test_app_releases tests.test_signed_updates tests.test_installer_config tests.test_launch_modes", workflow)
@@ -125,8 +131,9 @@ class InstallerConfigTests(unittest.TestCase):
         companion = (root / "companion.py").read_text(encoding="utf-8")
         icon = root / "assets" / "etu-ai_logo.ico"
         self.assertTrue(icon.is_file())
-        self.assertIn('"assets" / "etu-ai_logo.ico"', companion)
+        self.assertIn('ROOT_DIR / "assets" / "etu-ai_logo.ico"', companion)
         self.assertIn("webview.start(private_mode=False, icon=str(icon) if icon.is_file() else None)", companion)
+        self.assertIn("SetCurrentProcessExplicitAppUserModelID", companion)
 
     def test_update_supervisor_rechecks_the_signed_package_before_execution(self):
         root = Path(__file__).resolve().parents[1]
@@ -142,9 +149,15 @@ class InstallerConfigTests(unittest.TestCase):
         self.assertIn("[Security.Cryptography.SHA256]::Create()", supervisor)
         self.assertLess(supervisor.index("$sha256.ComputeHash($packageStream)"), supervisor.index("Start-Process -FilePath $installerPath"))
         self.assertLess(supervisor.index("Start-Process -FilePath $installerPath"), supervisor.index("$packageStream.Dispose()"))
+        for flag in ("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR="):
+            self.assertIn(flag, supervisor)
+        self.assertIn("Write-UpdateStatus 'completed'", supervisor)
+        self.assertIn("-ArgumentList '--downloads'", supervisor)
         self.assertIn('manifest["sha256"], str(manifest["size"])', api)
         self.assertIn("companion_pid_file(BASE_DIR)", api)
         self.assertIn("str(companion_pid)", api)
+        self.assertIn("[IO.Path]::GetFullPath($AppCompanion)", supervisor)
+        self.assertNotIn("$AppPython", supervisor)
 
     @unittest.skipUnless(os.name == "nt", "Le superviseur d’installation est un script Windows")
     def test_update_supervisor_rejects_a_package_changed_after_server_verification(self):
@@ -193,7 +206,8 @@ class InstallerConfigTests(unittest.TestCase):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=30, check=False,
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotEqual(result.returncode, 0, "whoami.exe must reject the Inno Setup update arguments")
+            self.assertIn('"status":"error"', (temp / "storage" / "app-update-status.json").read_text(encoding="utf-8-sig"))
             self.assertFalse(installer.exists())
             self.assertFalse(supervisor.exists())
 
@@ -227,7 +241,8 @@ class InstallerConfigTests(unittest.TestCase):
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=30, check=False,
                 )
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(result.returncode, 0, "whoami.exe must reject the Inno Setup update arguments")
+                self.assertIn('"status":"error"', (temp / "storage" / "app-update-status.json").read_text(encoding="utf-8-sig"))
                 self.assertIsNotNone(companion.poll(), "The companion process must exit before setup starts.")
                 self.assertFalse(installer.exists())
                 self.assertFalse(supervisor.exists())
